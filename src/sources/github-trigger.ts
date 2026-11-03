@@ -7,10 +7,20 @@ export const SOURCE = 'github'
 /** GitHub reply address: issue/PR conversation, or a review thread when `url` points at a discussion comment. */
 export const githubChannel = (number: number, url?: string): ChannelRef =>
   ({ source: SOURCE, thread: `github:${number}`, address: { number: String(number), ...(url ? { url } : {}) } })
-export const githubPage = (repository: string, number: number, pr = false): string =>
-  `https://github.com/${repository}/${pr ? 'pull' : 'issues'}/${number}`
+export function githubPage(repository: string, number: number, pr = false, baseUrl = 'https://github.com'): string {
+  let section = 'issues'
+  if (pr) section = baseUrl === 'https://github.com' ? 'pull' : 'pulls'
+  return `${baseUrl}/${repository}/${section}/${number}`
+}
 /** Parses a web or API URL for an Issue, PR, or review comment in `repository`; returns undefined for other URLs or repositories. */
-export function githubAddress(url: string, repository: string): { number: number; pr: boolean; discussion?: number } | undefined {
+export function githubAddress(url: string, repository: string, baseUrl = 'https://github.com'): { number: number; pr: boolean; discussion?: number } | undefined {
+  if (baseUrl !== 'https://github.com') {
+    const roots = [`${baseUrl}/${repository}/`, `${baseUrl}/api/v1/repos/${repository}/`]
+    const root = roots.find(root => url.toLowerCase().startsWith(root.toLowerCase()))
+    if (!root) return undefined
+    const match = /^(issues|pulls)\/(\d+)\/?(?:#[\w-]+)?$/i.exec(url.slice(root.length))
+    return match ? { number: Number(match[2]), pr: match[1]!.toLowerCase() === 'pulls' } : undefined
+  }
   const address = /^https:\/\/(?:api\.github\.com\/repos|github\.com)\/([^/]+\/[^/]+)\/(issues|pulls?)\/(\d+)\/?(?:#discussion_r(\d+)|#[\w-]*)?$/i
   const match = address.exec(url)
   if (!match || !sameName(match[1]!, repository)) return undefined

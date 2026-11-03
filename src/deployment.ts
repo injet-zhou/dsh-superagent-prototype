@@ -43,6 +43,9 @@ export function machineOf(config: DeploymentConfig): Machine {
 }
 
 export const GithubAccountsSchema = z.object({
+  provider: z.enum(['github', 'gitea']).default('github'),
+  baseUrl: z.string().trim().default(''),
+  commitEmail: z.string().trim().default(''),
   repository: z.string().trim().regex(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?$/, 'owner/name').default(''),
   cli: z.string().trim().default(''),
 })
@@ -52,10 +55,19 @@ export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { githu
 
 export interface Deployment extends Machine {
   repository: string
-  github: { cli: string; login: string; noreply: string }
+  /** Repository account. The legacy `github` key is retained for saved settings and Source identifiers. */
+  github: { cli: string; login: string; noreply: string; provider?: 'github' | 'gitea'; baseUrl?: string }
   feishu?: FeishuBot
 }
 export interface FeishuBot { cli: string; appId: string; brand: 'feishu' | 'lark'; botId: string; name: string }
+
+/** Validates an instance root, including a reverse-proxy subpath, without accepting credentials or query strings. */
+export function repositoryBaseUrl(value: string): string {
+  const url = new URL(value)
+  if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash
+    || url.pathname.split('/').some(part => /%2f|%5c|%2e/i.test(part))) throw new Error('Expected an HTTP(S) instance URL without credentials, query or fragment')
+  return url.href.replace(/\/$/, '')
+}
 
 /** Resolve a command name or absolute path to an executable file, ignoring the worker shim directory. */
 export function executable(name: string, path: string, exclude?: string): string {
@@ -92,6 +104,24 @@ export async function resolveDeployment(machine: Machine, github: unknown, probe
   if (!accounts.cli) throw new SetupError('agentCliUnset')
   let cli: string
   try { cli = executable(accounts.cli, path, workerBin(stateDir)) } catch (error) { throw new SetupError('agentCliMissing', { output: reason(error) }) }
+  if (accounts.provider === 'gitea') {
+    let baseUrl: string
+    try {
+      baseUrl = repositoryBaseUrl(accounts.baseUrl)
+      const configured = parsed(z.object({ baseUrl: z.string() }), await probe([cli, 'config']))
+      if (!configured || repositoryBaseUrl(configured.baseUrl) !== baseUrl) throw new Error('Gitea CLI configuration must use the same baseUrl as the Source')
+    } catch (error) { throw new SetupError('agentCliSignedOut', { output: reason(error) }) }
+    const text = await probe([cli, 'api', 'user']).catch((error: unknown) => { throw new SetupError('agentCliSignedOut', { output: reason(error) }) })
+    const agent = parsed(z.object({ login: z.string().regex(/^[A-Za-z0-9_.-]+$/), email: z.string().nullish() }), text)
+    if (!agent) throw new SetupError('agentCliNoAccount')
+    const access = parsed(z.object({ full_name: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
+      permissions: z.object({ push: z.boolean() }) }), await probe([cli, 'api', `repos/${remote}`])
+      .catch((error: unknown) => { throw new SetupError('repositoryUnreadable', { account: agent.login, repository: remote, output: reason(error) }) }))
+    if (!access) throw new SetupError('repositoryUnreported', { repository: remote })
+    if (!access.permissions.push) throw new SetupError('repositoryReadOnly', { account: agent.login, repository: access.full_name })
+    const noreply = accounts.commitEmail || agent.email || `${agent.login}@noreply.${new URL(baseUrl).hostname}`
+    return { ...machine, repository: access.full_name, github: { cli, login: agent.login, noreply, provider: 'gitea', baseUrl } }
+  }
   const text = await probe([cli, 'api', 'user']).catch((error: unknown) => { throw new SetupError('agentCliSignedOut', { output: reason(error) }) })
   const agent = parsed(GithubUser, text)
   if (!agent) throw new SetupError('agentCliNoAccount')

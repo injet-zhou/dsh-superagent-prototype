@@ -37,14 +37,20 @@ function scopeOf(meta: Record<string, unknown>): Scope | undefined {
 }
 export const githubKind: SourceKind<GithubConfig> = {
   kind: SOURCE,
-  title: { zh: 'GitHub', en: 'GitHub' },
-  description: { zh: '智能体的 GitHub 账号；接收仓库里发给它的通知、已订阅 Issue 与 PR 的讨论、CI 状态变化和 PR 合并关闭。', en: 'The agent\'s GitHub accounts; receives notifications to it in the repository, discussion on subscribed Issues and PRs, CI changes, and PR merge or close.' },
+  title: { zh: 'GitHub / Gitea', en: 'GitHub / Gitea' },
+  description: { zh: '代码仓库账号；接收通知、Issue 与 PR 讨论、提交状态变化和 PR 合并关闭。Gitea 配置见部署文档。', en: 'Repository account: notifications, Issue and PR discussion, commit status changes, and PR merge or close. See deployment documentation for Gitea setup.' },
   schema: GithubConfigSchema,
   fields: [
+    { key: 'provider', type: 'select', label: { zh: '代码托管平台', en: 'Repository provider' }, options: [
+      { value: 'github', label: { zh: 'GitHub', en: 'GitHub' } }, { value: 'gitea', label: { zh: 'Gitea', en: 'Gitea' } }] },
+    { key: 'baseUrl', type: 'text', label: { zh: 'Gitea 实例地址', en: 'Gitea instance URL' },
+      hint: { zh: '例如 https://git.example.com，可含反向代理子路径。GitHub 留空；必须与智能体 CLI 配置一致。', en: 'For example https://git.example.com, optionally with a reverse-proxy subpath. Leave empty for GitHub; must match the agent CLI configuration.' } },
+    { key: 'commitEmail', type: 'text', advanced: true, label: { zh: 'Gitea 提交邮箱', en: 'Gitea commit email' },
+      hint: { zh: '留空时使用 Gitea 账号返回的邮箱。', en: 'Empty uses the email returned by the Gitea account.' } },
     { key: 'repository', type: 'text', pattern: '[A-Za-z0-9_.\\-]+/[A-Za-z0-9_.\\-]+', label: { zh: '监听的仓库', en: 'Repository' },
       hint: { zh: '写作 owner/name。这个来源接收这个仓库的通知和讨论；保存时检查智能体账号能否推送到它，然后重启 dsh-superagent。', en: 'Written owner/name. This Source receives the repository\'s notifications and discussion; saving checks that the agent account can push to it, then restarts dsh-superagent.' } },
-    { key: 'cli', type: 'text', label: { zh: '智能体的 GitHub CLI', en: 'Agent GitHub CLI' },
-      hint: { zh: '命令名或绝对路径，通常是用 GH_CONFIG_DIR 登录智能体账号的 gh 包装脚本。智能体以它登录的账号行事，执行器以 gh 调用它。保存时检查它登录的账号能否推送到仓库，然后重启 dsh-superagent。', en: 'A command name or absolute path, usually a gh wrapper signed in to the agent account through GH_CONFIG_DIR. The agent acts as the account it is signed in to, and the Executor calls it as gh. Saving checks that this account can push to the repository, then restarts dsh-superagent.' } },
+    { key: 'cli', type: 'text', label: { zh: '智能体的仓库 CLI', en: 'Agent repository CLI' },
+      hint: { zh: 'GitHub 使用独立账号的 gh 包装脚本；Gitea 使用部署文档中的 dsh-gitea 包装脚本。保存时检查身份与推送权限，然后重启。', en: 'Use an account-isolated gh wrapper for GitHub, or a dsh-gitea wrapper as documented for Gitea. Saving checks identity and push access, then restarts.' } },
     { key: 'pollSeconds', type: 'number', advanced: true, min: 60, max: 3600, label: { zh: '轮询间隔 / 秒', en: 'Polling interval / seconds' }, hint: { zh: 'GitHub 要求更长间隔时以 GitHub 为准。', en: 'A longer interval requested by GitHub wins.' } },
     { key: 'failuresBeforeError', type: 'number', advanced: true, min: 1, max: 20, label: { zh: '连续失败几次后报告异常', en: 'Failed polls before reporting an error' }, hint: { zh: '单次网络中断会在下一次轮询时自动重试，不必报告。', en: 'A single network interruption is retried on the next poll and need not be reported.' } },
     { key: 'observeIssues', type: 'switch', label: { zh: '接收仓库里的新 Issue', en: 'Receive new Issues in the repository' },
@@ -65,17 +71,17 @@ export const githubKind: SourceKind<GithubConfig> = {
   threadContext: githubThreadContext,
   // `#12`, `12`, or the page of an Issue or PR, of any repository, names Thread 12.
   find: query => {
-    const number = (/^#?(\d+)$/.exec(query.trim()) ?? /github\.com\/[^/]+\/[^/]+\/(?:pull|issues)\/(\d+)/.exec(query))?.[1]
+    const number = (/^#?(\d+)$/.exec(query.trim()) ?? /https?:\/\/[^\s]+\/(?:pulls?|issues)\/(\d+)(?:[#/]|$)/.exec(query))?.[1]
     return { threads: number ? [`${SOURCE}:${number}`] : [], terms: [] }
   },
   policy: {
-    schema: z.object({ allowed: z.array(z.object({ id: z.string().regex(/^[A-Za-z0-9-]+$/) }).strict()).default([]),
-      bots: z.array(z.object({ id: z.string().regex(/^[A-Za-z0-9-]+(\[bot\])?$/) }).strict()).optional() }).strict(),
-    fields: [{ key: 'allowed', type: 'rows', label: { zh: '能发起工作的 GitHub 账号', en: 'GitHub accounts that may originate work' },
-      columns: [{ key: 'id', type: 'text', label: { zh: '账号', en: 'Account' }, pattern: '[A-Za-z0-9\\-]+' }] },
+    schema: z.object({ allowed: z.array(z.object({ id: z.string().regex(/^[A-Za-z0-9_.-]+$/) }).strict()).default([]),
+      bots: z.array(z.object({ id: z.string().regex(/^[A-Za-z0-9_.-]+(\[bot\])?$/) }).strict()).optional() }).strict(),
+    fields: [{ key: 'allowed', type: 'rows', label: { zh: '能发起工作的仓库账号', en: 'Repository accounts that may originate work' },
+      columns: [{ key: 'id', type: 'text', label: { zh: '账号', en: 'Account' }, pattern: '[A-Za-z0-9_.\\-]+' }] },
     { key: 'bots', type: 'rows', label: { zh: '评论可以成为候选的机器人', en: 'Bots whose comments may become candidates' },
       hint: { zh: '名单里的机器人账号（例如 dependabot[bot]）的评论在来源收到时成为推断的候选，交给评估：评论 @ 了智能体，或者打开了“接收仓库里的评论”。它们不能发起明确的请求，也不能停止工单；其他机器人的评论不接收。', en: 'A comment of a bot account on this list, such as dependabot[bot], becomes an inferred candidate for an assessment when the Source receives it: when it mentions the agent, or with Receive comments in the repository on. Such a comment never makes an explicit request or stops a ticket; other bots\' comments are not admitted.' },
-      columns: [{ key: 'id', type: 'text', label: { zh: '账号', en: 'Account' }, pattern: '[A-Za-z0-9\\-]+(\\[bot\\])?' }] }],
+      columns: [{ key: 'id', type: 'text', label: { zh: '账号', en: 'Account' }, pattern: '[A-Za-z0-9_.\\-]+(\\[bot\\])?' }] }],
     explicit: { zh: '名单里的账号在 Issue 或评论里 @ 智能体的账号。', en: 'An account on the list mentions the agent\'s account in an Issue or a comment.' },
     rows(stored) {
       const config = GithubConfigSchema.partial().parse(stored)
@@ -91,15 +97,19 @@ export const githubKind: SourceKind<GithubConfig> = {
   },
   environment: {
     variables: [
+      { key: 'DSH_SUPERAGENT_REPOSITORY_PROVIDER', description: { zh: '代码托管平台。gitea 时使用 gitea api，禁止 gh 或 GitHub GraphQL；自动合并默认关闭', en: 'Repository provider. For gitea use gitea api, never gh or GitHub GraphQL; auto-merge is disabled by default' } },
+      { key: 'DSH_SUPERAGENT_REPOSITORY_BASE_URL', description: { zh: '代码托管实例地址', en: 'Repository instance URL' } },
       { key: 'DSH_SUPERAGENT_GITHUB_REPOSITORY', description: { zh: '这个来源监听的仓库，owner/name。智能体在这里开的 PR，分支最后一段是 DSH_SUPERAGENT_NAME 时（例如 agent/$DSH_SUPERAGENT_NAME）会关联到工单', en: 'The repository this Source watches, as owner/name. A PR the agent opens here from a branch whose last path segment is DSH_SUPERAGENT_NAME (for example agent/$DSH_SUPERAGENT_NAME) binds to the ticket' } },
-      { key: 'DSH_SUPERAGENT_GITHUB_ACCOUNT', description: { zh: '智能体的 GitHub 账号；gh 以它登录，除自动合并外的 GitHub 操作都用 gh，不用其他账号或凭据', en: 'The agent\'s GitHub account. gh is signed in to it; use gh for every GitHub operation except auto-merge, and never another account or credential' } },
+      { key: 'DSH_SUPERAGENT_GITHUB_ACCOUNT', description: { zh: '智能体的仓库账号；按平台使用 gh 或 gitea，不用其他账号或凭据', en: 'Repository agent account; use gh or gitea according to the provider, never another account or credential' } },
       { key: 'DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL', description: { zh: '智能体账号的提交邮箱。这里的 git 没有身份：按提示词写明的作者提交，没有写明时用智能体账号和这个邮箱', en: 'Commit email of the agent\'s account. git has no identity here: commit as the author these instructions name, or as the agent\'s account with this email when they name none' } },
       { key: 'DSH_SUPERAGENT_GITHUB_NUMBER', description: { zh: '接下工单的 Issue 或 PR 编号；工单不是从 GitHub 来的时为空', en: 'Number of the Issue or PR that started the ticket; empty when the ticket did not start on GitHub' } },
       { key: 'DSH_SUPERAGENT_GITHUB_PR_HEAD', description: { zh: '接下工单的 PR 的 head 引用 refs/pull/<编号>/head；不是 PR 时为空', en: 'Head ref refs/pull/<number>/head of the PR that started the ticket; empty when it was not a PR' } },
     ],
     values: ({ deployment, trigger }) => {
       const number = trigger?.threads[0]?.source === SOURCE ? Number(trigger.meta.number) || 0 : 0
-      return { DSH_SUPERAGENT_GITHUB_REPOSITORY: deployment.repository, DSH_SUPERAGENT_GITHUB_ACCOUNT: deployment.github.login, DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL: deployment.github.noreply, DSH_SUPERAGENT_GITHUB_NUMBER: number ? String(number) : '',
+      return { DSH_SUPERAGENT_REPOSITORY_PROVIDER: deployment.github.provider ?? 'github',
+        DSH_SUPERAGENT_REPOSITORY_BASE_URL: deployment.github.baseUrl ?? 'https://github.com',
+        DSH_SUPERAGENT_GITHUB_REPOSITORY: deployment.repository, DSH_SUPERAGENT_GITHUB_ACCOUNT: deployment.github.login, DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL: deployment.github.noreply, DSH_SUPERAGENT_GITHUB_NUMBER: number ? String(number) : '',
         DSH_SUPERAGENT_GITHUB_PR_HEAD: number && trigger?.meta.isPr === true ? `refs/pull/${number}/head` : '' }
     },
   },
@@ -235,7 +245,7 @@ async function readStream(ctx: SourceContext, round: Round, id: string, path: st
     }
     const number = Number(/\/(?:issues|pulls)\/(\d+)$/.exec((id === 'comments' ? item.issue_url : item.pull_request_url) ?? '')?.[1])
     if (!number || !fresh(item.updated_at ?? item.created_at, 'comments')) continue
-    const isPr = id === 'review-comments' || /\/pull\//.test(item.html_url ?? '')
+    const isPr = id === 'review-comments' || /\/pulls?\//.test(item.html_url ?? '')
     const ref = { number, isPr, ...item.html_url ? { url: item.html_url } : {} }
     const trigger = commentTrigger(item, ref, id === 'comments' ? 'conversation' : 'inline', login)
     if (trigger.text) await ctx.receive(trigger)
@@ -264,7 +274,7 @@ async function pollBranchCi(ctx: SourceContext, round: Round): Promise<void> {
   if (known && JSON.stringify(now) !== JSON.stringify(known)) {
     revision += 1
     const summary = ciSummary(snapshot, branch, `github/commits/${head.sha}/checks`)
-    const url = `https://github.com/${ctx.deployment.repository}/commit/${head.sha}`
+    const url = `${ctx.deployment.github.baseUrl ?? 'https://github.com'}/${ctx.deployment.repository}/commit/${head.sha}`
     await ctx.receive(branchCiTrigger(branch, head.sha, revision, summary, url))
     ctx.threads.describe(`github:ci:${branch}`, { label: `CI on ${branch}`, facts: { ci: ciFact(counts) } })
   }
@@ -317,7 +327,7 @@ async function pollNotifications(ctx: SourceContext, round: Round): Promise<{ co
   const items = new Map(Object.entries(retries).map(([number, retry]) => [Number(number), retry]))
   for (const notification of notifications.reverse()) {
     if (!sameName(notification.repository.full_name, repository)) continue
-    const address = githubAddress(notification.subject.url ?? '', repository)
+    const address = githubAddress(notification.subject.url ?? '', repository, ctx.deployment.github.baseUrl)
     if (!address || address.discussion || items.has(address.number)) continue
     const { number, pr } = address
     items.set(number, { since: [state.get(KV.github.cursor(number)) ?? since, since].sort().at(-1)!, pr })

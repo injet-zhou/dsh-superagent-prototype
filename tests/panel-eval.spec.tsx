@@ -34,7 +34,7 @@ it('keeps a Policy draft across remounts, and merges another save into it sender
   await mount()
   await click(zh['tab.eval'])
   await click(find(zh['tab.settings'], '.dt-status-head button'))
-  expect(all('.dt-subtab').map(tab => tab.textContent)).toEqual(['飞书', 'GitHub'])
+  expect(all('.dt-subtab').map(tab => tab.textContent)).toEqual(['飞书', 'GitHub / Gitea'])
   await addUser()
   expect(text()).toContain(zh.draftKept)
   await remount()
@@ -66,7 +66,7 @@ it('keeps the Policy to its rules and each Source\'s part, in that Source\'s own
   expect(all('.dt-lv').map(item => item.textContent)[0]).toBe('策略版本 abcdef12')
   expect(text()).toContain('名单内的人 @ 机器人或私聊机器人，总是明确的请求')
   await click(find(zh['source.github'], '.dt-subtab'))
-  expect(text()).toContain('能发起工作的 GitHub 账号')
+  expect(text()).toContain('能发起工作的仓库账号')
   expect(text()).toContain('名单里的账号在 Issue 或评论里 @ 智能体的账号。')
   // A saved account shows as its id; only a row being added is a field.
   expect(all('.dt-part .dt-rows-item .dt-row-label').map(label => label.textContent)).toEqual(['alice'])
@@ -161,7 +161,7 @@ it('lists each Source\'s bots next to its people and saves them, and sets the Gi
   await mount()
   await click(tab(zh['tab.settings']))
   // The GitHub Source receives only what is addressed to the agent until a switch opens a scope of the repository.
-  const github = all('.dt-card').find(card => card.querySelector('.dt-card-title')?.textContent === 'GitHub')!
+  const github = all('.dt-card').find(card => card.querySelector('.dt-card-title')?.textContent === 'GitHub / Gitea')!
   expect([...github.querySelectorAll('.dt-switch-row')].map(row => row.textContent)).toEqual(['接收仓库里的新 Issue', '接收仓库里的新 PR',
     '接收仓库里的评论', '接收默认分支的 CI'])
   expect([...github.querySelectorAll('[role="switch"]')].slice(1).map(item => item.getAttribute('aria-checked'))).toEqual(['false', 'false',
@@ -178,7 +178,7 @@ it('lists each Source\'s bots next to its people and saves them, and sets the Gi
   await type(bot.querySelector<HTMLInputElement>('input[aria-label="App ID 或 open_id"]')!, 'cli_reviewer')
   await type(bot.querySelector<HTMLInputElement>('input[aria-label="名字"]')!, '评审机器人')
   await click(find(zh['source.github'], '.dt-subtab'))
-  expect(lists()).toEqual(['能发起工作的 GitHub 账号', '评论可以成为候选的机器人'])
+  expect(lists()).toEqual(['能发起工作的仓库账号', '评论可以成为候选的机器人'])
   await type((await add('评论可以成为候选的机器人')).querySelector<HTMLInputElement>('input[aria-label="账号"]')!, 'dependabot[bot]')
   // Until the GitHub Source receives the repository's Issues, pull requests, comments or CI, only messages that mention the agent arrive.
   const rows = () => all('.dt-admission tbody tr').map(row => [row.querySelector('.dt-admission-scope')!.firstChild?.textContent,
@@ -195,7 +195,7 @@ it('shows the GitHub Source\'s switches for what it receives across the reposito
     observeIssues: true, observeCi: true } }
   await mount(en)
   await click(tab(en['tab.settings']))
-  const github = all('.dt-card').find(card => card.querySelector('.dt-card-title')?.textContent === 'GitHub')!
+  const github = all('.dt-card').find(card => card.querySelector('.dt-card-title')?.textContent === 'GitHub / Gitea')!
   expect([...github.querySelectorAll('.dt-switch-row')].map(row => [row.textContent, row.querySelector('[role="switch"]')
     ?.getAttribute('aria-checked')])).toEqual([['Receive new Issues in the repository', 'true'],
     ['Receive new pull requests in the repository', 'false'], ['Receive comments in the repository', 'false'],

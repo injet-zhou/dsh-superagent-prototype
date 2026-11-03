@@ -4,6 +4,7 @@ import { basename } from 'node:path'
 import { promisify } from 'node:util'
 import { z } from 'zod'
 import type { Deployment } from '../deployment.ts'
+import { giteaApi } from './gitea.ts'
 
 const exec = promisify(execFile)
 const TIMEOUT_MS = 90_000
@@ -82,17 +83,34 @@ export class Commands {
   async api<T>(schema: z.ZodType<T>, path: string, ...flags: string[]): Promise<T>
   async api(path: string, ...flags: string[]): Promise<string>
   async api<T>(schema: z.ZodType<T> | string, ...rest: string[]): Promise<T | string> {
+    if (this.deployment.github.provider === 'gitea') {
+      const path = typeof schema === 'string' ? schema : rest[0] ?? ''
+      this.path(path)
+      const output = await giteaApi((program, args) => this.run(program, args), this.deployment, path,
+        typeof schema === 'string' ? rest : rest.slice(1))
+      return typeof schema === 'string' ? output : schema.parse(JSON.parse(output))
+    }
     if (typeof schema === 'string') return this.run(this.deployment.github.cli, ['api', this.path(schema), ...rest])
     const [path = '', ...flags] = rest
     return schema.parse(await this.gh(['api', this.path(path), ...flags]))
   }
   /** Fetches all pages of a GitHub API list within the configured repository, skipping items that fail schema validation. */
   async pages<T>(item: z.ZodType<T>, path: string, tally?: Tally): Promise<T[]> {
+    if (this.deployment.github.provider === 'gitea') {
+      const pages = JSON.parse(await this.api(path, '--paginate', '--slurp')) as unknown
+      return validItems(item, z.array(z.array(z.unknown())).parse(pages).flat(), tally)
+    }
     const pages = z.array(z.array(z.unknown())).parse(await this.gh(['api', this.path(path), '--paginate', '--slurp']))
     return validItems(item, pages.flat(), tally)
   }
   private path(path: string): string {
-    const outside = /^\/|^[a-z]+:|(^|\/)\.\.?(\/|\?|$)/i.test(path)
+    let decoded = path.split('?')[0]!
+    for (let round = 0; round < 3; round++) {
+      const next = decodeURIComponent(decoded)
+      if (next === decoded) break
+      decoded = next
+    }
+    const outside = /^\/|^[a-z]+:|\\|(^|\/)\.\.?(\/|$)/i.test(decoded)
     if (outside) throw new Error('GitHub calls are restricted to the configured repository')
     return path ? `repos/${this.repository}/${path}` : `repos/${this.repository}`
   }

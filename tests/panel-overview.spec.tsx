@@ -19,7 +19,7 @@ it('leads the overview with the pending Tickets, then problems, the last day and
   expect(text()).toContain('来源会在每次轮询时自动重试')
   expect(text()).toContain('需要确认按钮颜色')
   expect(all('.dt-stat').map(stat => stat.textContent)).toEqual(['到达12', '被过滤2', '已评估5', '接单或续做1', '执行中2 / 3', '排队0', '等待新触发1'])
-  expect(all('.dt-chip').map(chip => chip.textContent)[0]).toBe('GitHub#42CI 失败1')
+  expect(all('.dt-chip').map(chip => chip.textContent)[0]).toBe('GitHub / Gitea#42CI 失败1')
   expect(document.querySelector('.dt-chip-problem')?.textContent).toBe('CI 失败1')
   expect(document.querySelector<HTMLAnchorElement>('a.dt-chip-link')?.href).toBe('https://github.com/acme/widgets/pull/42')
   await click(all('.dt-more-link').at(-1)!)
@@ -149,7 +149,7 @@ it('says when no Source is on, an Eval is past its deadline or a message keeps f
   await mount()
   const titles = () => all('.dt-cards .dt-att-what').map(item => item.textContent)
   // The Feishu Source is off, so its error is no problem any more.
-  expect(titles()).toEqual([zh.problemNoSource, '评估超时未决定：#9 迟迟未决', '评估未完成：这个文案好奇怪', 'GitHub 回复发送失败（已重试 4 次）'])
+  expect(titles()).toEqual([zh.problemNoSource, '评估超时未决定：#9 迟迟未决', '评估未完成：这个文案好奇怪', 'GitHub / Gitea 回复发送失败（已重试 4 次）'])
   expect(text()).toContain('HTTP 502 from GitHub')
   await click(zh.actionOpenSources)
   expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.source'])

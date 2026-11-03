@@ -16,7 +16,7 @@ it('lists Tickets under Execution by who they wait on, with the Executor state a
   expect(document.querySelector('.dt-status-title')?.textContent).toBe(zh.statusTitle)
   expect(server.requests.some(request => request.path === 'tickets?state=open&limit=20')).toBe(true)
   expect(text()).toContain(zh.executorRunning)
-  expect(all('.dt-chip').map(chip => chip.textContent)).toContain('GitHub#7自动合并已开启')
+  expect(all('.dt-chip').map(chip => chip.textContent)).toContain('GitHub / Gitea#7自动合并已开启')
   await click(zh.idleLabel)
   expect(server.requests.some(request => request.path === 'tickets?state=idle&limit=20')).toBe(true)
   expect(text()).toContain('执行器结束了当前回合')
@@ -115,7 +115,7 @@ it('offers a Ticket awaiting review its review place and Session in the page hea
   at({ page: 'execution', id: 't1' })
   await mount()
   expect(document.querySelector('.dt-status-line .dt-stage')?.textContent).toBe(zh['stage.review'])
-  expect(all('.dt-page-head a').map(link => [link.textContent, link.getAttribute('href')])).toEqual([['打开 GitHub 原文',
+  expect(all('.dt-page-head a').map(link => [link.textContent, link.getAttribute('href')])).toEqual([['打开 GitHub / Gitea 原文',
     'https://github.com/acme/widgets/pull/42']])
 })
 

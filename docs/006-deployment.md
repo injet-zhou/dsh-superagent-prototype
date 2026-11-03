@@ -5,7 +5,7 @@ Use this guide to install, configure and operate dsh-superagent. It covers accou
 ## What runs
 
 - **A dedicated DeepSeek Harness profile**, called `superagent` in this guide. Create it from the Web profile template. It loads the bundle and serves its panel on `127.0.0.1`. Keep it separate from the profile you work in: the plugin changes process-wide `PATH` and git settings, and its process needs independent restarts and upgrades.
-- **An agent GitHub account.** The agent comments, pushes branches and opens pull requests as this account, through a GitHub CLI signed in only as that account.
+- **An agent repository account, on GitHub or Gitea.** The agent comments, pushes branches and opens pull requests through a CLI configured only for that account. Workers run in DeepSeek Harness for both providers.
 - **Optional:** a Feishu bot for chat requests.
 
 Plugin configuration holds the state directory and machine limits. Use the panel for everything else: Sources for the repository and accounts, Policy for allowed lists, and Execution for worker directories and commands.
@@ -21,8 +21,8 @@ Both presets run with `danger-full-access` as the operator's OS user and read me
 ## Prerequisites
 
 - Node.js 22.19+ or 24+, pnpm, git 2.32+, Python 3.8+ and tmux
-- GitHub CLI (`gh`) 2.48 or later. Source CLI fields must point to `gh` or `lark-cli` wrappers; the host relies on their subcommands and output formats.
-- A repository on github.com; GitHub Enterprise Server is not supported. To create a checkout per Ticket, keep a local clone from which the prepare command can add worktrees. Install `git-lfs` if that repository uses Git LFS.
+- For GitHub: GitHub CLI (`gh`) 2.48 or later and a repository on github.com; GitHub Enterprise Server is not supported. For Gitea: Python 3.8+ and the bundled `scripts/dsh-gitea` CLI described below.
+- To create a checkout per Ticket, keep a local clone from which the prepare command can add worktrees. With Gitea, use its HTTPS clone URL so worker Git uses the agent's configured credential helper; custom SSH authentication is not configured. Install `git-lfs` if that repository uses Git LFS.
 - A model provider configured for DeepSeek Harness. dsh-superagent uses the profile's default model unless the Eval or Execution settings name another.
 - For Feishu: `lark-cli` (tested with 1.0.90) and a Feishu or Lark app with a bot
 
@@ -45,6 +45,42 @@ Both presets run with `danger-full-access` as the operator's OS user and read me
    ```
 
    Sign in as the agent account; the last command prints its login. dsh-superagent reads the login the same way.
+
+### Agent Gitea account
+
+Choose Gitea instead of the GitHub account steps above. GitHub CLI is not needed in this mode. The existing repository Source appears as **GitHub / Gitea**; its persisted kind, health entry, policy namespace, `github/` read resources and `DSH_SUPERAGENT_GITHUB_*` environment variables retain their historical names. They refer to the selected Gitea repository, not github.com. One deployment watches one repository on one provider.
+
+1. Create a dedicated Gitea account with write access to the repository. Create an access token for that account with the permissions needed to read the account, notifications, repository, issues and reviews, and write issues and pull requests. Restrict repository access where your Gitea version supports it. Do not paste the token into chat or the panel.
+2. Save a private JSON file outside the checkout, for example `/srv/agent/gitea.json`, owned by the agent's OS user with mode `0600`:
+
+   ```json
+   { "baseUrl": "https://git.example.com", "token": "<agent access token>" }
+   ```
+
+   `baseUrl` is the instance root, optionally including a reverse-proxy subpath such as `https://git.example.com/code`. Use HTTPS outside local development. No API prefix, query, fragment or embedded credentials.
+3. Create an executable wrapper, for example `/srv/agent/bin/agent-gitea`, whose paths are absolute:
+
+   ```sh
+   #!/bin/sh
+   exec python3 /srv/dsh-superagent/scripts/dsh-gitea --config /srv/agent/gitea.json "$@"
+   ```
+
+   The script is also included in the built package. Run the wrapper's `config`, `api user` and `api repos/<owner>/<name>` commands to check it. `config` prints only the instance URL. Keep this wrapper and configuration available to the DSH process and worker shells; the token is read from the file because DSH removes credential-shaped environment variables.
+4. In **Sources → GitHub / Gitea**, choose provider **Gitea**, set the instance URL, `owner/name` repository and the wrapper's absolute path. Optionally set a commit email; the default is the account's returned email, or `<login>@noreply.<instance host>` if unavailable. Saving checks the CLI's instance URL, account and push permission, then restarts. GitHub installations need no new settings.
+5. Configure the allowed repository usernames under **Eval → On each Source**, as for GitHub. Feishu configuration and authorization are independent and work with either provider. `source:github` and `policy.sources.github` remain the management API keys.
+6. Use the ordinary worktree prepare command with a clone whose `origin` is the Gitea HTTPS URL. Workers get an account-isolated `gitea` shim and Git credential helper scoped to the configured instance and repository. `gh` fails with a Gitea-specific instruction, preventing accidental GitHub writes. The helper refuses credentials for another host, protocol or repository.
+
+Start with a fresh state directory when changing the repository or provider. Existing Thread, Trigger and PR identifiers belong to the old deployment and are not a migration between hosting services. Changing provider, URL, account, repository or commit email re-runs setup; polling and admission switches still apply normally.
+
+#### Gitea compatibility
+
+Validated against Gitea 1.24.6 using its [REST API](https://docs.gitea.com/api/). Check the API capabilities of your deployed version before enabling additional workflows.
+
+- The adapter uses REST `/api/v1` and polling, without a public webhook endpoint or GitHub service dependency. It reads mentions through repository notifications, subscribed Issue/PR conversation comments, reviews and review comments, and follows agent-authored PR branches until merged or closed. It preserves reply markers across retries and Gitea URLs in panel links and Feishu terminal notices.
+- Source-wide observation switches also work: Issue/PR lists and conversation/review comments are polled with timestamp cursors. Gitea can cap page sizes; the CLI follows the server's `Link` headers, and a failed page fails the read before cursor advancement. Review observation may require several requests per recently updated PR.
+- CI covers **commit statuses published to Gitea**. GitHub Check Runs and native Gitea Actions job/log APIs are not read. If your CI runs in Gitea Actions or elsewhere, publish commit statuses to make them observable. An empty status list is shown as unavailable, never as a successful build.
+- Review feedback is delivered with its file and position. Replies go to the PR conversation with a reference to the review comment; GitHub inline-reply and GraphQL thread-resolution operations are not emulated. Resolve remaining threads manually or supply instance-specific instructions for supported REST operations.
+- The repository skill gives Gitea REST commands for reading context, creating PRs and closing superseded PRs. Automatic merge and GitHub-specific reviewer coauthor commands are disabled by the default Gitea instructions; people merge. Existing customized prompts must also be reviewed for GitHub-only commands. This does not change the DSH Executor or add another coding-agent runtime.
 
 ### Feishu bot (optional)
 
@@ -217,18 +253,18 @@ curl -s -X PUT -H 'x-orchestrator-request: 1' -H 'content-type: application/json
 
 Setup uses the DeepSeek Harness subprocess service, as worker shells do. It removes environment variables whose names contain KEY, PASSWORD, SECRET or TOKEN.
 
-Setup verifies the GitHub repository and the agent's push access, writes the worker environment, and checks that git uses only the agent credentials for github.com. A Feishu setup failure disables only the Feishu Source.
+Setup verifies the selected repository and the agent's push access, writes the worker environment, and checks that git uses the selected provider's agent credential helper. A Feishu setup failure disables only the Feishu Source.
 
 The process environment that setup writes:
 
-- **Command shims** in `<stateDir>/worker-bin`, first on `PATH`: `gh` runs the agent's CLI; `lark-cli` runs the bot's CLI; blocked commands fail. A shim removes its own directory from `PATH` before it runs its target.
-- **git configuration** in `<stateDir>/worker-gitconfig`: replaces the operator's global and system git configuration. It selects the agent CLI as the github.com credential helper, rewrites GitHub SSH addresses to HTTPS and defines Git LFS filters. Personal git settings such as an HTTP proxy do not apply. No commit identity is set here, git never prompts for credentials, and `GH_TOKEN` and `GITHUB_TOKEN` are removed.
+- **Command shims** in `<stateDir>/worker-bin`, first on `PATH`: `gh` or `gitea` runs the selected repository CLI; `lark-cli` runs the bot's CLI; blocked commands fail. A shim removes its own directory from `PATH` before it runs its target.
+- **git configuration** in `<stateDir>/worker-gitconfig`: replaces the operator's global and system git configuration. It selects the agent CLI as the credential helper for github.com or the configured Gitea instance, rewrites GitHub SSH addresses to HTTPS when using GitHub, and defines Git LFS filters. Gitea uses HTTPS origins and a helper that verifies the repository path. Personal git settings such as an HTTP proxy do not apply. No commit identity is set here, git never prompts for credentials, and `GH_TOKEN`, `GITHUB_TOKEN` and `GITEA_TOKEN` are removed.
 
 A file in `worker-bin` or `worker-gitconfig` that dsh-superagent did not write stops setup. A Ticket directory inside a git repository whose own configuration adds credentials fails the Ticket.
 
 ## Try it
 
-From an allowed GitHub account, open an Issue or post a comment containing `@<agent login> <request>`. Within a polling interval (one minute by default), Overview should show a Ticket. The agent acknowledges the request, works in its own Session and directory, and delivers in the original conversation. For Feishu, mention the bot in a configured chat.
+From an allowed repository account, open an Issue or post a comment containing `@<agent login> <request>`. Within a polling interval (one minute by default), Overview should show a Ticket. The agent acknowledges the request, works in its own Session and directory, and delivers in the original conversation. For Feishu, mention the bot in a configured chat.
 
 ## Upgrade
 
