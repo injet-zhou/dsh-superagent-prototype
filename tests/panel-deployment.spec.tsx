@@ -85,7 +85,7 @@ it('renders the Deployment page with the derived accounts in the Plugin Manager,
   for (const fact of ['acme/widgets', '@agent-bot', 'Widgets Bot', '账号在 dsh-superagent 面板的来源设置里修改。']) expect(text()).toContain(fact)
   server.setup = { ...server.setup, problem: problemOf('repositoryUnset'), accounts: null }
   await render('page')
-  expect(text()).toContain('部署检查未通过：GitHub 来源没有设置监听的仓库。')
+  expect(text()).toContain('部署检查未通过：仓库来源没有设置监听的仓库。')
   expect(field<HTMLInputElement>(zh.deploymentPromptMaxChars).disabled).toBe(false)
   server.down = true
   await render('page')

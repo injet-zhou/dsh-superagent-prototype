@@ -22,7 +22,7 @@ export async function sendGithub(host: Pick<SourceContext, 'commands'>, message:
   if (!number) throw new Error('Missing GitHub reply target')
   try {
     // Retained trigger URLs also route replies queued before thread-aware delivery.
-    const address = githubAddress(message.channel.address.url ?? '', repository)
+    const address = githubAddress(message.channel.address.url ?? '', repository, github.baseUrl)
     let rootId: number | undefined
     if (address?.pr && address.discussion && address.number === number) {
       // Fall back to a top-level PR comment if the target inline review comment was deleted.
@@ -45,8 +45,11 @@ export async function sendGithub(host: Pick<SourceContext, 'commands'>, message:
 }
 export function githubLink(address: Record<string, string>, links: ChannelLinks): ChannelLink {
   const number = address.number ?? ''
-  const review = !!links.repository && !!githubAddress(address.url ?? '', links.repository)?.discussion
-  return { url: address.url ?? (links.repository ? githubPage(links.repository, Number(number)) : ''),
+  const review = !!links.repository && !!githubAddress(address.url ?? '', links.repository, links.github?.baseUrl)?.discussion
+  if (links.github?.provider === 'gitea') return {
+    url: address.url ?? (links.repository ? githubPage(links.repository, Number(number), false, links.github.baseUrl) : ''),
+    label: { zh: `Gitea #${number}`, en: `Gitea #${number}` } }
+  return { url: address.url ?? (links.repository ? githubPage(links.repository, Number(number), false, links.github?.baseUrl) : ''),
     label: review ? { zh: `GitHub #${number} 的 review 讨论`, en: `Review discussion on GitHub #${number}` }
       : { zh: `GitHub #${number}`, en: `GitHub #${number}` } }
 }

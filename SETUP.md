@@ -2,6 +2,8 @@
 
 Instructions for an agent that sets up dsh-superagent with its operator. If you are a person, ask your coding agent to read this file and follow it.
 
+The repository provider can be GitHub or Gitea; workers remain DSH Sessions. For Gitea, use the Agent Gitea account section of `docs/006-deployment.md` instead of GitHub login and account commands below. Use a fresh state directory for a different provider or repository. Keep the repository Source id `github` and Policy namespace `policy.sources.github`, choosing `provider: gitea` with its `baseUrl`, `repository` and account-isolated CLI wrapper. The Gitea token stays in the private CLI configuration file, never in chat or panel settings.
+
 ## How to run the setup
 
 The setup follows [docs/000-philosophy.md](docs/000-philosophy.md): it takes as little of the operator's attention as possible.
@@ -34,8 +36,8 @@ Ask in this order, one per message, following the flow of work in [docs/001-doma
 
 **Sources: where requests come from.**
 
-1. **Sources.** Should the agent take requests from GitHub only, or also from Feishu chats? [GitHub only, unless the team works in Feishu.]
-2. **Repository.** Which github.com repository should the agent work on, as `owner/name`?
+1. **Sources.** Should the agent use GitHub or Gitea, and also take requests from Feishu chats? [GitHub without Feishu, unless the team uses Gitea or works in Feishu.]
+2. **Repository.** Which repository should the agent work on, as `owner/name`? With Gitea, also collect the instance root URL, including any reverse-proxy subpath.
 3. **Agent account.** Which GitHub user account will the agent act as? [A dedicated account, never the operator's own: everything the agent writes appears under this name.] It may not exist yet; creating it is an operator step.
 4. With Feishu: **which chats,** by name? The agent looks up their ids after the bot is configured.
 

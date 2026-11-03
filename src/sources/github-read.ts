@@ -10,17 +10,19 @@ const StatusSchema = z.looseObject({ context: z.string(), state: z.string() })
 type Check = Pick<z.infer<typeof CheckSchema>, 'name' | 'status' | 'conclusion'>
 type Status = Pick<z.infer<typeof StatusSchema>, 'context' | 'state'>
 
-export interface CiSnapshot { head: string; checks: Check[]; statuses: Status[] }
+export interface CiSnapshot { head: string; checks: Check[]; statuses: Status[]; available?: boolean }
 /** Check conclusions and status states that count as failures; `success`, `neutral`, `skipped`, and `stale` do not. */
 const FAILING = new Set(['failure', 'timed_out', 'cancelled', 'action_required', 'startup_failure', 'error'])
-export function ciCounts(snapshot: CiSnapshot): { failed: number; running: number } {
+export function ciCounts(snapshot: CiSnapshot): { failed: number; running: number; unavailable?: boolean } {
   const statuses = snapshot.statuses ?? []
   return {
+    ...snapshot.available === false ? { unavailable: true } : {},
     failed: snapshot.checks.filter(check => FAILING.has(check.conclusion ?? '')).length + statuses.filter(status => FAILING.has(status.state)).length,
     running: snapshot.checks.filter(check => check.status !== 'completed').length + statuses.filter(status => status.state === 'pending').length,
   }
 }
 export function ciSummary(snapshot: CiSnapshot, where: string, read: string): string {
+  if (snapshot.available === false) return `CI unavailable on ${where} at ${snapshot.head.slice(0, 7)}: no commit statuses have been published. Read ${read}.`
   const checks = snapshot.checks.map(check => ({ name: check.name, failed: FAILING.has(check.conclusion ?? ''), running: check.status !== 'completed' }))
   const statuses = (snapshot.statuses ?? []).map(status => ({ name: status.context, failed: FAILING.has(status.state), running: status.state === 'pending' }))
   const results = [...checks, ...statuses]
@@ -38,7 +40,8 @@ export function ciFailures(snapshot: CiSnapshot): string[] {
   return [...snapshot.checks.filter(check => FAILING.has(check.conclusion ?? '')).map(check => check.name),
     ...(snapshot.statuses ?? []).filter(status => FAILING.has(status.state)).map(status => status.context)].sort()
 }
-export function ciFact(counts: { failed: number; running: number }): ThreadFact {
+export function ciFact(counts: { failed: number; running: number; unavailable?: boolean }): ThreadFact {
+  if (counts.unavailable) return { label: 'CI', value: { zh: '暂无提交状态', en: 'No commit statuses' } }
   if (counts.failed) return { label: { zh: 'CI 失败', en: 'CI failed' }, value: String(counts.failed), problem: true }
   if (counts.running) return { label: { zh: 'CI 进行中', en: 'CI running' }, value: String(counts.running) }
   return { label: 'CI', value: { zh: '通过', en: 'passed' } }
@@ -59,22 +62,26 @@ export async function readRepositoryPath(commands: Commands, path: string, kind:
 /** Reads check runs and commit statuses for a commit without emitting a trigger. */
 export async function pullChecks(commands: Commands, head: string, tally?: Tally): Promise<CiSnapshot> {
   const page = z.looseObject({ check_runs: z.array(z.unknown()) })
-  const pages = await commands.api(z.array(page), `commits/${head}/check-runs?per_page=100`, '--paginate', '--slurp')
+  const pages = commands.deployment.github.provider === 'gitea' ? []
+    : await commands.api(z.array(page), `commits/${head}/check-runs?per_page=100`, '--paginate', '--slurp')
   const runs = validItems(CheckSchema, pages.flatMap(page => page.check_runs), tally)
   const statuses = await commands.pages(StatusSchema, `commits/${head}/statuses?per_page=100`, tally)
   const latest = new Map<string, string>()
   for (const status of statuses) if (!latest.has(status.context)) latest.set(status.context, status.state)
   const checks = runs.map(({ name, status, conclusion }) => ({ name, status, conclusion }))
-  return { head, checks: checks.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
+  return { head, ...commands.deployment.github.provider === 'gitea' && !statuses.length ? { available: false } : {},
+    checks: checks.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
     statuses: [...latest].map(([context, state]) => ({ context, state })).sort((a, b) => a.context.localeCompare(b.context)) }
 }
 
 /** Formats a GitHub comment, review, or issue as a model-facing ContextMessage, marking bots and GitHub Apps because bot messages never authorize work. */
 function githubMessage(item: GithubComment, text: string, id: string): ContextMessage {
   const line = item.line ?? item.original_line
+  const position = item.diff_position ?? item.original_diff_position
   return { id, from: item.user.login, at: item.created_at ?? item.submitted_at ?? '', text,
     ...!isHumanLogin(item.user) ? { bot: true } : {}, ...item.html_url ? { url: item.html_url } : {},
-    ...item.path ? { path: item.path, ...line != null ? { line } : {} } : {} }
+    ...item.path ? { path: item.path, ...line != null ? { line } : {},
+      ...position != null ? { diff_position: position } : {} } : {} }
 }
 const reviewText = (review: GithubComment): string =>
   [review.state && review.state !== 'COMMENTED' ? review.state : '', review.body ?? ''].filter(Boolean).join('\n\n')
