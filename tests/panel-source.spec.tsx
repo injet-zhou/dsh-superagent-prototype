@@ -7,6 +7,16 @@ import { usePanel, mount, remount, settle, all, find, tab, click, type, text, fi
 import { server, problemOf, droppedReply } from './fixtures/panel-server.ts'
 
 usePanel()
+it('points an invalid Gitea instance URL at Source settings instead of reporting an account login failure', async () => {
+  server.setup = { ...server.setup, problem: problemOf('baseUrlInvalid') }
+  await mount()
+  await click(zh['tab.source'])
+  expect(text()).toContain(zh['setup.baseUrlInvalid'])
+  expect(text()).not.toContain(zh['setup.agentCliSignedOut'])
+  await click(zh.sourceOpenSettings)
+  expect(field<HTMLInputElement>('Gitea 实例地址')).toBeDefined()
+})
+
 it('saves a Gitea provider, instance and isolated CLI in the existing repository Source', async () => {
   await mount()
   await click(tab(zh['tab.settings']))

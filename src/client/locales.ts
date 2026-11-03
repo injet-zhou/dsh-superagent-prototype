@@ -726,6 +726,7 @@ const TEXT = {
   'userError.nothingToSync': ['{source} 来源上的策略没有指定从哪里同步，或者这个来源已关闭或在等待部署检查。', USER_ERRORS.nothingToSync[1]],
   // Setup problems and health codes; English reuses the host's own text read by the log and main Session
   'setup.repositoryUnset': ['仓库来源没有设置监听的仓库。', SETUP_PROBLEMS.repositoryUnset[1]],
+  'setup.baseUrlInvalid': ['请填写有效的 Gitea 实例根地址：使用 HTTPS（回环地址可用 HTTP），不含 /api/v1、账号密码、查询参数或片段。', SETUP_PROBLEMS.baseUrlInvalid[1]],
   'setup.foreignFile': ['{file} 不是 dsh-superagent 写入的文件；移走它，或换一个状态目录。', SETUP_PROBLEMS.foreignFile[1]],
   'setup.gitTooOld': ['git 没有读取 dsh-superagent 为代码托管平台写的凭据配置；需要 git 2.32 或更新版本。', SETUP_PROBLEMS.gitTooOld[1]],
   'setup.environmentFailed': ['准备智能体的运行环境失败。', SETUP_PROBLEMS.environmentFailed[1]],

@@ -101,6 +101,7 @@ export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' |
   const run = (program: string): string => `${withoutShims}\nexec ${shellQuote(program)} "$@"`
   const fail = (message: string): string => `echo ${shellQuote(message)} >&2\nexit 1`
   const gitea = github.provider === 'gitea'
+  const giteaUrl = gitea ? new URL(github.baseUrl!) : undefined
   await shim('gh', gitea ? fail('This installation uses Gitea; use gitea api, not gh.') : run(github.cli))
   await shim('gitea', gitea ? run(github.cli) : fail('This installation uses GitHub; use gh.'))
   await shim('lark-cli', feishu ? run(feishu.cli) : fail('lark-cli is unavailable: this installation has no Feishu bot.'))
@@ -115,7 +116,13 @@ export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' |
     '[credential]', '\thelper =',
     `[credential ${gitQuote(credentialScope(deployment))}]`, `\thelper = ${gitQuote(credentialHelper(github.cli, gitea ? repository : undefined))}`,
     ...gitea ? ['\tuseHttpPath = true'] : [],
-    ...gitea ? [] : ['[url "https://github.com/"]', '\tinsteadOf = git@github.com:', '\tinsteadOf = ssh://git@github.com/'],
+    ...giteaUrl ? [
+      // SSH repository paths do not contain the HTTP reverse-proxy prefix; retain it in the replacement URL.
+      `[url ${gitQuote(`${github.baseUrl}/`)}]`, `\tinsteadOf = git@${giteaUrl.hostname}:`,
+      `\tinsteadOf = ssh://git@${giteaUrl.hostname}/`,
+      // Unknown usernames/hosts and custom SSH ports must fail rather than use the operator's SSH keys.
+      '[protocol "ssh"]', '\tallow = never',
+    ] : ['[url "https://github.com/"]', '\tinsteadOf = git@github.com:', '\tinsteadOf = ssh://git@github.com/'],
     // Include Git LFS filters because the operator's global gitconfig (which usually holds them) is ignored.
     '[filter "lfs"]', '\tclean = git-lfs clean -- %f', '\tsmudge = git-lfs smudge -- %f', '\tprocess = git-lfs filter-process', '\trequired = true',
   ].join('\n') + '\n')

@@ -1,6 +1,6 @@
 /** Gitea integration through the real Python CLI, HTTP pagination, Source intake, replies and PR lifecycle. */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
@@ -11,7 +11,7 @@ import { resolveDeployment, repositoryBaseUrl, type Deployment } from '../src/de
 import { agentVariables, workerBin, workerGitConfig, writeEnvironment } from '../src/infra/environment.ts'
 import { testMachine } from './fixtures/deployment.ts'
 import { githubKind, pollRound } from '../src/sources/github.ts'
-import { githubAddress, githubPage, githubChannel, CommentSchema } from '../src/sources/github-trigger.ts'
+import { githubAddress, githubPage, githubChannel, commentTrigger, CommentSchema } from '../src/sources/github-trigger.ts'
 import { sendGithub, githubLink } from '../src/sources/github-channel.ts'
 import { readPull, claimPull, observePull, pullEndNotices } from '../src/sources/github-pull.ts'
 import { ciFact, ciCounts, ciSummary, pullChecks, readGithub, readRepositoryPath } from '../src/sources/github-read.ts'
@@ -76,6 +76,7 @@ beforeEach(async () => {
     { provider: 'gitea', baseUrl, repository: 'acme/widgets', cli }, argv => probe.run(argv[0]!, argv.slice(1)))
 })
 afterEach(async () => {
+  vi.restoreAllMocks()
   await new Promise<void>((done, reject) => server.close(error => error ? reject(error) : done()))
   rmSync(directory, { recursive: true, force: true })
 })
@@ -123,8 +124,10 @@ it('resolves the Gitea identity and push access without gh, and verifies that th
 it('follows server pagination, emulates model-facing pages, and decodes repository files', async () => {
   paged('repos/acme/widgets/issues/1/comments', [1, 2, 3, 4, 5].map(comment))
   expect(await commands().pages(CommentSchema, 'issues/1/comments?per_page=100')).toHaveLength(5)
+  const before = requests.length
   const page = await commands().api(z.array(CommentSchema), 'issues/1/comments?per_page=2&page=2')
   expect(page.map(item => item.id)).toEqual([3, 4])
+  expect(requests.length - before).toBe(2)
   paged('repos/acme/widgets/issues/1/comments', [comment(1), null, comment(2)])
   const tally = { skipped: 0 }
   expect(await commands().pages(CommentSchema, 'issues/1/comments', tally)).toHaveLength(2)
@@ -137,7 +140,15 @@ it('reads Gitea review decisions, review comments and commit statuses without Gi
   route('GET', 'repos/acme/widgets/pulls/2/reviews', [{ id: 5, state: 'REQUEST_CHANGES', body: '', user: { login: 'alice' }, submitted_at: at() }])
   route('GET', 'repos/acme/widgets/pulls/2/reviews/5/comments', [{ ...comment(9), path: 'src/index.ts', position: 4 }])
   expect(await readGithub(commands(), 'github/pulls/2/reviews/1')).toMatchObject({ messages: [{ text: 'CHANGES_REQUESTED' }] })
-  expect(await readGithub(commands(), 'github/pulls/2/comments/1')).toMatchObject({ messages: [{ path: 'src/index.ts', line: 4 }] })
+  const read = await readGithub(commands(), 'github/pulls/2/comments/1') as { messages: Record<string, unknown>[] }
+  expect(read).toMatchObject({ messages: [{ path: 'src/index.ts', diff_position: 4 }] })
+  expect(read.messages[0]).not.toHaveProperty('line')
+  const [original] = await commands().pages(CommentSchema, 'pulls/2/comments')
+  const trigger = commentTrigger(original!, { number: 2, isPr: true }, 'inline', deployment.github.login)
+  expect(trigger.text).toContain('Diff position 4 (not a file line number)')
+  expect(trigger.text).not.toContain('src/index.ts:4')
+  route('GET', 'repos/acme/widgets/pulls/2/reviews/5/comments', [{ ...comment(9), path: 'src/index.ts', position: 4, line: 21 }])
+  expect(await readGithub(commands(), 'github/pulls/2/comments/1')).toMatchObject({ messages: [{ line: 21, diff_position: 4 }] })
   route('GET', 'repos/acme/widgets/commits/abc1234/statuses', [{ context: 'build', state: 'failure' }])
   expect(ciCounts(await pullChecks(commands(), 'abc1234'))).toEqual({ failed: 1, running: 0 })
   route('GET', 'repos/acme/widgets/commits/abc1234/statuses', [])
@@ -145,6 +156,130 @@ it('reads Gitea review decisions, review comments and commit statuses without Gi
   expect(ciSummary(empty, 'PR #2', 'github/pulls/2/checks')).toContain('CI unavailable')
   expect(ciFact(ciCounts(empty)).value).toEqual({ zh: '暂无提交状态', en: 'No commit statuses' })
   expect(requests.some(item => item.url.pathname.includes('check-runs'))).toBe(false)
+})
+
+it('reports invalid instance URLs before probing the CLI, permits HTTP only on loopback, and rejects API roots', async () => {
+  const probe = vi.fn()
+  for (const value of ['', 'not a URL', 'http://git.example.test', 'http://localhost.evil.test', 'https://git.example.test/api/v1/',
+    'https://user:password@git.example.test', 'https://git.example.test/?token=secret']) {
+    await expect(resolveDeployment(testMachine(), { provider: 'gitea', baseUrl: value }, probe)).rejects.toMatchObject({ code: 'baseUrlInvalid' })
+    const badConfig = join(directory, 'invalid.json')
+    writeFileSync(badConfig, JSON.stringify({ baseUrl: value, token: 'test-agent-credential' }))
+    await expect(commands().run('python3', [resolve('scripts/dsh-gitea'), '--config', badConfig, 'api', 'user'])).rejects.toThrow()
+  }
+  expect(probe).not.toHaveBeenCalled()
+  expect(repositoryBaseUrl('https://git.example.test/code/')).toBe('https://git.example.test/code')
+  for (const value of ['http://127.0.0.1:3000', 'http://127.0.0.2', 'http://localhost', 'http://[::1]:3000']) {
+    expect(repositoryBaseUrl(value)).toBe(value)
+  }
+})
+
+it('rewrites Gitea SSH origins through the configured proxy prefix and refuses unrecognized SSH transports', async () => {
+  await writeEnvironment(deployment, [])
+  const marker = join(directory, 'operator-ssh-used')
+  const ssh = join(directory, 'operator-ssh')
+  writeFileSync(ssh, `#!/bin/sh\ntouch '${marker}'\nexit 1\n`, { mode: 0o755 })
+  const run = new Commands(() => deployment, { ...agentVariables(directory), GIT_SSH_COMMAND: ssh }, new AbortController().signal)
+  await run.git(['init', '-q', 'checkout'], directory)
+  const checkout = join(directory, 'checkout')
+  const host = new URL(baseUrl).hostname
+  await run.git(['remote', 'add', 'origin', `git@${host}:acme/widgets.git`], checkout)
+  expect((await run.git(['remote', 'get-url', '--push', 'origin'], checkout)).trim()).toBe(`${baseUrl}/acme/widgets.git`)
+  await run.git(['remote', 'set-url', 'origin', `ssh://git@${host}/acme/widgets.git`], checkout)
+  expect((await run.git(['remote', 'get-url', '--push', 'origin'], checkout)).trim()).toBe(`${baseUrl}/acme/widgets.git`)
+  for (const url of [`ssh://git@${host}:2222/acme/widgets.git`, `ssh://operator@${host}/acme/widgets.git`]) {
+    await expect(run.git(['ls-remote', url], checkout)).rejects.toThrow(/transport 'ssh' not allowed/)
+  }
+  expect(existsSync(marker)).toBe(false)
+})
+
+it('batches review reads, validates cached responses with server ETags, and detects edits under unchanged PR metadata', async () => {
+  const old = new Date(Date.now() - 60_000).toISOString()
+  let version = 'v1'
+  route('GET', 'repos/acme/widgets/issues', [{ ...issue(2), updated_at: old }])
+  const conditional = (path: string, tag: () => string, body: () => unknown) => {
+    routes.set(`GET ${path}`, async (request, response) => {
+      const etag = `"${tag()}"`
+      response.setHeader('ETag', etag)
+      if (request.headers['if-none-match'] === etag) { response.statusCode = 304; return undefined }
+      return body()
+    })
+  }
+  conditional('repos/acme/widgets/pulls/2/reviews', () => 'reviews', () => [{ id: 5, comments_count: 1 }, { id: 6, comments_count: 0 }])
+  const original = comment(9)
+  conditional('repos/acme/widgets/pulls/2/reviews/5/comments', () => version,
+    () => [{ ...original, body: version, path: 'src/index.ts', position: 4 }])
+  requests = []
+  const run = commands(), spawn = vi.spyOn(Commands.prototype, 'run')
+  const path = 'pulls/comments?since=2000-01-01T00%3A00%3A00Z'
+  const first = await run.api(path, '--include')
+  expect(spawn).toHaveBeenCalledTimes(1)
+  expect(spawn.mock.calls[0]![1][0]).toBe('review-comments')
+  expect(requests).toHaveLength(3)
+  const etag = /^ETag: (.+)$/im.exec(first)![1]!.trim()
+  await expect(run.api(path, '--include', '-H', `If-None-Match: ${etag}`)).rejects.toMatchObject({ code: 304 })
+  expect(requests).toHaveLength(6)
+  version = 'v2'
+  expect(await run.api(path, '--include', '-H', `If-None-Match: ${etag}`)).toContain('v2')
+  expect(requests).toHaveLength(9)
+  await run.api(path, '--include')
+  expect(requests).toHaveLength(12)
+  // An unchanged page can acquire a next page. A 304 must not hide the new Link header.
+  routes.set('GET repos/acme/widgets/pulls/2/reviews', async (request, response, url) => {
+    if (url.searchParams.get('page') === '2') return [{ id: 7, comments_count: 1 }]
+    url.searchParams.set('page', '2')
+    response.setHeader('Link', `<${url}>; rel="next"`)
+    response.setHeader('ETag', '"reviews"')
+    if (request.headers['if-none-match'] === '"reviews"') { response.statusCode = 304; return undefined }
+    return [{ id: 5, comments_count: 1 }, { id: 6, comments_count: 0 }]
+  })
+  route('GET', 'repos/acme/widgets/pulls/2/reviews/7/comments', [{ ...comment(10), body: 'New review page' }])
+  expect(await run.api(path, '--include')).toContain('New review page')
+
+})
+
+it('keeps failed review-stream cursors when the request budget is exhausted and safely retries', async () => {
+  const old = new Date(Date.now() - 60_000).toISOString()
+  route('GET', 'repos/acme/widgets/notifications', [])
+  route('GET', 'repos/acme/widgets/issues/comments', [])
+  route('GET', 'repos/acme/widgets/issues', [2, 3].map(number => ({ ...issue(number), updated_at: old })))
+  for (const number of [2, 3]) {
+    route('GET', `repos/acme/widgets/pulls/${number}/reviews`, [{ id: number }])
+    route('GET', `repos/acme/widgets/pulls/${number}/reviews/${number}/comments`, [{ ...comment(number), path: 'src/index.ts', position: 4 }])
+  }
+  const h = host()
+  const saved = h.store.settings()
+  h.store.saveSettings({ ...saved, sources: { github: { ...saved.sources.github!, config: { ...saved.sources.github!.config, observeComments: true } } } })
+  const cursor = { since: old, started: { comments: old } }
+  h.ctx.state.set(KV.github.stream('review-comments'), cursor)
+  const original = h.ctx.commands.run.bind(h.ctx.commands)
+  const spy = vi.spyOn(Commands.prototype, 'run').mockImplementation((program, args, cwd) =>
+    original(program, args[0] === 'review-comments' ? [...args, '--max-requests', '3'] : args, cwd))
+  try {
+    await expect(pollRound(h.ctx)).rejects.toThrow('request budget exceeded')
+    expect(h.ctx.state.get(KV.github.stream('review-comments'))).toEqual(cursor)
+    spy.mockRestore()
+    await pollRound(h.ctx)
+    expect(h.received.filter(trigger => trigger.meta.kind === 'inline')).toHaveLength(2)
+    expect(h.ctx.state.get(KV.github.stream('review-comments'))?.since).not.toBe(old)
+  } finally { spy.mockRestore(); h.store.close() }
+})
+
+it('cancels the entire Gitea API operation and polling round when their deadlines expire', async () => {
+  const timeout = AbortSignal.timeout.bind(AbortSignal)
+  const spy = vi.spyOn(AbortSignal, 'timeout').mockImplementation(ms => timeout(ms === 30_000 ? 100 : ms))
+  routes.set('GET repos/acme/widgets/issues/1/comments', async () => { await new Promise(done => setTimeout(done, 500)); return [] })
+  try { await expect(commands().pages(CommentSchema, 'issues/1/comments')).rejects.toMatchObject({ name: 'AbortError' }) }
+  finally { spy.mockRestore() }
+  const h = host()
+  const since = new Date(Date.now() - 60_000).toISOString()
+  h.ctx.state.set(KV.github.since, since)
+  routes.set('GET repos/acme/widgets/notifications', async () => { await new Promise(done => setTimeout(done, 500)); return [] })
+  const round = vi.spyOn(AbortSignal, 'timeout').mockImplementation(ms => timeout(ms === 45_000 ? 100 : ms))
+  try {
+    await expect(pollRound(h.ctx)).rejects.toThrow('polling round exceeded 45 seconds')
+    expect(h.ctx.state.get(KV.github.since)).toBe(since)
+  } finally { round.mockRestore(); h.store.close() }
 })
 
 it('intakes an allowed mention once, binds its Gitea PR, and ends the ticket when it merges', async () => {

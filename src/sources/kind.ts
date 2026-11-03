@@ -57,7 +57,7 @@ export interface SourceChannel<C> {
 /** Normalized message returned by thread context readers; `bot` marks a non-human sender whose message can never authorize work on its own (at most an inferred candidate). */
 export interface ContextMessage {
   id: string; from: string; at: string; text: string
-  bot?: true; deleted?: true; reply_to?: string; url?: string; path?: string; line?: number
+  bot?: true; deleted?: true; reply_to?: string; url?: string; path?: string; line?: number; diff_position?: number
 }
 export type ContextPartName = 'thread' | 'root' | 'parent'
 export interface ContextPart { messages: ContextMessage[]; next?: string | undefined; body: Record<string, unknown>; status?: string }

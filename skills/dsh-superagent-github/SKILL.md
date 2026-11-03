@@ -21,7 +21,7 @@ Push the ticket branch with ordinary `git` to the configured HTTPS origin, then 
 Gitea PR links use `<instance>/<owner>/<repo>/pulls/<number>`. Preserve the API's returned `html_url` rather than constructing a GitHub URL.
 Post conversation replies with `gitea api "repos/$repo/issues/<number>/comments" --method POST -f 'body=<text>'`.
 Close a superseded PR with `gitea api "repos/$repo/pulls/<number>" --method PATCH -F 'state="closed"'`, leaving the required explanation first.
-Review comments are read from `pulls/<number>/reviews/<review-id>/comments`. This adapter replies on the PR conversation with the file and comment reference; do not use GitHub's inline-reply endpoint or `resolveReviewThread` GraphQL.
+Review comments are read from `pulls/<number>/reviews/<review-id>/comments`. A diff_position is a position in the diff, not a file line number; use line only when returned explicitly, and read the file or diff before editing. This adapter replies on the PR conversation with the file and comment reference; do not use GitHub's inline-reply endpoint or `resolveReviewThread` GraphQL.
 Resolve review comments only through a documented endpoint supported by this instance, otherwise report that they require manual resolution.
 Commit as the identity in Delivery requirements or the configured account and `DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL`; do not generate github.com noreply addresses for Gitea reviewers.
 Automatic reviewer coauthor rewriting and GitHub auto-merge commands in Delivery requirements apply only to GitHub. On Gitea, leave merging to a person unless the operator supplied explicit Gitea-specific instructions.

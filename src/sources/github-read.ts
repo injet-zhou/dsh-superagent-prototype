@@ -77,9 +77,11 @@ export async function pullChecks(commands: Commands, head: string, tally?: Tally
 /** Formats a GitHub comment, review, or issue as a model-facing ContextMessage, marking bots and GitHub Apps because bot messages never authorize work. */
 function githubMessage(item: GithubComment, text: string, id: string): ContextMessage {
   const line = item.line ?? item.original_line
+  const position = item.diff_position ?? item.original_diff_position
   return { id, from: item.user.login, at: item.created_at ?? item.submitted_at ?? '', text,
     ...!isHumanLogin(item.user) ? { bot: true } : {}, ...item.html_url ? { url: item.html_url } : {},
-    ...item.path ? { path: item.path, ...line != null ? { line } : {} } : {} }
+    ...item.path ? { path: item.path, ...line != null ? { line } : {},
+      ...position != null ? { diff_position: position } : {} } : {} }
 }
 const reviewText = (review: GithubComment): string =>
   [review.state && review.state !== 'COMMENTED' ? review.state : '', review.body ?? ''].filter(Boolean).join('\n\n')

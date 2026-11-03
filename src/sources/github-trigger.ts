@@ -38,6 +38,7 @@ export const CommentSchema = z.looseObject({
   created_at: z.string().nullish(), updated_at: z.string().nullish(), submitted_at: z.string().nullish(),
   state: z.string().nullish(), commit_id: z.string().nullish(),
   path: z.string().nullish(), line: z.number().nullish(), original_line: z.number().nullish(), diff_hunk: z.string().nullish(),
+  diff_position: z.number().nullish(), original_diff_position: z.number().nullish(),
   in_reply_to_id: z.number().nullish(),
 })
 export type GithubComment = z.infer<typeof CommentSchema>
@@ -58,8 +59,11 @@ export const isHumanLogin = (user: { login: string; type?: string }): boolean =>
 /** Formats an inline review comment's file:line and the trailing lines of its diff hunk, which GitHub ends at the commented line. */
 export function reviewPlace(comment: GithubComment): string {
   const line = comment.line ?? comment.original_line
+  const position = comment.diff_position ?? comment.original_diff_position
   const hunk = (comment.diff_hunk ?? '').split('\n').slice(-3).join('\n')
-  return [`${comment.path}${line != null ? `:${line}` : ''}`, hunk].filter(Boolean).join('\n')
+  const place = line != null ? `${comment.path}:${line}` : comment.path
+  const diff = line == null && position != null ? `Diff position ${position} (not a file line number)` : ''
+  return [place, diff, hunk].filter(Boolean).join('\n')
 }
 function commentText(comment: GithubComment, kind: 'conversation' | 'inline' | 'review'): string {
   const decided = kind === 'review' && comment.state && comment.state !== 'COMMENTED'

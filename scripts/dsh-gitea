@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """Account-isolated Gitea REST CLI and Git credential helper (Python 3.8+, no dependencies)."""
 import argparse
+import hashlib
+import ipaddress
 import json
 import os
+import re
 import sys
+import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -21,6 +26,17 @@ def instance_url(value):
     if (url.scheme not in ("http", "https") or not url.hostname or url.username
             or url.password or url.query or url.fragment):
         raise ValueError("config baseUrl must be an HTTP(S) instance root")
+    try:
+        loopback = ipaddress.ip_address(url.hostname).is_loopback
+    except ValueError:
+        loopback = url.hostname.lower() == "localhost"
+    if url.scheme != "https" and not loopback:
+        raise ValueError("Gitea requires HTTPS; HTTP is allowed only on loopback hosts")
+    path = urllib.parse.unquote(url.path)
+    if path.rstrip("/").lower().endswith("/api/v1"):
+        raise ValueError("Use the Gitea instance root without /api/v1")
+    if re.search(r"%2f|%5c|%2e", url.path, re.I):
+        raise ValueError("Gitea instance root has an invalid path")
     return value.rstrip("/")
 
 
@@ -32,22 +48,167 @@ def api_url(base, path):
     return base + "/api/v1/" + path
 
 
+def cache_response(file, value):
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=os.path.dirname(file), delete=False) as stream:
+            temporary = stream.name
+            json.dump(value, stream)
+        os.replace(temporary, file)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def trim_cache(directory):
+    if not directory or not os.path.isdir(directory):
+        return
+    files = []
+    for name in os.listdir(directory):
+        if name.endswith('.json'):
+            path = os.path.join(directory, name)
+            try:
+                files.append((os.path.getmtime(path), path))
+            except FileNotFoundError:
+                pass
+    for _, file in sorted(files)[:-512]:
+        try:
+            os.unlink(file)
+        except FileNotFoundError:
+            pass
+
+
 def request(config, url, method="GET", data=None):
+    remaining = config["_deadline"] - time.monotonic()
+    if remaining <= 0:
+        raise ValueError("Gitea operation deadline exceeded")
+    if config["_requests"] <= 0:
+        raise ValueError("Gitea operation request budget exceeded")
+    config["_requests"] -= 1
     headers = {"Authorization": "token " + config["token"], "Accept": "application/json"}
+    cached, cache_file = None, None
+    if method == "GET" and config.get("_cache_dir"):
+        cache_file = os.path.join(config["_cache_dir"], hashlib.sha256(url.encode()).hexdigest() + ".json")
+        try:
+            with open(cache_file, encoding="utf-8") as stream:
+                value = json.load(stream)
+            if (isinstance(value, dict) and isinstance(value.get("etag"), str) and not re.search(r"[\r\n]", value["etag"])
+                    and isinstance(value.get("links"), str) and "body" in value):
+                cached = value
+                headers["If-None-Match"] = cached["etag"]
+        except (OSError, ValueError):
+            pass
     if data is not None:
         headers["Content-Type"] = "application/json"
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.build_opener(NoRedirect()).open(req, timeout=60) as response:
+        with urllib.request.build_opener(NoRedirect()).open(req, timeout=min(60, remaining)) as response:
             body = response.read(16 * 1024 * 1024 + 1)
             if len(body) > 16 * 1024 * 1024:
                 raise ValueError("Gitea response exceeded 16 MiB")
-            return json.loads(body) if body else None, response.headers
+            value = json.loads(body) if body else None
+            etag = response.headers.get("ETag")
+            if cache_file and etag:
+                cache_response(cache_file, {"etag": etag, "body": value, "links": response.headers.get("Link", "")})
+            elif cache_file and cached:
+                try:
+                    os.unlink(cache_file)
+                except FileNotFoundError:
+                    pass
+            return value, response.headers
     except urllib.error.HTTPError as error:
+        if error.code == 304 and cached:
+            # A 304 can update pagination metadata even when this page's body is unchanged.
+            links = error.headers.get("Link", cached["links"])
+            if links != cached["links"]:
+                cached["links"] = links
+                cache_response(cache_file, cached)
+            return cached["body"], {"Link": links, "ETag": cached["etag"]}
         # Do not echo request bodies, headers, remote error text, or the token.
         raise ValueError("Gitea API failed (HTTP %s)" % error.code) from None
     except urllib.error.URLError:
         raise ValueError("Gitea connection failed") from None
+
+
+def read_pages(config, path, method="GET", data=None, paginate=True, offset=0, max_items=None):
+    """Follow server pagination, stopping as soon as a requested model-facing window is full."""
+    url = api_url(config["baseUrl"], path)
+    pages, visited = [], set()
+    collected = 0
+    while True:
+        if url in visited:
+            raise ValueError("Gitea pagination did not finish")
+        visited.add(url)
+        result, headers = request(config, url, method, data)
+        if paginate:
+            if not isinstance(result, list):
+                raise ValueError("pagination requires an array response")
+            skipped = min(offset, len(result))
+            offset -= skipped
+            result = result[skipped:]
+            if max_items is not None:
+                result = result[:max_items - collected]
+            collected += len(result)
+        pages.append(result)
+        if not paginate or (max_items is not None and collected >= max_items):
+            break
+        next_url = None
+        for link in headers.get("Link", "").split(","):
+            if 'rel="next"' in link:
+                next_url = urllib.parse.urljoin(url, link.split("<", 1)[1].split(">", 1)[0])
+        if not next_url:
+            break
+        prefix = config["baseUrl"] + "/api/v1/"
+        if not next_url.startswith(prefix):
+            raise ValueError("Gitea pagination left the configured API")
+        api_url(config["baseUrl"], next_url[len(prefix):])
+        url = next_url
+    return pages
+
+
+def listed(config, path):
+    return [item for page in read_pages(config, path) for item in page if isinstance(item, dict)]
+
+
+def review_comments(config, args):
+    """Fetch a review graph in one process, using only server-validated conditional response caches."""
+    if not re.fullmatch(r"repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.path):
+        raise ValueError("Review comments require a repository path")
+
+    def comments_of(number, offset=0, max_items=None):
+        comments = []
+        for review in listed(config, args.path + "/pulls/%s/reviews" % number):
+            if not isinstance(review.get("id"), int) or review.get("comments_count") == 0:
+                continue
+            path = args.path + "/pulls/%s/reviews/%s/comments" % (number, review["id"])
+            wanted = offset + max_items - len(comments) if max_items is not None else None
+            items = [item for page in read_pages(config, path, max_items=wanted) for item in page]
+            skipped = min(offset, len(items))
+            offset -= skipped
+            for comment in items[skipped:]:
+                if not isinstance(comment, dict):
+                    continue
+                comment["pull_request_url"] = api_url(config["baseUrl"], args.path + "/pulls/%s" % number)
+                comments.append(comment)
+            if max_items is not None and len(comments) >= max_items:
+                break
+        return comments
+
+    if args.cache_dir:
+        os.makedirs(args.cache_dir, mode=0o700, exist_ok=True)
+        config["_cache_dir"] = args.cache_dir
+        trim_cache(args.cache_dir)
+    if args.number is not None:
+        return comments_of(args.number, args.offset, args.max_items)
+    params = {"state": "all", "type": "pulls", "sort": "recentupdate", "limit": "50"}
+    if args.since:
+        params["since"] = args.since
+    pulls = listed(config, args.path + "/issues?" + urllib.parse.urlencode(params))
+    comments = []
+    for pull in pulls:
+        if isinstance(pull.get("number"), int):
+            comments.extend(comments_of(pull["number"]))
+    return comments
 
 
 def api(config, args):
@@ -76,32 +237,8 @@ def api(config, args):
     method = args.method or ("POST" if data is not None else "GET")
     if args.paginate and method != "GET":
         raise ValueError("pagination is only supported for GET")
-    url = api_url(config["baseUrl"], args.path)
-    pages = []
-    visited = set()
-    while True:
-        if url in visited or len(visited) >= 1000:
-            raise ValueError("Gitea pagination did not finish")
-        visited.add(url)
-        result, headers = request(config, url, method, json.dumps(data).encode() if data is not None else None)
-        pages.append(result)
-        if not args.paginate:
-            break
-        if not isinstance(result, list):
-            raise ValueError("pagination requires an array response")
-        # Follow the server's Link header; the server can cap a requested page size.
-        next_url = None
-        for link in headers.get("Link", "").split(","):
-            if 'rel="next"' in link:
-                next_url = urllib.parse.urljoin(url, link.split("<", 1)[1].split(">", 1)[0])
-        if not next_url:
-            break
-        prefix = config["baseUrl"] + "/api/v1/"
-        if not next_url.startswith(prefix):
-            raise ValueError("Gitea pagination left the configured API")
-        # Validate paths even when they came from a remote response.
-        api_url(config["baseUrl"], next_url[len(prefix):])
-        url = next_url
+    pages = read_pages(config, args.path, method, json.dumps(data).encode() if data is not None else None,
+                       args.paginate, args.offset, args.max_items)
     result = pages if args.slurp else ([item for page in pages for item in page] if args.paginate else pages[0])
     print(json.dumps(result, ensure_ascii=False))
 
@@ -138,6 +275,18 @@ def main():
     rest.add_argument("--input")
     rest.add_argument("--paginate", action="store_true")
     rest.add_argument("--slurp", action="store_true")
+    rest.add_argument("--offset", type=int, default=0)
+    rest.add_argument("--max-items", type=int)
+    reviews = commands.add_parser("review-comments", help="read review comments in one bounded operation")
+    reviews.add_argument("path")
+    reviews.add_argument("--number", type=int)
+    reviews.add_argument("--since")
+    reviews.add_argument("--cache-dir")
+    reviews.add_argument("--offset", type=int, default=0)
+    reviews.add_argument("--max-items", type=int)
+    for reader in (rest, reviews):
+        reader.add_argument("--timeout-seconds", type=float, default=30)
+        reader.add_argument("--max-requests", type=int, default=128)
     auth = commands.add_parser("auth")
     auth.add_argument("kind", choices=["git-credential"])
     auth.add_argument("--repository", required=True)
@@ -148,12 +297,23 @@ def main():
     with open(args.config, encoding="utf-8") as stream:
         config = json.load(stream)
     config["baseUrl"] = instance_url(config["baseUrl"])
+    timeout = getattr(args, "timeout_seconds", 30)
+    requests = getattr(args, "max_requests", 128)
+    if timeout <= 0 or requests <= 0 or getattr(args, "offset", 0) < 0 or (getattr(args, "max_items", None) is not None and args.max_items <= 0):
+        raise ValueError("Gitea operation budgets must be positive and offsets nonnegative")
+    config["_deadline"] = time.monotonic() + timeout
+    config["_requests"] = requests
     if not isinstance(config.get("token"), str) or not config["token"].strip() or any(ord(char) < 33 or ord(char) > 126 for char in config["token"]):
         raise ValueError("Gitea configuration needs an agent token")
     if args.command == "config":
         print(json.dumps({"baseUrl": config["baseUrl"]}))
     elif args.command == "api":
         api(config, args)
+    elif args.command == "review-comments":
+        try:
+            print(json.dumps(review_comments(config, args), ensure_ascii=False))
+        finally:
+            trim_cache(args.cache_dir)
     else:
         credential(config, args)
 

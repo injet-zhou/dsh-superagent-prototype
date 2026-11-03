@@ -288,6 +288,19 @@ async function pollBranchCi(ctx: SourceContext, round: Round): Promise<void> {
  * @returns the polling interval requested by GitHub, in seconds.
  */
 export async function pollRound(ctx: SourceContext, signal?: AbortSignal): Promise<number> {
+  if (ctx.deployment.github.provider !== 'gitea') return runPollRound(ctx, signal)
+  const deadline = AbortSignal.timeout(45_000)
+  const bounded = AbortSignal.any([deadline, ...signal ? [signal] : []])
+  try {
+    const result = await runPollRound(ctx, bounded)
+    if (deadline.aborted && !signal?.aborted) throw new Error('Gitea polling round exceeded 45 seconds; unread work will retry')
+    return result
+  } catch (error) {
+    if (deadline.aborted && !signal?.aborted) throw new Error('Gitea polling round exceeded 45 seconds; unread work will retry', { cause: error })
+    throw error
+  }
+}
+async function runPollRound(ctx: SourceContext, signal?: AbortSignal): Promise<number> {
   const round = newRound(signal)
   const notified = await pollNotifications(ctx, round).then(value => ({ value }), (error: unknown) => ({ error }))
   await pollRepository(ctx, round)

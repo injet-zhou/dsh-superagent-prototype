@@ -7,6 +7,7 @@ export const SETUP_PROBLEMS = {
   gitTooOld: ['deployment', 'git does not read the repository credential configuration dsh-superagent writes; dsh-superagent needs git 2.32 or later.'],
   environmentFailed: ['deployment', 'Preparing the agent environment failed.'],
   repositoryUnset: ['github', 'The repository Source names no repository.'],
+  baseUrlInvalid: ['github', 'Set a valid Gitea instance root URL: HTTPS (or HTTP on loopback), without /api/v1, credentials, query or fragment.'],
   agentCliUnset: ['github', 'The agent repository CLI is not set.'],
   agentCliMissing: ['github', 'The agent repository CLI was not found.'],
   agentCliSignedOut: ['github', 'The agent repository CLI cannot read its account.'],

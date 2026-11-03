@@ -63,9 +63,13 @@ export interface FeishuBot { cli: string; appId: string; brand: 'feishu' | 'lark
 
 /** Validates an instance root, including a reverse-proxy subpath, without accepting credentials or query strings. */
 export function repositoryBaseUrl(value: string): string {
-  const url = new URL(value)
+  let url: URL
+  try { url = new URL(value) } catch { throw new Error('Set a valid Gitea instance root URL') }
   if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash
-    || url.pathname.split('/').some(part => /%2f|%5c|%2e/i.test(part))) throw new Error('Expected an HTTP(S) instance URL without credentials, query or fragment')
+    || url.pathname.split('/').some(part => /%2f|%5c|%2e/i.test(part))) throw new Error('Expected an instance URL without credentials, query or fragment')
+  const loopback = url.hostname === 'localhost' || url.hostname === '[::1]' || /^127\.(?:\d{1,3}\.){2}\d{1,3}$/.test(url.hostname)
+  if (url.protocol !== 'https:' && !loopback) throw new Error('Gitea requires HTTPS; HTTP is allowed only on loopback hosts')
+  if (/\/api\/v1\/?$/i.test(url.pathname)) throw new Error('Use the Gitea instance root without /api/v1')
   return url.href.replace(/\/$/, '')
 }
 
@@ -99,15 +103,18 @@ function parsed<T>(schema: z.ZodType<T>, text: string): T | undefined {
 export async function resolveDeployment(machine: Machine, github: unknown, probe: Probe, path = process.env.PATH ?? ''): Promise<Deployment> {
   const { stateDir } = machine
   const accounts = GithubAccountsSchema.parse(github ?? {})
+  let baseUrl: string | undefined
+  if (accounts.provider === 'gitea') {
+    try { baseUrl = repositoryBaseUrl(accounts.baseUrl) }
+    catch (error) { throw new SetupError('baseUrlInvalid', { output: reason(error) }) }
+  }
   const remote = accounts.repository
   if (!remote) throw new SetupError('repositoryUnset')
   if (!accounts.cli) throw new SetupError('agentCliUnset')
   let cli: string
   try { cli = executable(accounts.cli, path, workerBin(stateDir)) } catch (error) { throw new SetupError('agentCliMissing', { output: reason(error) }) }
-  if (accounts.provider === 'gitea') {
-    let baseUrl: string
+  if (baseUrl !== undefined) {
     try {
-      baseUrl = repositoryBaseUrl(accounts.baseUrl)
       const configured = parsed(z.object({ baseUrl: z.string() }), await probe([cli, 'config']))
       if (!configured || repositoryBaseUrl(configured.baseUrl) !== baseUrl) throw new Error('Gitea CLI configuration must use the same baseUrl as the Source')
     } catch (error) { throw new SetupError('agentCliSignedOut', { output: reason(error) }) }

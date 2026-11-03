@@ -86,8 +86,11 @@ export class Commands {
     if (this.deployment.github.provider === 'gitea') {
       const path = typeof schema === 'string' ? schema : rest[0] ?? ''
       this.path(path)
-      const output = await giteaApi((program, args) => this.run(program, args), this.deployment, path,
+      // A review graph can involve many HTTP requests; the deadline covers the entire API operation.
+      const bounded = this.withSignal(AbortSignal.timeout(30_000))
+      const output = await giteaApi((program, args) => bounded.run(program, args), this.deployment, path,
         typeof schema === 'string' ? rest : rest.slice(1))
+      if (output.startsWith('HTTP/1.1 304 ')) throw new CliError('Gitea API not modified (HTTP 304)', 304)
       return typeof schema === 'string' ? output : schema.parse(JSON.parse(output))
     }
     if (typeof schema === 'string') return this.run(this.deployment.github.cli, ['api', this.path(schema), ...rest])
