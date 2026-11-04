@@ -4,6 +4,7 @@ import { basename } from 'node:path'
 import { promisify } from 'node:util'
 import { z } from 'zod'
 import type { Deployment } from '../deployment.ts'
+import { DiscordApi } from './discord.ts'
 import { giteaApi } from './gitea.ts'
 
 const exec = promisify(execFile)
@@ -62,10 +63,11 @@ export class Commands {
    * @param resolved - returns the resolved deployment setup, or throws while setup is still pending.
    * @param environment - variables overriding `process.env` for every command (such as isolated git settings).
    */
-  constructor(private readonly resolved: () => Deployment, private readonly environment: Record<string, string | undefined>, private readonly signal: AbortSignal) {}
+  constructor(private readonly resolved: () => Deployment, private readonly environment: Record<string, string | undefined>, private readonly signal: AbortSignal,
+    private readonly discordClients = new Map<string, DiscordApi>()) {}
   get deployment(): Deployment { return this.resolved() }
   get repository(): string { return this.deployment.repository }
-  withSignal(signal?: AbortSignal): Commands { return signal ? new Commands(this.resolved, this.environment, AbortSignal.any([this.signal, signal])) : this }
+  withSignal(signal?: AbortSignal): Commands { return signal ? new Commands(this.resolved, this.environment, AbortSignal.any([this.signal, signal]), this.discordClients) : this }
   async run(program: string, args: string[], cwd?: string): Promise<string> {
     try {
       const { stdout } = await exec(program, args, { cwd, signal: this.signal, timeout: TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024,
@@ -130,6 +132,14 @@ export class Commands {
     const code = result.error?.code
     if (!result.ok) throw membership(new CliError(`${result.error?.message ?? 'Feishu command failed'}${code ? ` (${code})` : ''}`, code))
     return result.data
+  }
+  /** Calls Discord as the configured bot; shared rate limits survive withSignal command clones. */
+  async discord<T>(schema: z.ZodType<T>, path: string, body?: unknown): Promise<T> {
+    const bot = this.deployment.discord
+    if (!bot) throw new Error('The Discord Source has no working bot')
+    let client = this.discordClients.get(bot.tokenFile)
+    if (!client) { client = new DiscordApi(bot.tokenFile); this.discordClients.set(bot.tokenFile, client) }
+    return client.request(schema, path, this.signal, body)
   }
   /** Runs `git` on PATH using the agent's isolated git environment and credential helper. */
   async git(args: string[], cwd: string): Promise<string> { return this.run('git', args, cwd) }
