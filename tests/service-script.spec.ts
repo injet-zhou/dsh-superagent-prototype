@@ -142,6 +142,19 @@ it('reports a service whose Feishu bot setup could not check as running, and rea
   server!.close()
   expect(await run('status', '--url', await answering({ health: { runtime: { state: 'error' } } }, true))).toMatchObject({ code: 1 })
 })
+it('reports a paused Discord setup problem in status and start without classifying it as a part error', async () => {
+  processes(service(sleeper()))
+  const problem = { code: 'discordBotFailed', detail: 'The Discord bot token file is not private' }
+  const url = await answering({ health: { runtime: { state: 'ready' }, discord: { state: 'paused' } },
+    setup: { problem: null, discordProblem: problem } }, true)
+  const checked = await run('status', '--url', url)
+  expect(checked.code).toBe(0)
+  expect(JSON.parse(checked.stdout)).toMatchObject({ discord: problem, errors: {} })
+  const result = await run('start', '--url', url, '--timeout', '10')
+  expect(result).toMatchObject({ code: 0, stdout: expect.stringContaining('dsh-superagent runs without Discord: ' + problem.detail) })
+  expect(result.stdout).toContain('Discord card')
+  expect(result.stdout).not.toContain('discord reports an error')
+}, 20_000)
 it('exits 2 while a part such as a Source reports an error, which a restart does not fix, and prints what it reports', async () => {
   processes(service(sleeper()))
   const github = { health: { runtime: { state: 'ready', detail: '' }, github: { state: 'error', detail: 'bad token' } }, setup: {} }

@@ -1,13 +1,16 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { Engine, type Candidate, type OutboundMessage, type Trigger } from '../src/core/index.ts'
+import { SetupError } from '../src/setup.ts'
+import { overview } from '../src/app/views/overview.ts'
+import { executorLoad } from '../src/app/views/tickets.ts'
 import { resolveDiscordBot } from '../src/deployment.ts'
 import { Commands, CliError } from '../src/infra/commands.ts'
 import { DiscordApi, DiscordMessage } from '../src/infra/discord.ts'
-import { DiscordConfigSchema, discordKind, discordTrigger, discordTriggerId, pollDiscord, readDiscord, runDiscord, sendDiscord } from '../src/sources/discord.ts'
+import { DiscordConfigSchema, discordKind, discordTrigger, discordTriggerId, pollDiscord, readDiscord, runDiscord, sendDiscord, pruneDiscordReceipts } from '../src/sources/discord.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
 import { HealthBoard } from '../src/infra/health.ts'
 import { SettingsSchema, settingsPolicy } from '../src/policy.ts'
@@ -30,7 +33,7 @@ const message = (id: string, extra: Partial<DiscordMessage> = {}): DiscordMessag
   mentions: [{ id: BOT, username: 'Agent', bot: true }], attachments: [], ...extra })
 const deployment = () => testDeployment({ stateDir: directory, discord: { tokenFile, botId: BOT, name: 'Agent' } })
 const commands = () => new Commands(deployment, {}, signal())
-const channel = (id = CHANNEL) => ({ id, type: 0, guild_id: GUILD, name: 'work' })
+const channel = (id = CHANNEL) => ({ id, type: 0, guild_id: GUILD, name: 'work', last_message_id: null })
 
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), 'discord-source-'))
@@ -81,6 +84,15 @@ describe('Discord bot transport', () => {
     await expect(resolveDiscordBot({ tokenFile }, signal())).rejects.toThrow('HTTP 401')
     await expect(resolveDiscordBot({ tokenFile }, signal())).rejects.not.toThrow('test_bot_secret')
     expect(() => DiscordConfigSchema.parse({ tokenFile: 'relative.json' })).toThrow()
+  })
+  it('refuses POSIX token files readable by other users before sending any credentials', async () => {
+    if (process.platform === 'win32') return
+    chmodSync(tokenFile, 0o644)
+    await expect(resolveDiscordBot({ tokenFile }, signal())).rejects.toMatchObject({ code: 'discordBotFailed', values: { output: expect.stringContaining('chmod 600') } })
+    expect(fetcher).not.toHaveBeenCalled()
+    chmodSync(tokenFile, 0o400)
+    fetcher.mockResolvedValue(response({ id: BOT, username: 'Agent', bot: true }))
+    expect(await resolveDiscordBot({ tokenFile }, signal())).toMatchObject({ botId: BOT })
   })
   it('honors fractional 429 retry_after and shares rate limits across withSignal clones', async () => {
     const api = commands()
@@ -171,6 +183,112 @@ describe('Discord Source', () => {
       expect(h.board.all.discord).toMatchObject({ state: 'error', detail: expect.stringContaining('database unavailable') })
     } finally { h.store.close() }
   })
+  it('keeps unmentioned chatter out of active and ended Tickets in mentions mode, while all mode receives it', async () => {
+    const h = host()
+    try {
+      const base = 9007199254740993000n
+      const trigger = discordTrigger(message(String(base)), BOT, GUILD)!
+      h.receive(trigger)
+      h.engine.decide(trigger.id, { kind: 'accept', title: 'Fix', scope: 'small', reason: 'asked' })
+      const ticket = h.store.tickets.open()[0]!
+      h.engine.assignmentStarted(ticket.id, ticket.assignments.at(-1)!.id)
+      h.store.set(`discord-cursor:${BOT}:${CHANNEL}`, String(base))
+      const chatter = (id: bigint, unlisted = false) => message(String(id), { content: 'Nice weather', mentions: [],
+        author: { id: unlisted ? '999' : USER, username: 'A person' } })
+      h.receive.mockClear()
+      fetcher.mockResolvedValueOnce(response(channel())).mockResolvedValueOnce(response([chatter(base + 2n, true), chatter(base + 1n)]))
+      await pollDiscord(h.ctx, signal())
+      expect(h.receive).not.toHaveBeenCalled()
+      expect(h.store.triggers.get(discordTriggerId(String(base + 1n)))).toBeUndefined()
+      expect(h.store.tickets.get(ticket.id)?.inputs).toEqual(ticket.inputs)
+      h.engine.report(ticket.id, { state: 'dropped', summary: 'Done' })
+      expect(h.store.tickets.get(ticket.id)?.ended).toBeDefined()
+      fetcher.mockResolvedValueOnce(response(channel())).mockResolvedValueOnce(response([chatter(base + 3n)]))
+      await pollDiscord(h.ctx, signal())
+      expect(h.receive).not.toHaveBeenCalled()
+      expect(h.store.tickets.get(ticket.id)?.ended).toBeDefined()
+      expect(h.store.get(`discord-cursor:${BOT}:${CHANNEL}`)).toBe(String(base + 3n))
+      const settings = h.store.settings()
+      h.store.saveSettings({ ...settings, sources: { ...settings.sources, discord: { enabled: true,
+        config: DiscordConfigSchema.parse({ tokenFile, channels: [{ channelId: CHANNEL, listen: 'all' }] }) } } })
+      fetcher.mockResolvedValueOnce(response(channel())).mockResolvedValueOnce(response([chatter(base + 4n)]))
+      await pollDiscord(h.ctx, signal())
+      expect(h.receive).toHaveBeenCalledTimes(1)
+      expect(h.store.triggers.get(discordTriggerId(String(base + 4n)))).toBeDefined()
+      expect(h.store.tickets.get(ticket.id)?.ended).toBeUndefined()
+    } finally { h.store.close() }
+  })
+  it('pauses an unset or failed bot without producing a second Overview source-error', async () => {
+    for (const problem of [undefined, new SetupError('discordBotFailed').problem]) {
+      const h = host(), controller = new AbortController()
+      try {
+        const report = h.ctx.report
+        await runDiscord({ ...h.ctx, deployment: testDeployment({ discord: undefined }), problem,
+          report: (name, value) => { report(name, value); controller.abort() } }, controller.signal)
+        expect(h.board.all.discord?.state).toBe('paused')
+        if (!problem) expect(h.board.all.discord?.code).toBe('discordTokenUnset')
+        const view = overview({ store: h.store, sources: h.sources, links: () => ({ url: '', label: { zh: '', en: '' } }) },
+          h.board.all, 'test-policy', executorLoad(h.store, 0), problem)
+        expect(view.problems.filter(item => item.kind === 'source-error')).toEqual([])
+        expect(view.problems.filter(item => item.kind === 'setup')).toHaveLength(problem ? 1 : 0)
+        expect(fetcher).not.toHaveBeenCalled()
+      } finally { controller.abort(); h.store.close() }
+    }
+  })
+  it('skips an identifiable malformed message and advances beyond it without losing valid neighbors', async () => {
+    const h = host(), base = 9007199254740993000n
+    try {
+      h.store.set(`discord-cursor:${BOT}:${CHANNEL}`, String(base))
+      fetcher.mockResolvedValueOnce(response(channel())).mockResolvedValueOnce(response([
+        { id: String(base + 2n), channel_id: CHANNEL, author: null }, message(String(base + 1n)),
+      ]))
+      await pollDiscord(h.ctx, signal())
+      expect(h.receive).toHaveBeenCalledTimes(1)
+      expect(h.store.get(`discord-cursor:${BOT}:${CHANNEL}`)).toBe(String(base + 2n))
+      expect(h.board.all.discord?.detail).toContain('skipped malformed message')
+      fetcher.mockResolvedValueOnce(response(channel())).mockResolvedValueOnce(response([message(String(base + 3n))]))
+      await pollDiscord(h.ctx, signal())
+      expect(h.receive).toHaveBeenCalledTimes(2)
+      expect(h.board.all.discord?.state).toBe('ready')
+    } finally { h.store.close() }
+  })
+  it('treats a spent round budget as progress and starts the next round at the next channel', async () => {
+    const h = host(), second = '800000000000000099', budget = new AbortController()
+    const originalTimeout = AbortSignal.timeout.bind(AbortSignal)
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation(ms => ms === 45000 ? budget.signal : originalTimeout(ms))
+    try {
+      const settings = h.store.settings()
+      h.store.saveSettings({ ...settings, sources: { ...settings.sources, discord: { enabled: true,
+        config: DiscordConfigSchema.parse({ tokenFile, channels: [{ channelId: CHANNEL, listen: 'mentions' }, { channelId: second, listen: 'mentions' }] }) } } })
+      fetcher.mockImplementationOnce(async () => { budget.abort(new DOMException('Timeout', 'TimeoutError')); throw new Error('aborted') })
+      await pollDiscord(h.ctx, signal())
+      expect(h.board.all.discord).toMatchObject({ state: 'ready', detail: expect.stringContaining('budget reached') })
+      expect(h.store.get(`discord-cursor:${BOT}:${CHANNEL}`)).toBeUndefined()
+      timeout.mockRestore()
+      fetcher.mockClear().mockResolvedValueOnce(response(channel(second))).mockResolvedValueOnce(response([]))
+        .mockResolvedValueOnce(response(channel())).mockResolvedValueOnce(response([]))
+      await pollDiscord(h.ctx, signal())
+      expect(String(fetcher.mock.calls[0]![0])).toContain(`channels/${second}`)
+    } finally { timeout.mockRestore(); h.store.close() }
+  })
+  it('uses the server boundary even with a fast local clock, and snapshots latest when metadata omits it', async () => {
+    const h = host(), base = 9007199254740993000n
+    try {
+      vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2100-01-01T00:00:00Z'))
+      fetcher.mockResolvedValueOnce(response({ ...channel(), last_message_id: String(base) }))
+        .mockResolvedValueOnce(response([message(String(base + 1n))]))
+      await pollDiscord(h.ctx, signal())
+      expect(String(fetcher.mock.calls[1]![0])).toContain(`after=${base}`)
+      expect(h.receive).toHaveBeenCalledTimes(1)
+      h.store.delete(`discord-cursor:${BOT}:${CHANNEL}`)
+      fetcher.mockClear().mockResolvedValueOnce(response({ ...channel(), last_message_id: undefined }))
+        .mockResolvedValueOnce(response([{ id: String(base + 2n) }])).mockResolvedValueOnce(response([message(String(base + 3n))]))
+      await pollDiscord(h.ctx, signal())
+      expect(String(fetcher.mock.calls[1]![0])).toContain('messages?limit=1')
+      expect(String(fetcher.mock.calls[2]![0])).toContain(`after=${base + 2n}`)
+      expect(h.receive).toHaveBeenCalledTimes(2)
+    } finally { h.store.close() }
+  })
   it('routes an authorized mention through the Engine into a DSH executor assignment and filters unlisted channels', () => {
     const h = host()
     try {
@@ -215,6 +333,15 @@ describe('Discord Source', () => {
     expect(await readDiscord(commands(), trigger, 'root')).toMatchObject({ status: 'deleted', messages: [] })
     const cross = discordTrigger(message('904', { message_reference: { message_id: '901', channel_id: '999' } }), BOT)!
     expect(await readDiscord(commands(), cross, 'parent')).toMatchObject({ messages: [] })
+  })
+  it('keeps history pagination moving when a context-only message is malformed', async () => {
+    const trigger = discordTrigger(message('903'), BOT)!
+    fetcher.mockResolvedValueOnce(response([message('903'), { id: '902', channel_id: CHANNEL, author: null }]))
+    expect(await readDiscord(commands(), trigger, 'thread', undefined, 2)).toMatchObject({
+      messages: [{ id: '903' }], next: '902', body: { skipped: 1 },
+    })
+    fetcher.mockResolvedValueOnce(response([message('901')]))
+    expect(await readDiscord(commands(), trigger, 'thread', '902', 2)).toMatchObject({ messages: [{ id: '901' }] })
   })
   it('serves Discord originals through orchestrator_read only for a ticket that reached the trigger', async () => {
     const h = host()
@@ -283,6 +410,23 @@ describe('Discord replies', () => {
       expect(enqueue).not.toHaveBeenCalled()
       expect(store.receipts.get('reply-1')).toBeUndefined()
     } finally { store.close() }
+  })
+  it('prunes only old or excess receipts confirmed sent by the canonical Outbox', async () => {
+    const receipts = join(directory, 'discord-outbox')
+    mkdirSync(receipts)
+    const file = (n: number) => join(receipts, `${String(n).padStart(64, '0')}.json`)
+    const old = new Date(Date.now() - 40 * 86400_000)
+    for (let n = 0; n < 1004; n++) {
+      writeFileSync(file(n), JSON.stringify({ id: '999', outgoingId: `outgoing-${n}` }))
+      utimesSync(file(n), new Date(old.getTime() + n * 1000), new Date(old.getTime() + n * 1000))
+    }
+    // Newest file remains under count+age retention; pending and unknown statuses are protected regardless of age.
+    utimesSync(file(1003), new Date(), new Date())
+    await pruneDiscordReceipts(receipts, id => id === 'outgoing-0' ? 'pending' : id === 'outgoing-1' ? undefined : 'sent')
+    expect(existsSync(file(0))).toBe(true)
+    expect(existsSync(file(1))).toBe(true)
+    expect(existsSync(file(2))).toBe(false)
+    expect(existsSync(file(1003))).toBe(true)
   })
   it('marks missing channels gone, retains retryable permission/network failures, and rejects oversized replies', async () => {
     fetcher.mockResolvedValueOnce(response({}, 404))

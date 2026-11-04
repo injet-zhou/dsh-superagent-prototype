@@ -19,3 +19,5 @@ Attachment URLs are context links; this Source does not download images or files
 A native Discord thread has its own channel ID and must be explicitly configured in Source settings.
 A regular text channel is one shared conversation, including its message replies; native threads give separate conversations.
 The Source receives new messages after first activation, catches up from persisted cursors on restart, and does not observe message edits/deletions or discover threads/DMs.
+
+In a mentions-only channel, only messages that mention the bot enter the Engine, including follow-ups to an existing or ended ticket. History reads may include unmentioned messages as context; reading them grants no authorization.

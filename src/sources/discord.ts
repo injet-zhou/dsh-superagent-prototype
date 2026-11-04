@@ -1,7 +1,7 @@
 /** Optional Discord Source: explicit channels/threads, REST polling, policy admission and bot replies. */
 import type { Context } from '@deepseek-ai/cordis'
 import { createHash } from 'node:crypto'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { z } from 'zod'
 import { key, type OutboundMessage, type Trigger } from '../core/index.ts'
@@ -11,7 +11,7 @@ import { DiscordChannel, DiscordMessage, Snowflake } from '../infra/discord.ts'
 import { checkedDiscordText } from '../infra/text.ts'
 import { KV } from '../kv.ts'
 import { health, sourceContext, type SourceContext } from './host.ts'
-import type { ContextMessage, ContextPart, ContextPartName, Localized, SourceKind } from './kind.ts'
+import type { ChannelHost, ContextMessage, ContextPart, ContextPartName, Localized, SourceKind } from './kind.ts'
 import { pause } from './poll.ts'
 
 const SOURCE = 'discord'
@@ -47,6 +47,16 @@ const contextMessage = (message: DiscordMessage): ContextMessage => ({
   ...(message.author.bot || message.webhook_id ? { bot: true as const } : {}),
   ...(message.message_reference?.message_id ? { reply_to: message.message_reference.message_id } : {}),
 })
+const MessageEnvelope = z.object({ id: Snowflake, channel_id: Snowflake })
+/** Preserve pagination identity even when optional message content cannot be normalized. */
+function discordPage(values: unknown[]): { id: string; channel_id: string; message: DiscordMessage | undefined }[] {
+  return values.map(value => {
+    const envelope = MessageEnvelope.safeParse(value)
+    if (!envelope.success) throw new Error('Discord message lacks a valid ID/channel; cannot safely advance its cursor')
+    const parsed = DiscordMessage.safeParse(value)
+    return { ...envelope.data, message: parsed.success ? parsed.data : undefined }
+  })
+}
 /** Reads only the trigger's channel; a parent reference to another channel is deliberately not followed. */
 export async function readDiscord(commands: Commands, trigger: Trigger, part: ContextPartName, cursor?: string, size = 50): Promise<ContextPart> {
   if (trigger.source !== SOURCE) throw new Error('A Discord trigger is required')
@@ -64,12 +74,15 @@ export async function readDiscord(commands: Commands, trigger: Trigger, part: Co
     }
   }
   const before = cursor ? Snowflake.parse(cursor) : (BigInt(message) + 1n).toString()
-  const page = await commands.discord(z.array(DiscordMessage), `${base}?limit=${size}&before=${before}`)
-  return { messages: page.map(contextMessage), ...(page.length === size ? { next: page.at(-1)!.id } : {}), body: { channel_id: channel, order: 'newest_first' } }
+  const page = discordPage(await commands.discord(z.array(z.unknown()), `${base}?limit=${size}&before=${before}`))
+  if (page.some(item => item.channel_id !== channel)) throw new Error('Discord returned a message outside the requested channel')
+  const messages = page.flatMap(item => item.message ? [contextMessage(item.message)] : [])
+  return { messages, ...(page.length === size ? { next: page.at(-1)!.id } : {}),
+    body: { channel_id: channel, order: 'newest_first', skipped: page.length - messages.length } }
 }
 
 /** Persistent receipt plus Discord's recent-nonce deduplication cover normal retries and process restarts. */
-export async function sendDiscord(host: { commands: Commands }, message: OutboundMessage): Promise<'sent' | 'gone'> {
+export async function sendDiscord(host: ChannelHost, message: OutboundMessage): Promise<'sent' | 'gone'> {
   const { commands } = host
   const bot = commands.deployment.discord
   if (!bot) throw new Error('Discord bot is not configured')
@@ -94,9 +107,34 @@ export async function sendDiscord(host: { commands: Commands }, message: Outboun
   }
   await mkdir(directory, { recursive: true, mode: 0o700 })
   const temporary = `${receipt}.${process.pid}.tmp`
-  await writeFile(temporary, JSON.stringify(sent), { mode: 0o600 })
+  await writeFile(temporary, JSON.stringify({ ...sent, outgoingId: message.id }), { mode: 0o600 })
   await rename(temporary, receipt)
+  // Maintenance never changes delivery success; the canonical Outbox retains the authoritative sent status.
+  if (host.receiptStatus) await pruneDiscordReceipts(directory, host.receiptStatus).catch(() => {})
   return 'sent'
+}
+
+const lastReceiptPrune = new Map<string, number>()
+/** Prune old/excess transport receipts only after the canonical Outbox confirms delivery. Pending/legacy receipts stay. */
+export async function pruneDiscordReceipts(directory: string, status: NonNullable<ChannelHost['receiptStatus']>): Promise<void> {
+  const now = Date.now()
+  if (now - (lastReceiptPrune.get(directory) ?? 0) < 300_000) return
+  const files = (await readdir(directory)).filter(name => /^[a-f0-9]{64}\.json(?:\.[0-9]+\.tmp)?$/.test(name))
+  const entries = await Promise.all(files.map(async name => {
+    const file = join(directory, name)
+    const info = await stat(file)
+    return { file, mtime: info.mtimeMs }
+  }))
+  entries.sort((a, b) => b.mtime - a.mtime)
+  for (const [index, entry] of entries.entries()) {
+    if (index < 1000 && now - entry.mtime < 30 * 86400_000) continue
+    let stored: unknown
+    try { stored = JSON.parse(await readFile(entry.file, 'utf8')) }
+    catch { continue /* An unreadable receipt cannot prove delivery; keep it and continue maintaining the others. */ }
+    const value = z.object({ outgoingId: z.string() }).safeParse(stored)
+    if (value.success && status(value.data.outgoingId) === 'sent') await unlink(entry.file)
+  }
+  lastReceiptPrune.set(directory, now)
 }
 
 /** One bounded page per channel per round; checkpoints advance only after each trigger is durably received. */
@@ -106,6 +144,7 @@ export async function pollDiscord(ctx: SourceContext, signal: AbortSignal): Prom
   const roundSignal = AbortSignal.any([signal, AbortSignal.timeout(45_000)])
   const commands = ctx.commands.withSignal(roundSignal)
   const failures: string[] = []
+  let budgetExhausted = false
   const start = ctx.state.get(KV.discord.nextChannel(bot.botId)) ?? 0
   for (let offset = 0; offset < config.channels.length; offset++) {
     const index = (start + offset) % config.channels.length
@@ -118,24 +157,34 @@ export async function pollDiscord(ctx: SourceContext, signal: AbortSignal): Prom
       if (![0, 5, 10, 11, 12].includes(channel.type)) throw new Error('Use a guild text channel, announcement channel or thread ID')
       const checkpoint = KV.discord.cursor(bot.botId, channel.id)
       let after = ctx.state.get(checkpoint)
-      // Start at first activation, without replaying an existing channel's entire history. Store before the HTTP read.
-      if (!after) {
-        after = (BigInt(Date.now() - 1420070400000) << 22n).toString()
+      // Use the server's boundary so a fast local clock cannot silently discard new messages.
+      if (after === undefined) {
+        after = channel.last_message_id ?? '0'
+        if (channel.last_message_id === undefined) {
+          const latest = await commands.discord(z.array(z.object({ id: Snowflake })), `channels/${channel.id}/messages?limit=1`)
+          after = latest[0]?.id ?? '0'
+        }
         ctx.state.set(checkpoint, after)
       }
-      const messages = await commands.discord(z.array(DiscordMessage), `channels/${channel.id}/messages?limit=100&after=${after}`)
+      const page = await commands.discord(z.array(z.unknown()), `channels/${channel.id}/messages?limit=100&after=${after}`)
       // Discord's `after` window is the next page, returned newest first. Snowflakes must never pass through Number.
+      // An identifiable malformed message is skipped with a diagnostic instead of blocking every future poll.
+      const messages = discordPage(page)
       messages.sort((a, b) => {
         if (BigInt(a.id) < BigInt(b.id)) return -1
         if (BigInt(a.id) > BigInt(b.id)) return 1
         return 0
       })
       for (const message of messages) {
-        if (signal.aborted || !ctx.config<DiscordConfig>(SOURCE)?.channels.some(channel => channel.channelId === entry.channelId)) return
+        if (signal.aborted) return
+        const current = ctx.config<DiscordConfig>(SOURCE)?.channels.find(channel => channel.channelId === entry.channelId)
+        if (!current) return
         if (message.channel_id !== channel.id) throw new Error('Discord returned a message outside the requested channel')
         if (BigInt(message.id) <= BigInt(after)) continue
-        const trigger = discordTrigger(message, bot.botId, channel.guild_id)
-        if (trigger) {
+        if (!message.message) failures.push(`${channel.id}: skipped malformed message ${message.id}`)
+        const trigger = message.message ? discordTrigger(message.message, bot.botId, channel.guild_id) : undefined
+        // Keep unmentioned channel chatter out of Intake, including its follow-up and ended-ticket resume paths.
+        if (trigger && (current.listen === 'all' || trigger.addressed === 'mention')) {
           await ctx.receive(trigger)
           ctx.threads.describe(`discord:${channel.id}`, { label: channel.name || entry.name || channel.id, url: messageUrl(channel.id, channel.guild_id) })
         }
@@ -144,13 +193,14 @@ export async function pollDiscord(ctx: SourceContext, signal: AbortSignal): Prom
       }
     } catch (error) {
       if (signal.aborted) return
+      if (roundSignal.aborted) { budgetExhausted = true; break }
       failures.push(`${entry.channelId}: ${error instanceof Error ? error.message : 'Discord poll failed'}`)
       // Invalid bot credentials apply to every channel; avoid repeated unauthorized requests.
       if (error instanceof CliError && error.code === 401) throw error
-      if (roundSignal.aborted) break
     }
   }
-  ctx.report(SOURCE, failures.length ? { state: 'error', detail: failures.join('\n') } : { state: 'ready', detail: 'Polling configured Discord channels and threads', at: new Date().toISOString() })
+  const detail = budgetExhausted ? 'Discord polling budget reached; continuing from saved cursors next round' : 'Polling configured Discord channels and threads'
+  ctx.report(SOURCE, failures.length ? { state: 'error', detail: failures.join('\n') } : { state: 'ready', detail, at: new Date().toISOString() })
 }
 export async function runDiscord(ctx: SourceContext, signal: AbortSignal): Promise<void> {
   await ctx.ready
@@ -158,7 +208,7 @@ export async function runDiscord(ctx: SourceContext, signal: AbortSignal): Promi
     const config = ctx.config<DiscordConfig>(SOURCE)
     if (!config) ctx.report(SOURCE, health('paused', 'sourceOff'))
     else if (!ctx.configured()) ctx.report(SOURCE, health('paused', 'setupPending'))
-    else if (!ctx.deployment.discord) ctx.report(SOURCE, { state: 'error', detail: ctx.problem?.detail ?? 'Set the Discord bot token file in Source settings' })
+    else if (!ctx.deployment.discord) ctx.report(SOURCE, ctx.problem ? { state: 'paused', detail: ctx.problem.detail } : health('paused', 'discordTokenUnset'))
     else {
       try { await pollDiscord(ctx, signal) }
       catch (error) {

@@ -3,11 +3,11 @@ import { readFile, stat } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { z } from 'zod'
-import { CliError } from './commands.ts'
+import { CliError } from './errors.ts'
 
 export const Snowflake = z.string().regex(/^[0-9]{1,20}$/)
 export const DiscordUser = z.object({ id: Snowflake, username: z.string(), bot: z.boolean().optional() })
-export const DiscordChannel = z.object({ id: Snowflake, type: z.number().int(), guild_id: Snowflake.optional(), name: z.string().nullish() })
+export const DiscordChannel = z.object({ id: Snowflake, type: z.number().int(), guild_id: Snowflake.optional(), name: z.string().nullish(), last_message_id: Snowflake.nullish() })
 export const DiscordMessage = z.object({
   id: Snowflake, channel_id: Snowflake, author: DiscordUser, content: z.string(), timestamp: z.iso.datetime({ offset: true }),
   type: z.number().int().default(0), webhook_id: Snowflake.optional(),
@@ -16,6 +16,9 @@ export const DiscordMessage = z.object({
   attachments: z.array(z.object({ filename: z.string(), url: z.url() })).default([]),
 })
 export type DiscordMessage = z.infer<typeof DiscordMessage>
+
+/** Identifies an insecure token file without including its content in diagnostics. */
+class TokenPermissionsError extends Error {}
 
 /** One shared queue across command clones; conservatively pauses all routes when any bucket is exhausted. */
 export class DiscordApi {
@@ -44,8 +47,12 @@ export class DiscordApi {
     try {
       const info = await stat(this.tokenFile)
       if (!info.isFile() || info.size > 8192) throw new Error()
+      if (process.platform !== 'win32' && (info.mode & 0o077) !== 0) throw new TokenPermissionsError()
       token = z.object({ token: z.string().min(1).max(4096).regex(/^[A-Za-z0-9_.-]+$/) }).parse(JSON.parse(await readFile(this.tokenFile, 'utf8'))).token
-    } catch { throw new Error('Cannot read Discord bot token file; expected a private JSON file with a token field') }
+    } catch (error) {
+      if (error instanceof TokenPermissionsError) throw new Error('Discord token file must deny group and other access; use chmod 600 (or stricter)')
+      throw new Error('Cannot read Discord bot token file; expected a private JSON file with a token field')
+    }
     for (let attempt = 0; attempt < 3; attempt++) {
       signal.throwIfAborted()
       if (this.resumeAt > Date.now()) await delay(this.resumeAt - Date.now(), undefined, { signal })

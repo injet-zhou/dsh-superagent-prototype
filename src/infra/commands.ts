@@ -5,17 +5,12 @@ import { promisify } from 'node:util'
 import { z } from 'zod'
 import type { Deployment } from '../deployment.ts'
 import { DiscordApi } from './discord.ts'
+import { CliError } from './errors.ts'
 import { giteaApi } from './gitea.ts'
 
 const exec = promisify(execFile)
 const TIMEOUT_MS = 90_000
-/**
- * Error thrown by Commands when a CLI invocation fails, capturing stderr diagnostics, API error codes, and exit status without echoing command arguments.
- * Source channels and pollers inspect its code to distinguish deleted conversations from retryable failures.
- */
-export class CliError extends Error {
-  constructor(message: string, readonly code?: number, readonly exitCode?: number) { super(message) }
-}
+export { CliError } from './errors.ts'
 /** Extracts a sanitized error from a failed subprocess without echoing argv, which may contain message text. */
 export function commandError(error: unknown, program = 'command'): Error {
   if (error instanceof Error && error.name === 'AbortError') return error

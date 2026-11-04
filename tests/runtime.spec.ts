@@ -11,6 +11,8 @@ import { Runtime } from '../src/app/runtime.ts'
 import { jobRegistry } from './fixtures/host.ts'
 import { evalsHealth } from '../src/app/views/overview.ts'
 import { mandateInstructions } from '../src/executor/dsh.ts'
+import { bundledSkills } from '../src/app/skill-files.ts'
+import { packagePath } from '../src/infra/paths.ts'
 import { masterPrompt } from '../src/app/context.ts'
 import { reference, testMachine } from './fixtures/deployment.ts'
 import type { Machine } from '../src/deployment.ts'
@@ -44,6 +46,7 @@ type RegisteredTool = { name: string; output: { render: (args: unknown, result: 
 let tools: Map<string, Map<string, RegisteredTool>>
 type Section = { name: string; text: (context: { signal?: AbortSignal }) => string; interpolate?: boolean }
 let sections: Map<string, Section>
+let skillRegistrations: Map<string, { name: string; description: string; resourceBase?: { kind: string; path: string } }[]>
 type Guard = (execution?: { name: string; arguments: unknown }) => string | undefined
 let guards: Map<string, Guard>
 let restricts: Map<string, unknown[]>
@@ -156,6 +159,7 @@ beforeEach(async () => {
   agents = new Map()
   tools = new Map()
   sections = new Map()
+  skillRegistrations = new Map()
   guards = new Map()
   restricts = new Map()
   deliveries = vi.fn()
@@ -180,7 +184,11 @@ beforeEach(async () => {
           restricts.set(sessionId, [...restricts.get(sessionId) ?? [], rule]); return () => {}
         }),
         guard: vi.fn((check: Guard) => { guards.set(sessionId, check); return () => {} }) })
-      agentCtx.reflect.provide('skills', { register: () => () => {} })
+      agentCtx.reflect.provide('skills', { register: (skill: { name: string; description: string; resourceBase?: { kind: string; path: string } }) => {
+        const registered = skillRegistrations.get(sessionId) ?? []
+        registered.push(skill); skillRegistrations.set(sessionId, registered)
+        return () => { const index = registered.indexOf(skill); if (index >= 0) registered.splice(index, 1) }
+      } })
       agentCtx.reflect.provide('systemPrompt', { section: (spec: Section) => { sections.set(sessionId, spec); return () => {} } })
       const inbox = { nextTurn: [] as UserMessage[], nextStep: [] as UserMessage[],
         // A pending message taken out, as DSH's inbox does by its id.
@@ -1028,6 +1036,16 @@ it('tells both roles the execution environment through a generated prompt sectio
   const next = await restart({}, { feishu: null })
   await next.ready
   expect(Object.keys(next.prompts.preview(next.prompts.current().config).skills)).not.toContain('feishu')
+})
+
+it('registers the Discord skill in a worker scope with its bundled description and resource directory', async () => {
+  vi.spyOn(runtime.prompts, 'skills').mockReturnValue([['discord', bundledSkills.discord.content]])
+  const { sessionId } = await acceptedTicket()
+  expect(skillRegistrations.get(sessionId)).toContainEqual(expect.objectContaining({
+    name: 'dsh-superagent-discord', description: bundledSkills.discord.description,
+    resourceBase: { kind: 'directory', path: packagePath('skills', 'dsh-superagent-discord') },
+  }))
+  expect(runtime.prompts.current().config.skills.discord).toBeUndefined()
 })
 
 it('lets a worker read the prompt version it works under and the ones it worked under before, also after a restart, and no other', async () => {
