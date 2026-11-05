@@ -14,6 +14,12 @@ export function checkedImText(text: string): string {
   if (count > IM_WORDS) throw new Error(`IM message has ${count} words; maximum is ${IM_WORDS}. Rewrite as a short high-level update. Do not split it into multiple messages.`)
   return text
 }
+/** Discord counts characters as well as the shared IM word ceiling; validate before queueing a reply. */
+export function checkedDiscordText(text: string): string {
+  checkedImText(text)
+  if (!text.trim() || text.length > 2000) throw new Error('Discord replies must contain 1–2000 characters; rewrite as a short update')
+  return text
+}
 export const fill = (template: string, values: Record<string, string>): string => template.replace(/\{(\w+)\}/g, (_, name: string) => values[name] ?? '')
 /** Case-insensitive comparison for GitHub logins and repository names. */
 export const sameName = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase()

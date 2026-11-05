@@ -2,6 +2,8 @@
 // The Source status and settings.
 import { act } from 'react'
 import { expect, it, onTestFinished, vi } from 'vitest'
+import { discordKind } from '../src/sources/discord.ts'
+import type { SourceKind } from '../src/sources/kind.ts'
 import { zh } from '../src/client/locales.ts'
 import { usePanel, mount, remount, settle, all, find, tab, click, type, text, field, at } from './fixtures/panel.tsx'
 import { server, problemOf, droppedReply } from './fixtures/panel-server.ts'
@@ -306,4 +308,21 @@ it('reads the settings again as soon as dsh-superagent answers after a save rest
   expect(server.requests.filter(request => request.path === 'settings').length).toBeGreaterThan(reads)
   expect(field('智能体的仓库 CLI').matches(':disabled')).toBe(false)
   expect(field<HTMLInputElement>('智能体的仓库 CLI').value).toBe('/opt/bin/gh-agent')
+})
+
+it('shows the Discord bot setup problem and saves its token path through the Source settings form', async () => {
+  server.extraKinds = [discordKind as unknown as SourceKind]
+  server.settings.sources.discord = { enabled: true, config: { tokenFile: '/srv/agent/discord.json', channels: [] } }
+  server.setup = { ...server.setup, discordProblem: problemOf('discordBotFailed') }
+  await mount()
+  await click(zh['tab.source'])
+  expect(text()).toContain(zh['setup.discordBotFailed'])
+  await click(tab(zh['tab.settings']))
+  const card = document.getElementById('dt-source-discord')!
+  expect(card.textContent).toContain('Discord')
+  await type(field<HTMLInputElement>('Bot Token 文件'), '/srv/agent/new-discord.json')
+  await act(async () => { card.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) })
+  await settle()
+  expect(server.settings.sources.discord?.config.tokenFile).toBe('/srv/agent/new-discord.json')
+  expect(server.requests.some(request => request.path === 'settings/source:discord' && request.method === 'PUT')).toBe(true)
 })

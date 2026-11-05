@@ -7,6 +7,7 @@ import s from '@deepseek-ai/schemastery'
 import { z } from 'zod'
 import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 import { runAsWorker, sameDirectory, withoutDirectory, workerBin } from './infra/environment.ts'
+import { DiscordApi, DiscordUser } from './infra/discord.ts'
 import { SetupError } from './setup.ts'
 
 const reason = (error: unknown): string => error instanceof Error ? error.message : String(error)
@@ -49,15 +50,17 @@ export const GithubAccountsSchema = z.object({
   repository: z.string().trim().regex(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?$/, 'owner/name').default(''),
   cli: z.string().trim().default(''),
 })
+export const DiscordBotSchema = z.object({ tokenFile: z.string().trim().refine(value => !value || isAbsolute(value), 'Expected an absolute token file path').default('') })
 export const FeishuBotSchema = z.object({ cli: z.string().trim().default('') })
 /** Source configuration keys that affect deployment setup and trigger a restart when changed. */
-export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape) }
+export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape), discord: Object.keys(DiscordBotSchema.shape) }
 
 export interface Deployment extends Machine {
   repository: string
   /** Repository account. The legacy `github` key is retained for saved settings and Source identifiers. */
   github: { cli: string; login: string; noreply: string; provider?: 'github' | 'gitea'; baseUrl?: string }
   feishu?: FeishuBot
+  discord?: { tokenFile: string; botId: string; name: string }
 }
 export interface FeishuBot { cli: string; appId: string; brand: 'feishu' | 'lark'; botId: string; name: string }
 
@@ -165,4 +168,15 @@ export async function resolveFeishuBot(machine: Machine, feishu: unknown, probe:
   const info = parsed(BotInfo, (await run('api', 'GET', '/open-apis/bot/v3/info', '--as', 'bot', '--format', 'ndjson')).split('\n')[0] ?? '')
   if (!info) return fail(new SetupError('feishuNoBot'))
   return { cli, appId: status.appId, brand: status.brand, botId: info.bot.open_id, name: info.bot.app_name }
+}
+
+/** Reads a dedicated bot token file; Discord rejects user tokens because requests always use Bot authentication. */
+export async function resolveDiscordBot(config: unknown, signal: AbortSignal): Promise<Deployment['discord']> {
+  const { tokenFile } = DiscordBotSchema.parse(config ?? {})
+  if (!tokenFile) return undefined
+  try {
+    const user = await new DiscordApi(tokenFile).request(DiscordUser, 'users/@me', signal)
+    if (!user.bot) throw new Error('Discord account is not a bot')
+    return { tokenFile, botId: user.id, name: user.username }
+  } catch (error) { throw new SetupError('discordBotFailed', { output: reason(error) }) }
 }

@@ -104,6 +104,28 @@ Validated against Gitea 1.24.6 using its [REST API](https://docs.gitea.com/api/)
 
    Both configurations share the keychain entry for the app secret. To remove only the bot configuration, delete its directory; do not run `lark-cli config remove`, which would affect the shared secret.
 
+### Discord bot (optional)
+
+Discord works with GitHub or Gitea and can run alongside Feishu. The worker remains a DSH Session. This Source uses Discord REST API v10 polling, so no public webhook endpoint or Gateway connection is required.
+
+1. Create an application and bot in the [Discord Developer Portal](https://discord.com/developers/applications). Enable **Message Content Intent** to read non-mention history and receive-all channels. Invite the bot using the `bot` OAuth2 scope with **View Channel**, **Read Message History**, **Send Messages**, and **Send Messages in Threads** where needed. The bot must have access to each configured thread; add it to private threads. Use a dedicated bot token, never a user account token or webhook URL.
+2. Outside the repository, create a private JSON file owned by the service's OS user, for example `/srv/agent/discord.json` with mode `0600` (or stricter) and content `{"token":"<bot token>"}`. Enter only its absolute path in settings. On POSIX, the host rejects token files granting any access to the group or other users, with a chmod 600 remediation message. The host reads the file and sends the token exclusively to `https://discord.com/api/v10` with Bot authentication, refuses redirects, and never exports the token into worker environment variables or command arguments. Agents still share the operator's OS user, so file permissions are a deployment guardrail, not a process isolation boundary.
+3. Uncomment `dsh-superagent-discord` in the example profile. After restart, set **Sources → Discord → Bot token file** and add the IDs of the text channels or native threads to receive. Enable Discord **Developer Mode**, then **Copy Channel ID** on each channel/thread. Threads must be listed individually: adding a parent channel does not discover its threads. Guild text/announcement channels and announcement/public/private threads are supported. DMs, voice channels and forum containers are not.
+4. Set each row to **@ only** (the default choice) or **All messages**. Under **Eval → On each Source → Discord**, list the numeric **user IDs** allowed to originate work. Copy User ID from Discord; nicknames and usernames never grant authorization. An allowed user's message mentioning the bot can become an explicit request. In **@ only** mode, only messages that mention the bot are ingested as Triggers: unmentioned chatter cannot become a follow-up or resume an ended Ticket. The REST endpoint still returns channel messages so the adapter can check mentions; skipped messages advance the read cursor without entering the Engine. Context/history reads can include those messages as context. **All messages** mode retains the existing admission/rule and ticket-follow-up policy for unmentioned messages. Bot/webhook messages are marked non-human. There is no member-roster sync.
+5. Send `@<bot> <request>` from an allowed user in a configured channel or thread. The next poll sends it through the same assessment, Ticket and DSH workflow and replies in that Discord channel, referencing the original message. Each channel or native thread is one shared conversation; use dedicated native threads to separate tasks. Removing a configured channel stops its outgoing replies through the existing outbox policy checks.
+
+A `source:discord` settings block is:
+
+```json
+{"enabled":true,"config":{"tokenFile":"/srv/agent/discord.json","channels":[{"channelId":"123456789012345678","listen":"mentions"}],"pollIntervalMs":15000,"readPageSize":50}}
+```
+
+The Policy adds `"discord":{"allowed":[{"id":"234567890123456789","name":"Alice"}]}` under `policy.sources`; admission rows use channel/thread IDs. A token-file change is panel-only, checked with `GET users/@me`, and restarts setup. An unset token file or invalid Discord account pauses only Discord and is reported on its Source card; a setup recheck retries an account failure. The service CLI includes discordProblem as the discord field in status JSON and explains Discord setup failures during start, without treating a paused optional Source as a lasting component error. Worker environment variables contain only `DSH_SUPERAGENT_DISCORD_BOT` and, for a Discord-origin ticket, `DSH_SUPERAGENT_DISCORD_CHANNEL`.
+
+On first activation of a channel, the host records Discord's last_message_id (or snapshots the latest message when metadata omits it), using 0 for an empty channel, and receives subsequent messages; it does not replay pre-existing history. On later starts it resumes the durable cursor, including messages sent while the service was stopped. Each round reads at most the next 100 messages per channel, orders snowflakes without numeric precision loss, and advances after each durable Engine receipt. Backlogs continue on subsequent rounds; a failed page or Engine receipt retains the corresponding cursor. Messages are validated individually: an identifiable malformed item is skipped with its ID reported in health and the cursor advances past it; missing/invalid ID or channel information fails the page because it cannot be safely checkpointed. A round has a 45-second budget, with round-robin channel progress so slow channels do not permanently starve later ones. Reaching that round budget reports ready with a continuation detail rather than a Source error; genuine HTTP or receipt failures still report error. Each REST operation has a 30-second budget including queue and rate-limit waits. Bot requests are serialized across Source reads, assessments and replies; response reset headers and HTTP 429 retry delays pause subsequent requests. An HTTP 401 stops the listener until the bot is corrected and dsh-superagent restarted. HTTP 403 is a retryable permission error; HTTP 404 on send marks the channel gone.
+
+Replies disable automatic user/role/everyone mentions, use a stable Discord nonce with `enforce_nonce`, and record a private receipt under `<stateDir>/discord-outbox`. Keep that directory with the database across restarts. At most once every five minutes during sends, receipt maintenance removes entries older than 30 days or beyond the newest 1000 only when the canonical Outbox confirms their outgoing ID is sent. Pending, unknown and legacy receipts are retained; deleting the transport file never deletes the canonical sent record. Discord only enforces nonce uniqueness for a few minutes: a crash after the remote send but before the local receipt can still duplicate a reply if recovery occurs after that window. Messages are limited to 100 words and 2000 characters; rewrite longer updates rather than splitting them. The Source skill exposes bounded message/parent/history reads through `orchestrator_read`, and replies through `orchestrator_reply`. Attachment links are preserved, without automatic downloads. Message edits/deletions, reactions, slash commands, thread discovery and DM discovery are outside this adapter's scope. See the official [message endpoints](https://docs.discord.com/developers/resources/message) and [rate-limit rules](https://docs.discord.com/developers/topics/rate-limits).
+
 ## Install
 
 Run this block once, on a machine that has no `superagent` profile yet:
@@ -124,7 +146,7 @@ Run the profile-creation command only for a new installation. If the profile alr
 
 ## Machine configuration
 
-Copy [examples/profile.cordis.patch.yml](../examples/profile.cordis.patch.yml) to `~/.dsh/profiles/superagent/cordis.patch.yml`, replacing that file, and replace every `<placeholder>`. For Feishu, also enable the `dsh-superagent-feishu` entry there. The `webserver` entry sets the panel's port.
+Copy [examples/profile.cordis.patch.yml](../examples/profile.cordis.patch.yml) to `~/.dsh/profiles/superagent/cordis.patch.yml`, replacing that file, and replace every `<placeholder>`. For Feishu or Discord, also enable the corresponding `dsh-superagent-feishu` or `dsh-superagent-discord` entry there. The `webserver` entry sets the panel's port.
 
 | Key | Required | Meaning |
 | --- | --- | --- |
@@ -204,7 +226,7 @@ Agents may rely on these routes and fields. The other routes in `src/app/api.ts`
 
 | Request | Answer |
 | --- | --- |
-| `GET state` | What every page reads: `setup`, with `problem` and `feishuProblem`, each `null` or a setup problem with `place`, `code`, `values` and `detail`, and `accounts` once setup resolved them; `health`, an entry per part, below, with `state` (`starting`, `ready`, `paused` or `error`), `detail` and `at`; `load`, the Executor Sessions `running`, the Tickets `queued` and `maxWorkers`; `paused`; and `masterId` |
+| `GET state` | What every page reads: `setup`, with `problem` and `feishuProblem`, plus optional `discordProblem`, each `null` or a setup problem with `place`, `code`, `values` and `detail`, and `accounts` once setup resolved them; `health`, an entry per part, below, with `state` (`starting`, `ready`, `paused` or `error`), `detail` and `at`; `load`, the Executor Sessions `running`, the Tickets `queued` and `maxWorkers`; `paused`; and `masterId` |
 | `GET settings` | `blocks`: `policy`, `eval` and `executor`, each with its `value` and its `revision`; `sources`: the Source instances, each with `id`, `kind`, `installed`, its block's `value`, `{"enabled": …, "config": {…}}`, and `revision`, its kind's form, and its setup `problem` when it has one; `policyVersion`; and `environment`, the execution environment's `root` and `variables` |
 | `GET sources` | Each Source's status: `state` (`missing`, `off`, `error`, `setup`, `starting`, `paused` or `ready`), the `health` of its parts, its setup `problem`, the last day's `stats`, the Triggers it `filtered` in that day, and the messages it `dropped` in that day, newest drop first, each with its `channel`, `preview`, `ticket` (`id` and `title`) when it was for one, its `thread` when the store has it, and `dropped.at` and `dropped.reason`, `channelGone` or `channelIgnored` |
 | `PUT settings/<block>` with `{"value": …, "revision": n}` | Saves one block: `saved`, the block's new `revision`, `policy_changed` and `restarting`. `value` is the whole block, as `GET settings` holds it; a missing key takes its default |
@@ -223,7 +245,7 @@ Health entries are grouped by responsibility:
 | `evals` | Unavailable Evals from the last hour with no later judgement or dismissal |
 | `assessment`, `launch`, `delivery`, `relay`, `notice`, `reply` | Stored work described in [003 Execution](003-execution.md); delivery counts waiting work, while reply covers Channel messages |
 | `worker` | Executor Session event handling; appears after its first failure |
-| `github`, `feishu`, `history` | Source polling, events and history recovery |
+| `github`, `feishu`, `history`, `discord` | Source polling, events and history recovery |
 | `sync:<source id>` | Allowed-list synchronization |
 
 A refusal has a status and `error`, its English text:
@@ -235,7 +257,7 @@ A refusal has a status and `error`, its English text:
 
 The blocks:
 
-- `source:github`, `source:feishu`: `{"enabled": true, "config": {…}}`. GitHub's config has `repository` and `cli`, and the switches `observeIssues`, `observePulls`, `observeComments` and `observeCi`, off by default, which receive every new Issue, new pull request and comment in the repository and the default branch's CI; Feishu's has `cli`, `chats` as `[{"chatId": "oc_…", "name": "…", "listen": "mentions"}]` (or `"all"`), `directMessages`, and `otherChats` as `"none"` or `"mentions"`.
+- `source:github`, `source:feishu`, `source:discord`: `{"enabled": true, "config": {…}}`. GitHub's config has `repository` and `cli`, and the switches `observeIssues`, `observePulls`, `observeComments` and `observeCi`, off by default, which receive every new Issue, new pull request and comment in the repository and the default branch's CI; Feishu's has `cli`, `chats` as `[{"chatId": "oc_…", "name": "…", "listen": "mentions"}]` (or `"all"`), `directMessages`, and `otherChats` as `"none"` or `"mentions"`.
 - `policy`: `{"rules": […], "sources": {"github": {"allowed": [{"id": "<login>"}], "bots": [{"id": "dependabot[bot]"}]}, "feishu": {"allowed": [{"id": "ou_…", "name": "…"}], "syncChat": "oc_…", "admission": {"oc_…": {"unlistedAddressed": "explicit"}}}}}`. `bots` lists the bots whose messages may become inferred candidates. An `admission` row is keyed by chat id, `other` or `direct` for Feishu, and by `issues`, `pulls`, `comments` or `ci` for GitHub; an unset cell takes its default (see [002 Authorization](002-authorization.md)).
 - `eval`: `mode`, `timeoutSeconds` and `model`.
 - `executor`: `model`, `maxWorkers`, `directory`, `prepare` and `blockedCommands`. The processing pause is a setting of its own, `paused`, which `POST executor/pause` sets.
@@ -253,7 +275,7 @@ curl -s -X PUT -H 'x-orchestrator-request: 1' -H 'content-type: application/json
 
 Setup uses the DeepSeek Harness subprocess service, as worker shells do. It removes environment variables whose names contain KEY, PASSWORD, SECRET or TOKEN.
 
-Setup verifies the selected repository and the agent's push access, writes the worker environment, and checks that git uses the selected provider's agent credential helper. A Feishu setup failure disables only the Feishu Source.
+Setup verifies the selected repository and the agent's push access, writes the worker environment, and checks that git uses the selected provider's agent credential helper. A Feishu or Discord setup failure disables only that Source.
 
 The process environment that setup writes:
 

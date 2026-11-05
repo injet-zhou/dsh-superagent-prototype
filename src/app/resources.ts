@@ -5,6 +5,7 @@ import { batchOf, inputMessage, triggerMessage, workerSessionId } from '../execu
 import { readGithub } from '../sources/github-read.ts'
 import { feishuReferences, feishuRead } from '../sources/feishu-read.ts'
 import { feishuRef } from '../sources/feishu.ts'
+import { DiscordConfigSchema, readDiscord, discordTriggerId } from '../sources/discord.ts'
 import { feishuTriggerId } from '../sources/feishu-trigger.ts'
 import { ASSIGNMENTS, INPUTS, assignmentLine, decisionCard, decisionDetails, inputLine, newestPage, preview, textPage, threadCard, ticketCard,
   ticketDetails, triggerCard, type TicketThread } from './cards.ts'
@@ -51,6 +52,7 @@ export const RESOURCES: readonly { name: string; holds: string; executor?: true 
   { name: 'models', holds: 'model providers, the DSH default and each role\'s model' },
   { name: 'models/<provider>', holds: 'one provider\'s models' },
   { name: 'feishu/<trigger-id>/…', holds: 'a Feishu original, as the dsh-superagent-feishu skill describes', executor: true },
+  { name: 'discord/<trigger-id>/<root|parent|thread>[/<before-id>]', holds: 'Discord message or channel history; native thread IDs are channels', executor: true },
   { name: 'github/…', holds: 'a GitHub original, as the dsh-superagent-github skill describes', executor: true },
 ]
 export const resourceGrammar = (executor: boolean): string => RESOURCES.filter(resource => !executor || resource.executor)
@@ -104,7 +106,10 @@ const trigger = (host: ResourceHost, id: string, ticketId?: string): Trigger => 
 async function sourcePage(read: Read, source: string, fetch: () => Promise<unknown>) {
   const { host, resource, offset, sessionId } = read
   const body = offset === 0 ? JSON.stringify(await fetch()) : host.pages.get(`${sessionId}:${resource}`)
-  if (body === undefined) throw new Error(`Read this ${source === 'feishu' ? 'Feishu' : 'GitHub'} resource from offset 0 first`)
+  if (body === undefined) {
+    const label = ({ feishu: 'Feishu', github: 'GitHub', discord: 'Discord' } as Record<string, string>)[source] ?? source
+    throw new Error(`Read this ${label} resource from offset 0 first`)
+  }
   if (offset === 0) host.pages.set(`${sessionId}:${resource}`, body)
   return text(read, body)
 }
@@ -206,6 +211,13 @@ const ROUTES: readonly Route[] = [
     const commands = read.host.commands.withSignal(read.signal)
     return sourcePage(read, 'feishu', () => feishuRead(commands, ref, read.resource, read.host.feishuPageSize()))
   }],
+  ['discord/', read => {
+    const [id, part, before, ...more] = read.rest.split('/')
+    if (!id || !['root', 'parent', 'thread'].includes(part ?? '') || more.length || (before && part !== 'thread')) throw new Error('Unknown Discord context resource')
+    const source = trigger(read.host, id, read.ticketId)
+    const config = DiscordConfigSchema.parse(read.host.store.settings().sources.discord?.config ?? {})
+    return sourcePage(read, 'discord', () => readDiscord(read.host.commands.withSignal(read.signal), source, part as 'root' | 'parent' | 'thread', before, config.readPageSize))
+  }],
   ['github/', read => sourcePage(read, 'github', () => readGithub(read.host.commands.withSignal(read.signal), read.resource))],
   ['trigger/', async read => {
     const { host, rest, ticketId, offset, signal } = read
@@ -220,12 +232,13 @@ const ROUTES: readonly Route[] = [
       : disposition
     // Omit card preview and self-reference because this resource returns the full text.
     const { preview: _preview, chars: _chars, read: _read, ...card } = triggerCard(found, visible)
-    const parent = found.source === 'feishu' && typeof found.meta.parentId === 'string' ? found.meta.parentId : undefined
-    const repliedTo = shown(parent ? host.store.triggers.get(feishuTriggerId(parent)) : undefined)
+    const parent = (found.source === 'feishu' || found.source === 'discord') && typeof found.meta.parentId === 'string' ? found.meta.parentId : undefined
+    const repliedTo = shown(parent ? host.store.triggers.get(found.source === 'discord' ? discordTriggerId(parent) : feishuTriggerId(parent)) : undefined)
     const neighbours = host.store.read.neighbours(threadKey(found.threads[0]!), found.at, found.id)
     const around = { before: shown(neighbours.before), after: shown(neighbours.after) }
     return { ...card, ...await host.sourceLink(found, signal), acknowledgement: host.store.replyStatus(key('ack', found.id)) ?? 'not_requested',
       ...(ref ? { context: feishuReferences(ref) } : {}),
+      ...(found.source === 'discord' ? { context: { root: `discord/${found.id}/root`, parent: `discord/${found.id}/parent`, thread: `discord/${found.id}/thread` } } : {}),
       ...(offset === 0 ? {
         ...repliedTo ? { replied_to: triggerLine(repliedTo) } : {},
         around: { ...around.before ? { before: triggerLine(around.before) } : {}, ...around.after ? { after: triggerLine(around.after) } : {} },

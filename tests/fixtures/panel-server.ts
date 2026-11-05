@@ -80,11 +80,13 @@ const dayAgo = () => new Date(Date.now() - 86_400_000).toISOString()
 export const problemOf = (code: SetupCode, values: Record<string, string> = {}) => new SetupError(code, values).problem
 // The kinds' configurations differ, and the fake reads them only as the records the views carry.
 const KINDS = [feishuKind, githubKind] as unknown as SourceKind[]
+const kinds = () => [...KINDS, ...server.extraKinds ?? []]
 export const MACHINE = { stateDir: '/srv/dsh-superagent', promptMaxChars: 100000, admissionContextMaxPages: 10,
   admissionContextTimeoutMs: 15000 }
 
 type Settings = ReturnType<typeof SettingsSchema.parse>
 export interface PanelServer {
+  extraKinds?: SourceKind[]
   joined?: Record<string, string>; joining?: Record<string, string>
   joinError?: string
   settings: Settings; revisions: Record<string, number>
@@ -124,9 +126,9 @@ function healthOf(name: string): Health {
   return server.setup.feishuProblem ? { state: 'paused', detail: server.setup.feishuProblem.detail } : { state: 'error',
     detail: 'socket closed' }
 }
-const problemOf_ = (id: string) => [server.setup.problem, server.setup.feishuProblem].find(item => item?.place === id) ?? undefined
+const problemOf_ = (id: string) => [server.setup.problem, server.setup.feishuProblem, server.setup.discordProblem].find(item => item?.place === id) ?? undefined
 function sourceSettings(): SourceView[] {
-  return KINDS.map(kind => {
+  return kinds().map(kind => {
     const config = kind.schema.parse(server.settings.sources[kind.kind]?.config ?? {})
     const problem = problemOf_(kind.kind)
     const { admission: _admission, ...part } = server.settings.policy.sources[kind.kind] ?? { allowed: [], admission: {} }
@@ -143,7 +145,7 @@ function sourceSettings(): SourceView[] {
   })
 }
 function sourceStatuses(): SourceStatusRow[] {
-  return KINDS.map(kind => {
+  return kinds().map(kind => {
     const enabled = server.settings.sources[kind.kind]?.enabled ?? true
     const health = kind.health.map(name => ({ name, ...healthOf(name) }))
     const problem = problemOf_(kind.kind)
@@ -181,7 +183,7 @@ const overviewView = (): ApiResponse<'GET overview'> => {
   const setup = problem ?? feishuProblem
   return {
     problems: [...setup ? [{ kind: 'setup' as const, ...setup }] : [],
-      ...KINDS.some(kind => server.settings.sources[kind.kind]?.enabled !== false) ? [] : [{ kind: 'no-source' as const }],
+      ...kinds().some(kind => server.settings.sources[kind.kind]?.enabled !== false) ? [] : [{ kind: 'no-source' as const }],
       ...feishuProblem || server.settings.sources.feishu?.enabled === false ? [] : [{ kind: 'source-error' as const, source: { id: 'feishu',
         title: { zh: '飞书', en: 'Feishu' },
         health: { name: 'feishu', state: 'error' as const, detail: 'socket closed' } } }],
@@ -190,7 +192,7 @@ const overviewView = (): ApiResponse<'GET overview'> => {
       { kind: 'eval-unavailable' as const, decisionId: 'u1', thread: threadSummary(), reason: [{ code: 'timeout' }], triggerId: 'e3' },
       ...server.settings.paused ? [{ kind: 'executor-paused' as const }] : [],
       // As on the host, every entry in error that is not a Source's own, a Policy sync, or the individually listed unavailable Evals is a runtime-error.
-      ...Object.entries(server.health).filter(([name, item]) => item.state === 'error' && !KINDS.some(kind => kind.health.includes(name))
+      ...Object.entries(server.health).filter(([name, item]) => item.state === 'error' && !kinds().some(kind => kind.health.includes(name))
         && !name.startsWith('sync:') && name !== 'evals')
         .map(([name, item]) => ({ kind: 'runtime-error' as const, name, detail: item.detail })),
       ...Object.values(server.settings.policy.sources).some(part => part.allowed.length) ? [] : [{ kind: 'no-allowed' as const }],
@@ -247,7 +249,7 @@ function initial(): PanelServer {
     en: 'Feishu message' } }
   const defaults = { revision: 0, previousRevision: null, savedAt: '', source: 'defaults' }
   return {
-    health: {}, down: false, pending: 0, opened: [], requests: [], misuse: [], queued: new Set(), dropped: [], failing: [],
+    extraKinds: [], health: {}, down: false, pending: 0, opened: [], requests: [], misuse: [], queued: new Set(), dropped: [], failing: [],
     setup: { machine: MACHINE, problem: null, feishuProblem: null,
       accounts: { repository: 'acme/widgets', agent: 'agent-bot', feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
         name: 'Widgets Bot' } } },
@@ -344,7 +346,7 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     return { paused: body.paused }
   } },
   'PUT settings/:block': { body: true, answer: ({ params: { block }, body }) => {
-    const source = block.startsWith('source:') ? KINDS.find(kind => `source:${kind.kind}` === block) : undefined
+    const source = block.startsWith('source:') ? kinds().find(kind => `source:${kind.kind}` === block) : undefined
     if (!['policy', 'eval', 'executor'].includes(block) && !source) return block.startsWith('source:') ? refuse(404, 'Source not found')
       : refuse(400, 'Invalid settings: block')
     if (body.revision !== (server.revisions[block] ?? 0)) return refuse(409, 'Settings changed. Reload before saving.')
@@ -360,7 +362,8 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
         const refused = new SetupError('feishuCliFailed', { output: 'lark-cli: app secret missing' })
         return refuse(400, refused.message, { setup: refused.problem })
       }
-      restarting = (config.cli ?? '') !== (server.settings.sources[source.kind]?.config.cli ?? '')
+      const previous = source.schema.parse(server.settings.sources[source.kind]?.config ?? {})
+      restarting = (SETUP_FIELDS[source.kind] ?? []).some(key => (config[key] ?? '') !== (previous[key] ?? ''))
       server.settings = { ...server.settings, sources: { ...server.settings.sources, [source.kind]: { enabled, config } } }
     }
     server.revisions[block] = (server.revisions[block] ?? 0) + 1
