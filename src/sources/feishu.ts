@@ -6,7 +6,7 @@ import { feishuLink, sendFeishu } from './feishu-channel.ts'
 import { feishuThreadContext } from './feishu-read.ts'
 import { refreshChatNames, runFeishu } from './feishu-loops.ts'
 import { SOURCE, feishuTriggerId } from './feishu-trigger.ts'
-import { sourceContext } from './host.ts'
+import { repositoryHosts, sourceContext } from './host.ts'
 import type { Localized, SourceKind } from './kind.ts'
 import type { SourceRegistry } from './registry.ts'
 
@@ -130,10 +130,12 @@ export const feishuSettings = (sources: SourceRegistry): FeishuConfig => sources
 export const name = 'dsh-superagent-feishu'
 export const inject = ['orchestrator']
 export function apply(ctx: Context): void {
-  ctx.effect(() => ctx.orchestrator.sources.register(feishuKind), 'feishu: source kind')
-  ctx.effect(() => {
-    const controller = new AbortController()
-    const running = runFeishu(sourceContext(ctx.orchestrator, feishuKind), controller.signal)
-    return async () => { controller.abort(); await running }
-  })
+  for (const host of repositoryHosts(ctx.orchestrator)) {
+    ctx.effect(() => host.sources.register(feishuKind), 'feishu: source kind')
+    ctx.effect(() => {
+      const controller = new AbortController()
+      const running = runFeishu(sourceContext(host, feishuKind), controller.signal)
+      return async () => { controller.abort(); await running }
+    })
+  }
 }

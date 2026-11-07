@@ -3,10 +3,10 @@ import { Config, type Machine } from '../src/deployment.ts'
 import { apply } from '../src/index.ts'
 
 // Stub Runtime to capture the resolved Machine settings and restart callback.
-const runtimes = vi.hoisted(() => [] as { machine: Machine; restart: () => void }[])
+const runtimes = vi.hoisted(() => [] as { machine: Machine; restart: () => void; options: import('../src/app/runtime.ts').RuntimeOptions; stop: () => Promise<void> }[])
 vi.mock('../src/app/runtime.ts', () => ({ Runtime: class {
   ready = Promise.resolve()
-  constructor(_ctx: unknown, readonly machine: Machine, readonly restart: () => void) { runtimes.push(this) }
+  constructor(_ctx: unknown, readonly machine: Machine, readonly restart: () => void, readonly options: import('../src/app/runtime.ts').RuntimeOptions) { runtimes.push(this) }
   configured() { return true }
   async stop() {}
 } }))
@@ -18,6 +18,8 @@ function context() {
   const configure = vi.fn(() => () => {})
   const describe = vi.fn(() => [])
   const ctx = {
+    subprocess: { spawn: vi.fn(), resolveExecutable: vi.fn(), spawnTerminal: vi.fn() },
+    isolate: vi.fn(() => ({ plugin: async (plugin: { apply: (child: unknown) => Promise<void> }) => plugin.apply({ effect: vi.fn() }) })),
     on: vi.fn((name: string, handler: () => void) => { handlers.set(name, handler) }),
     inject: vi.fn((_services: string[], callback: (child: unknown) => void) => { callback({ effect: (effect: () => unknown) => effect(), settings: { configure } }) }),
     effect: vi.fn(),
@@ -59,4 +61,29 @@ it('refuses keys of the previous configuration before registering anything', asy
   await expect(apply(ctx as never, Config({ stateDir: '/srv/state', github: { cli: 'gh' } } as never))).rejects.toThrow('github (now on the GitHub Source)')
   expect(ctx.on).not.toHaveBeenCalled()
   expect(ctx.inject).not.toHaveBeenCalled()
+})
+
+it('adds isolated local repositories without relocating the existing default state', async () => {
+  const { ctx } = context()
+  const before = runtimes.length
+  const spawn = ctx.subprocess.spawn
+  await apply(ctx as never, Config({ stateDir: '/srv/state', repositories: [{ id: 'backend', name: 'Backend' }] }))
+  const [primary, backend] = runtimes.slice(before)
+  expect(primary!.machine.stateDir).toBe('/srv/state')
+  expect(primary!.machine.scopedEnvironment).toBe(true)
+  expect(backend!.machine).toMatchObject({ stateDir: '/srv/state/repositories/backend', repositoryId: 'backend', scopedEnvironment: true })
+  expect(ctx.isolate).toHaveBeenCalledExactlyOnceWith('orchestrator')
+  expect(primary!.options.repositories!().map(entry => entry.id)).toEqual(['default', 'backend'])
+  expect(primary!.options.slots).toBe(backend!.options.slots)
+  const dispose = ctx.effect.mock.calls.at(-1)![0] as () => () => Promise<void>
+  await dispose()()
+  expect(ctx.subprocess.spawn).toBe(spawn)
+})
+
+it('rejects duplicate and reserved repository IDs before mounting any services', async () => {
+  for (const repositories of [[{ id: 'default' }], [{ id: 'backend' }, { id: 'backend' }]]) {
+    const { ctx } = context()
+    await expect(apply(ctx as never, Config({ stateDir: '/srv/state', repositories }))).rejects.toThrow('duplicate repository id')
+    expect(ctx.inject).not.toHaveBeenCalled()
+  }
 })

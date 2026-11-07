@@ -10,6 +10,33 @@ Use this guide to install, configure and operate dsh-superagent. It covers accou
 
 Plugin configuration holds the state directory and machine limits. Use the panel for everything else: Sources for the repository and accounts, Policy for allowed lists, and Execution for worker directories and commands.
 
+### Multiple local repositories
+
+Keep the existing repository as `default`. To add repositories to the same DSH service, extend the `dsh-superagent` profile configuration:
+
+```yaml
+- id: dsh-superagent
+  config:
+    stateDir: /srv/dsh-superagent
+    repositories:
+      - id: backend
+        name: Backend
+      - id: frontend
+        name: Frontend
+```
+
+Restart the service, open the panel, and select each repository in the header. On its Sources page set its GitHub/Gitea repository and CLI; then configure its allowed users, execution prepare command and optional prompts. An unconfigured repository waits for setup without pausing configured repositories. Adding entries does not grant any user access to the new repository.
+
+IDs must be unique lowercase identifiers starting with a letter (up to 48 characters); `default` is reserved. Keep IDs stable: each additional repository stores its SQLite database, locks, shims and workspaces under `<stateDir>/repositories/<id>`. The default repository keeps its original state directory, database, history and Sessions. Changing an ID creates a new repository context; removing one stops its runtime but retains its files. Do not copy an existing database into another repository context or repoint a populated context at a different repository/provider. Account changes and configuration changes currently restart the whole bundle, with the existing Assignment recovery behavior.
+
+Each repository keeps its existing router Session and one local Worker per Ticket, launched only when work exists. The default repository's Execution `maxWorkers` is the global concurrent-worker ceiling, and each additional repository's setting can impose a lower local ceiling. All repositories share startup reservations and running-worker slots; human follow-ups also respect the global ceiling in multi-repository mode. No remote workers, task splitting or cross-repository work routing are added.
+
+Native event IDs and Issue/PR numbers can repeat because each repository has a separate Store. Additional repositories namespace generated Ticket IDs so their Worker Sessions cannot collide in the shared DSH host. Multi-repository Sessions use per-tool subprocess environments instead of changing process-wide PATH/git settings; unrelated Sessions keep their ambient environment. The bundled bash/pwsh tools are supported; managed interactive terminals are unavailable. All Sessions still run under the operator's OS account, so these boundaries do not provide hostile-code isolation.
+
+In this version, give each repository distinct IM bot configurations and channel/chat destinations. Shared-channel request disambiguation is not implemented. The application rejects duplicate configured repositories and overlapping IM destinations during settings saves. Do not use alternate wrappers or token-file aliases for the same bot to bypass these checks.
+
+The management catalog is `GET /orchestrator/api/repositories`. Existing `/orchestrator/api/...` requests still address `default`; `/orchestrator/repositories/<id>/api/...` addresses one configured repository. Scoped routes use the same loopback and same-origin checks and never fall back to a different repository for an unknown ID. Select an explicit repository when writing through the API. The service script's existing status endpoint reports the default repository; inspect each additional repository's state through the scoped API or panel.
+
 ### Permissions and isolation
 
 The bundle defines `dsh-superagent-worker` for Executors and `dsh-superagent-router` for the main Session. They appear in the DeepSeek Harness preset list but are intended only for dsh-superagent. Do not select them for personal Sessions or disable their configuration rows. The application needs them to create and resume its Sessions.
@@ -48,7 +75,7 @@ Both presets run with `danger-full-access` as the operator's OS user and read me
 
 ### Agent Gitea account
 
-Choose Gitea instead of the GitHub account steps above. GitHub CLI is not needed in this mode. The existing repository Source appears as **GitHub / Gitea**; its persisted kind, health entry, policy namespace, `github/` read resources and `DSH_SUPERAGENT_GITHUB_*` environment variables retain their historical names. They refer to the selected Gitea repository, not github.com. One deployment watches one repository on one provider.
+Choose Gitea instead of the GitHub account steps above. GitHub CLI is not needed for a Gitea repository. The existing repository Source appears as **GitHub / Gitea**; its persisted kind, health entry, policy namespace, `github/` read resources and `DSH_SUPERAGENT_GITHUB_*` environment variables retain their historical names. They refer to the selected Gitea repository, not github.com. Each repository context watches one repository on one provider; contexts in the same deployment may use different providers.
 
 1. Create a dedicated Gitea account with write access to the repository. Create an access token for that account with the permissions needed to read the account, notifications, repository, issues and reviews, and write issues and pull requests. Restrict repository access where your Gitea version supports it. Do not paste the token into chat or the panel.
 2. Save a private JSON file outside the checkout, for example `/srv/agent/gitea.json`, owned by the agent's OS user with mode `0600`:

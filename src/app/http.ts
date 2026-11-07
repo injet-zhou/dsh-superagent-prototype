@@ -154,6 +154,7 @@ function routes(runtime: HttpHost): Routes {
   const ticket = (id: string) => { if (!store.tickets.get(id)) throw new RouteError(404, 'Ticket not found'); return id }
   const promptBody = (input: { body: (maxBytes?: number) => Promise<unknown> }) => input.body(4 * runtime.machine.promptMaxChars.get() + 4096)
   return {
+    'GET repositories': () => [{ id: 'default', name: 'Default', repository: runtime.configured() ? runtime.deployment.repository : '', configured: runtime.configured() }],
     'GET state': () => stateView(runtime),
     'GET overview': () => overview(views(runtime), runtime.health, policyVersion(store.settings()),
       executorLoad(store, runtime.executor.activeCount()), runtime.setupProblem ?? runtime.feishuProblem ?? runtime.discordProblem),
@@ -228,17 +229,26 @@ function match(table: Routes, method: string, segments: string[]) {
   }
   return undefined
 }
-export function registerHttp(ctx: Context, runtime: HttpHost): () => void {
+export function registerHttp(ctx: Context, runtime: HttpHost,
+  repositories: () => readonly { id: string; name: string; host: HttpHost }[] = () => [{ id: 'default', name: 'Default', host: runtime }]): () => void {
   if (ctx.webServer.host !== '127.0.0.1') throw new Error('Orchestrator management requires a loopback Web server')
   const table = routes(runtime)
   const disposers = [
     ctx.webServer.register({ kind: 'prefix', path: '/orchestrator', handler: async (req, res) => {
       const url = new URL(req.url ?? '/', 'http://localhost')
-      if (!url.pathname.startsWith('/orchestrator/api/')) { res.writeHead(404); res.end(); return }
       if (!sameOrigin(req, ctx.webServer.port)) { json(res, 403, { error: 'Same-origin management request required' }); return }
       try {
-        await runtime.ready
-        const route = match(table, req.method ?? 'GET', url.pathname.slice('/orchestrator/api/'.length).split('/'))
+        if (req.method === 'GET' && url.pathname === '/orchestrator/api/repositories') {
+          json(res, 200, repositories().map(({ id, name, host }) => ({ id, name,
+            repository: host.configured() ? host.deployment.repository : '', configured: host.configured() }))); return
+        }
+        const scoped = /^\/orchestrator\/repositories\/([^/]+)\/api\/(.*)$/.exec(url.pathname)
+        const selected = scoped ? repositories().find(entry => entry.id === scoped[1])?.host : runtime
+        if (!selected) throw new RouteError(404, 'Repository not found')
+        if (!scoped && !url.pathname.startsWith('/orchestrator/api/')) throw new RouteError(404, 'Unknown operation')
+        await selected.ready
+        const route = match(selected === runtime ? table : routes(selected), req.method ?? 'GET',
+          (scoped ? scoped[2]! : url.pathname.slice('/orchestrator/api/'.length)).split('/'))
         if (!route) throw new RouteError(404, 'Unknown operation')
         const query = Object.fromEntries(url.searchParams)
         json(res, 200, await route.run({ params: route.params as never, query, body: maxBytes => readBody(req, maxBytes) }))

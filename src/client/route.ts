@@ -50,9 +50,10 @@ const ROUTE_KEY = 'dsh-superagent/route'
 export interface Location { route: Route; stack: Route[]; group?: SettingsGroup | undefined }
 export const lastSettingsGroup = ({ route, group }: Location): SettingsGroup => route.page === 'settings' ? route.query.group
   : group ?? 'source'
-export function initialLocation(): Location {
+const routeKey = (repositoryId: string) => repositoryId === 'default' ? ROUTE_KEY : `${ROUTE_KEY}/${repositoryId}`
+export function initialLocation(repositoryId = 'default'): Location {
   try {
-    const stored = JSON.parse(sessionStorage.getItem(ROUTE_KEY) ?? 'null') as { route?: unknown; stack?: unknown; group?: unknown } | null
+    const stored = JSON.parse(sessionStorage.getItem(routeKey(repositoryId)) ?? 'null') as { route?: unknown; stack?: unknown; group?: unknown } | null
     const route = parseRoute(stored?.route)
     const stack = Array.isArray(stored?.stack) ? stored.stack as unknown[] : []
     if (route) return { route, stack: stack.flatMap(item => parseRoute(item) ?? []), group: pick(SETTINGS_GROUPS, stored?.group) }
@@ -62,6 +63,6 @@ export function initialLocation(): Location {
   }
   return { route: HOME, stack: [] }
 }
-export function remember(location: Location): void {
-  try { sessionStorage.setItem(ROUTE_KEY, JSON.stringify(location)) } catch (failure) { void failure /* Route memory is a convenience. */ }
+export function remember(location: Location, repositoryId = 'default'): void {
+  try { sessionStorage.setItem(routeKey(repositoryId), JSON.stringify(location)) } catch (failure) { void failure /* Route memory is a convenience. */ }
 }

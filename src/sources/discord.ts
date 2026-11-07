@@ -10,7 +10,7 @@ import { CliError, type Commands } from '../infra/commands.ts'
 import { DiscordChannel, DiscordMessage, Snowflake } from '../infra/discord.ts'
 import { checkedDiscordText } from '../infra/text.ts'
 import { KV } from '../kv.ts'
-import { health, sourceContext, type SourceContext } from './host.ts'
+import { health, repositoryHosts, sourceContext, type SourceContext } from './host.ts'
 import type { ChannelHost, ContextMessage, ContextPart, ContextPartName, Localized, SourceKind } from './kind.ts'
 import { pause } from './poll.ts'
 
@@ -280,10 +280,12 @@ export const discordKind: SourceKind<DiscordConfig> = {
 export const name = 'dsh-superagent-discord'
 export const inject = ['orchestrator']
 export function apply(ctx: Context): void {
-  ctx.effect(() => ctx.orchestrator.sources.register(discordKind), 'discord: source kind')
-  ctx.effect(() => {
-    const controller = new AbortController()
-    const running = runDiscord(sourceContext(ctx.orchestrator, discordKind), controller.signal)
-    return async () => { controller.abort(); await running }
-  })
+  for (const host of repositoryHosts(ctx.orchestrator)) {
+    ctx.effect(() => host.sources.register(discordKind), 'discord: source kind')
+    ctx.effect(() => {
+      const controller = new AbortController()
+      const running = runDiscord(sourceContext(host, discordKind), controller.signal)
+      return async () => { controller.abort(); await running }
+    })
+  }
 }

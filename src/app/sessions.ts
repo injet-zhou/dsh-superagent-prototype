@@ -8,6 +8,7 @@ import { dirname } from 'node:path'
 import { z } from 'zod'
 import { key, liveTicket, type Ticket } from '../core/index.ts'
 import { mandateInstructions, ticketOfSession } from '../executor/dsh.ts'
+import { withExecutionEnvironment } from '../infra/scoped-environment.ts'
 import type { HealthEntry } from '../infra/health.ts'
 import { AgentDelivery, messageId } from './delivery.ts'
 import type { Effects } from './effects.ts'
@@ -34,6 +35,7 @@ export interface SessionsHost {
   closing(): boolean
   /** Execution environment variables for `ticket`, rendered into its worker's system prompt. */
   environment(ticket: Ticket): Variable[]
+  executionEnvironment?(ticket?: Ticket): NodeJS.ProcessEnv
   /** Tools to register on the main Session (`ticket === undefined`) or on `ticket`'s worker Session. */
   tools(agent: Agent, ticket?: Ticket): Tool[]
 }
@@ -258,6 +260,7 @@ export class Sessions {
     // Bail out if the agent was disposed while awaiting the skill scope.
     if (this.bindings.get(agent) !== binding) return
     const register = this.registerTool(agent, binding)
+    this.scopeEnvironment(agent, binding, ticket)
     for (const tool of host.tools(agent, ticket)) register(tool.name, tool.description, tool.schema, tool.execute)
     if (master) {
       binding.disposers.push(agent.ctx.tools.restrict({ allow: ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill'] }),
@@ -308,7 +311,14 @@ export class Sessions {
     }
     const ticketId = parent === undefined ? undefined : ticketOfSession(parent)
     if (ticketId === undefined || !this.host.store.tickets.get(ticketId)) return
-    this.bindings.set(agent, { disposers: this.workOnly(agent, ticketId), subagent: true })
+    const binding: SessionBinding = { disposers: this.workOnly(agent, ticketId), subagent: true }
+    this.bindings.set(agent, binding)
+    this.scopeEnvironment(agent, binding, this.host.store.tickets.get(ticketId))
+  }
+  private scopeEnvironment(agent: Agent, binding: SessionBinding, ticket?: Ticket): void {
+    if (!this.host.executionEnvironment) return
+    binding.disposers.push(agent.ctx.on('tools/execute', (_execution, next) =>
+      withExecutionEnvironment(this.host.executionEnvironment!(ticket && this.host.store.tickets.get(ticket.id)), next)))
   }
   /** Register the skills of a prompt version in the agent's skill scope, in place of an earlier version's. */
   private bindSkills(binding: SessionBinding, version: PromptVersion): void {
