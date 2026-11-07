@@ -55,7 +55,7 @@ export function useAction<A extends unknown[]>(action: (...args: A) => Promise<u
   return { run, busy }
 }
 
-const messages = (t: T): ApiMessages => ({
+export const panelMessages = (t: T): ApiMessages => ({
   offline: t('offline'), notRunning: t('hostNotRunning'), serverError: status => t('serverError', { status }),
     requestFailed: status => t('requestFailed', { status }),
   setup: problem => problem.values.output ? `${setupText(t, problem)}\n${problem.values.output}` : setupText(t, problem),
@@ -71,15 +71,17 @@ function Toast({ text, onDone, holdMs = 3000 }: { text: string; onDone: () => vo
 }
 const stay = () => {}
 const noSession = async () => {}
-export function PanelProvider({ t, interval = 5000, openSession = noSession, navigate = stay, back = stay, backLabel = '', children }: {
+export function PanelProvider({ t, interval = 5000, openSession = noSession, navigate = stay, back = stay, backLabel = '', repositoryId = 'default', children }: {
   t: T; interval?: number; openSession?: (sessionId: string) => Promise<void>; navigate?: PanelContext['navigate']; back?: () => void
   backLabel?: string
+  repositoryId?: string
   children: ReactNode
 }) {
   // Read the current translator via ref so locale changes do not recreate `call` and restart polling.
   const copy = useRef(t)
   copy.current = t
-  const call = useMemo(() => caller(() => messages(copy.current)), [])
+  const call = useMemo(() => caller(() => panelMessages(copy.current), repositoryId === 'default' ? '/orchestrator/api/'
+    : `/orchestrator/repositories/${encodeURIComponent(repositoryId)}/api/`), [repositoryId])
   const [toast, setToast] = useState<{ text: string; id: number }>()
   const notify = useCallback((text: string) => setToast({ text, id: Date.now() }), [])
   // Poll at 1s during a restart until the server goes down and answers again, or time out after 30s if the restart completed between polls.

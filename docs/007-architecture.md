@@ -34,6 +34,14 @@ Startup registers management routes and runs Setup. After setup resolves, it ins
 
 Shutdown cancels turns, waits for passes, effects and agents, restores the process environment, closes the Store and releases the lock. Source plugins inject Runtime as the `orchestrator` service through the narrow `SourceHost` interface.
 
+When additional repositories are configured, `src/index.ts` constructs one Runtime per repository in isolated Cordis `orchestrator` scopes. The original Runtime remains `default`, using the original state directory and Session IDs; additional runtimes use `repositories/<id>` below it and namespace newly generated Ticket IDs by repository ID. Their separate Stores isolate native Trigger IDs, Thread keys, source cursors, settings, receipts and Effects. Source plugins enumerate `SourceHost.repositoryHosts()` and mount their existing adapter once per Runtime. This version keeps a router Session per repository and one Worker per Ticket; it adds neither distributed workers nor task decomposition.
+
+The default repository's `maxWorkers` is a shared strict worker limit. Each runtime also applies its own local limit. Startup reservations and running Sessions from every repository count against the shared `WorkerSlots`. Unlike standalone mode, human follow-ups cannot exceed the shared limit.
+
+Multi-repository Setup writes separate git configurations and shims but never applies them to `process.env`. `Sessions` wraps tool execution, including worker subagents, in an async-local execution environment. A reference-counted subprocess adapter supplies that environment to pipe launches and executable lookup. `runAsWorker` establishes the explicit environment of control-plane operations as a new async scope, including effects scheduled from another tool's context. Managed interactive terminals are unavailable in this mode. These are account-routing guardrails, not an OS security boundary.
+
+The root management handler serves a repository catalog and delegates scoped routes to the selected Runtime. The panel remounts its state and forms when the repository changes; API callers and navigation history are scoped to that repository, so in-flight operations retain their original destination. Settings validate duplicate repository and IM subscriptions synchronously at commit, after asynchronous account checks.
+
 | Part | Module | Does |
 | --- | --- | --- |
 | Setup | `src/app/setup.ts` | Resolves the repository and the accounts by probing their CLIs the way worker shells run them, writes and applies the workers' environment and command shims, and keeps the setup problems; Settings checks a changed account through it, and restarts through it, which runs setup again |
@@ -358,6 +366,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/infra/commands.ts` | `Commands`, the CLI transport: `run`; `api` and `pages`, limited to the configured repository and validated; `lark` as the bot; `git`. `CliError` carries the code a command's output reports, such as a GitHub HTTP status, and a command that prints nothing fails with how it ended, never with its arguments; `validItems` skips and counts the malformed items of a list |
 | `src/infra/gitea.ts` | Gitea REST normalization behind the existing repository Source: notifications, Issues, PRs, reviews and pagination; uses the account-isolated Python CLI, without changing the DSH Executor |
 | `src/infra/environment.ts` | The agent's process environment: command shims, the git configuration and credential helper, `runAsWorker`, and the checks of the environment and of a Ticket's directory |
+| `src/infra/scoped-environment.ts` | Async-local execution environments and reference-counted subprocess adaptation for local repositories sharing a DSH host |
+| `src/app/repository-isolation.ts` | Rejects duplicate repository subscriptions and shared IM bot configurations or channel destinations before a settings commit |
 | `src/infra/paths.ts` | The package's root, where packaged files are |
 | `src/infra/text.ts` | Word counts and the chat message limit, `fill` and `sameName` |
 | `src/infra/health.ts` | The `HealthBoard`, every part's health entry, each claimed by its one writer |
@@ -430,6 +440,9 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/runtime.spec.ts` | The whole application on a simulated DeepSeek Harness host, through tools and HTTP |
 | `tests/tools.spec.ts` | The Sessions' tools: what `orchestrator_read` reads for each role, and the shapes and checks of the other main Session tools |
 | `tests/runtime-concurrency.spec.ts` | Work that overlaps: Triggers during a pass, Tickets that change during deliveries and launches |
+| `tests/multi-repository.spec.ts` | Identical Issue IDs and independent Sessions on one host, scoped management mutations and tool environments, shared worker reservations and subscription conflicts |
+| `tests/panel-repositories.spec.tsx` | Repository selection remounts panel forms and scopes requests without changing in-flight callers |
+| `tests/scoped-environment.spec.ts` | Interleaved execution environments, async descendants, unchanged ambient process state and shared adapter disposal |
 | `tests/http.spec.ts` | The same-origin and loopback checks, the status of each kind of failure, the body limit, path parameters and queries |
 | `tests/settings.spec.ts` | Settings saves that race a model or account check, a Policy sync that a save outran, and the refusals of the pause, a sync and a block |
 | `tests/views.spec.ts` | What the management views derive from the Store, such as the Thread a dropped message belongs to |

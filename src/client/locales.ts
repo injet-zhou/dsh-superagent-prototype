@@ -8,6 +8,7 @@ import { HEALTH_TEXT } from '../sources/host.ts'
 const TEXT = {
   // Shared
   title: ['Superagent', 'Superagent'],
+  repositorySelector: ['切换仓库', 'Switch repository'],
   close: ['关闭', 'Close'],
   cancel: ['取消', 'Cancel'],
   confirm: ['确定', 'Confirm'],

@@ -23,9 +23,12 @@ export function health(state: Health['state'], code: HealthCode, values: Record<
 }
 export interface SourceHost {
   readonly sources: SourceRegistry
+  /** Local repository contexts; omitted by single-repository hosts and third-party fixtures. */
+  repositoryHosts?(): readonly SourceHost[]
   /** Returns the context for one Source kind; its `report` writes only the health entries declared by the kind. */
   context(kind: { kind: string; health: readonly string[] }): SourceContext
 }
+export const repositoryHosts = (host: SourceHost): readonly SourceHost[] => host.repositoryHosts?.() ?? [host]
 /** Display label, URL, and facts (`null` removes a fact) that a Source publishes on a Thread. */
 export interface ThreadDescription { label?: string; url?: string; facts?: Record<string, ThreadFact | null> }
 /** Application capabilities exposed to a Source kind for reading state, ingesting triggers, managing threads/tickets, and reporting health. */
