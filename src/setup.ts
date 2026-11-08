@@ -6,6 +6,7 @@ export const SETUP_PROBLEMS = {
   foreignFile: ['deployment', '{file} was not written by dsh-superagent; move it, or choose another state directory.'],
   gitTooOld: ['deployment', 'git does not read the repository credential configuration dsh-superagent writes; dsh-superagent needs git 2.32 or later.'],
   environmentFailed: ['deployment', 'Preparing the agent environment failed.'],
+  startupFailed: ['deployment', 'Startup failed during {stage}; fix the reported error and run the setup check again.'],
   repositoryUnset: ['github', 'The repository Source names no repository.'],
   baseUrlInvalid: ['github', 'Set a valid Gitea instance root URL: HTTPS (or HTTP on loopback), without /api/v1, credentials, query or fragment.'],
   agentCliUnset: ['github', 'The agent repository CLI is not set.'],

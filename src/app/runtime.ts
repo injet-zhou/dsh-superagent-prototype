@@ -19,7 +19,7 @@ import { SourceRegistry } from '../sources/registry.ts'
 import { Commands } from '../infra/commands.ts'
 import type { Deployment, Machine } from '../deployment.ts'
 import { environmentOf, ticketEnvironment, type Variable } from './execution-environment.ts'
-import type { SetupProblem } from '../setup.ts'
+import { SetupError, type SetupProblem } from '../setup.ts'
 import { DshExecutor, sourceTrigger, triggerMessage, workerSessionId, type WorkerSlots } from '../executor/dsh.ts'
 import { ticketCard } from './cards.ts'
 import { MasterAssessor } from './assessment.ts'
@@ -95,6 +95,7 @@ export class Runtime extends Service implements SourceHost {
   /** Non-zero while a main-Session tool is executing an Engine command, suppressing self-triggered domain event notices. */
   private quiet = 0
   private startupError?: string
+  private startupStage = 'registerHttp'
   constructor(ctx: Context, readonly machine: Machine, restart: () => void, private readonly options: RuntimeOptions = {}) {
     super(ctx, 'orchestrator')
     const runtime = this
@@ -179,7 +180,13 @@ export class Runtime extends Service implements SourceHost {
         requestPass: () => { passes.request() }, sendReplies: () => outbox.sent(),
         quietly: run => { this.quiet++; try { return run() } finally { this.quiet-- } } }
       this.ready = this.initialize().catch(error => {
-        this.startupError = String(error)
+        const problem = new SetupError('startupFailed', { stage: this.startupStage, output: String(error) }).problem
+        this.startupError = problem.detail
+        this.setup.problem = problem
+        this.ctx.logger.error('dsh-superagent repository %s failed during %s: %s', machine.repositoryId ?? 'default',
+          this.startupStage, error instanceof Error ? error.stack ?? error.message : String(error))
+        // Setup may have succeeded before Session initialization failed; keep the panel, but release process-wide overrides now.
+        this.setup.restore()
         this.runtimeHealth.set({ state: 'error', detail: this.startupError, at: now() })
         this.stopped.abort()
       })
@@ -227,20 +234,29 @@ export class Runtime extends Service implements SourceHost {
     // Register management HTTP routes before setup completes so operators can fix setup problems in the UI.
     if (this.options.http !== false) this.disposers.push(registerHttp(this.ctx, this.httpHost(), () =>
       this.options.repositories?.().map(({ id, name, runtime, error }) => ({ id, name, host: runtime?.httpHost(), error })) ?? [{ id: 'default', name: 'Default', host: this.httpHost() }]))
+    this.startupStage = 'validateSettings'
     this.options.validateSettings?.(this.store.settings())
+    this.startupStage = 'setup.run'
     if (!await this.setup.run(this.store.settings())) {
       this.runtimeHealth.set({ ...health('paused', 'setupPending'), at: now() })
       return
     }
     if (this.closing()) return
+    this.startupStage = 'sessions.install'
     this.sessions.install()
+    this.startupStage = 'executor.install'
     this.executor.install()
+    this.startupStage = 'sessions.ensure'
     await this.sessions.ensure(this.masterId, this.machine.stateDir, 'dsh-superagent orchestrator', 'orchestrator')
+    this.startupStage = 'settings.sync'
     for (const id of this.settings.syncable()) await this.settings.sync(id).catch(() => { /* sync() records its failure in health. */ })
     // If stop() was called while awaiting setup, session creation, or policy sync, do not start background loops.
     if (this.closing()) return
+    this.startupStage = 'executor.resume'
     this.executor.resume()
+    this.startupStage = 'passes.start'
     this.passes.start()
+    this.startupStage = 'effects.start'
     this.effects.start()
     this.runtimeHealth.set({ state: 'ready', detail: 'Orchestrator is ready', at: now() })
   }
