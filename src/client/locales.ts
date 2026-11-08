@@ -9,6 +9,8 @@ const TEXT = {
   // Shared
   title: ['Superagent', 'Superagent'],
   repositorySelector: ['切换仓库', 'Switch repository'],
+  repositoryGlobalLoad: ['全局运行 {running} / 自动派工上限 {maxWorkers}', 'Global running {running} / dispatch limit {maxWorkers}'],
+  repositoryFailures: ['仓库存在异常：', 'Repository errors:'],
   close: ['关闭', 'Close'],
   cancel: ['取消', 'Cancel'],
   confirm: ['确定', 'Confirm'],

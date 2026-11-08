@@ -13,6 +13,7 @@ export interface SourceContextDeps {
   readonly outbox: Pick<Outbox, 'send'>
   readonly engine: Pick<EngineForSources, 'bindThread' | 'threadClosed'>
   readonly commands: Commands
+  readonly commandEnvironment?: Readonly<Record<string, string>>
   readonly sources: SourceRegistry
   /** Throws when accessed before initial setup completes. */
   readonly deployment: Deployment
@@ -37,6 +38,7 @@ export function sourceContextOf(deps: SourceContextDeps, kind: { kind: string; h
   return {
     get deployment() { return deps.deployment },
     commands: deps.commands,
+    get commandEnvironment() { return deps.commandEnvironment },
     ready: deps.ready,
     configured: () => deps.configured(),
     get problem() { return [deps.feishuProblem, deps.discordProblem, deps.setupProblem].find(problem => problem?.place === kind.kind) },

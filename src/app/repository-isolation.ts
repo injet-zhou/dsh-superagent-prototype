@@ -2,7 +2,7 @@
 import type { Settings } from '../policy.ts'
 import { SettingsConflict } from './settings.ts'
 
-export function assertRepositoryIsolation(entries: readonly { id: string; settings: Settings }[]): void {
+export function assertRepositoryIsolation(entries: readonly { id: string; settings: Settings }[], multi = entries.length > 1): void {
   const owners = new Map<string, string>()
   const claim = (key: string, id: string) => {
     const previous = owners.get(key)
@@ -13,6 +13,7 @@ export function assertRepositoryIsolation(entries: readonly { id: string; settin
     for (const [kind, source] of Object.entries(settings.sources)) {
       if (!source.enabled) continue
       const config = source.config
+      if (multi && kind === 'feishu' && config.otherChats === 'mentions') throw new SettingsConflict('Multi-repository Feishu requires explicit chat lists; otherChats must be none')
       if (kind === 'github' && config.repository) {
         let instance = 'https://github.com'
         if (config.provider === 'gitea') {

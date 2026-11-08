@@ -39,6 +39,8 @@ export interface HttpHost {
   readonly engine: EngineForPeople
   readonly executor: Pick<DshExecutor, 'activeCount'>
   readonly health: Record<string, Health>
+  readonly repositoryHealth?: Record<string, Health>
+  globalLoad?: (() => { running: number; maxWorkers: number }) | undefined
   readonly machine: Machine
   readonly masterId: string
   /** Resolves once startup finishes or setup determines what is still missing. */
@@ -59,7 +61,7 @@ export interface HttpHost {
  * Represents a client-facing 400 or 404 error raised during management route parsing or lookup.
  * Route handlers throw it when request bodies are malformed or target records are missing, and registerHttp serializes its status and message in the HTTP response.
  */
-class RouteError extends Error { constructor(readonly status: 400 | 404, message: string) { super(message) } }
+class RouteError extends Error { constructor(readonly status: 400 | 404 | 503, message: string) { super(message) } }
 async function readBody(req: IncomingMessage, maxBytes = 128 * 1024): Promise<unknown> {
   let size = 0; const chunks: Buffer[] = []
   for await (const chunk of req) {
@@ -107,6 +109,7 @@ export function stateView(runtime: HttpHost) {
   const settings = runtime.store.settings()
   return { setup: setupView(runtime), load: { ...executorLoad(runtime.store, runtime.executor.activeCount()),
     maxWorkers: settings.executor.maxWorkers },
+    ...runtime.globalLoad ? { globalLoad: runtime.globalLoad() } : {},
     masterId: runtime.masterId, paused: settings.paused, health: runtime.health }
 }
 const views = (runtime: HttpHost): ViewHost => ({ store: runtime.store, sources: runtime.sources, links: runtime.links() })
@@ -149,12 +152,12 @@ const SourceBlock = z.templateLiteral(['source:', z.string().regex(/^[a-z][a-z0-
 const SettingsBlockSchema = z.union([z.enum(['policy', 'eval', 'executor']), SourceBlock])
 const SaveRequest = z.object({ value: z.unknown(), revision: z.number().int().nonnegative() })
 
-function routes(runtime: HttpHost): Routes {
+function routes(runtime: HttpHost, catalog: () => ApiResponse<'GET repositories'>): Routes {
   const { store } = runtime
   const ticket = (id: string) => { if (!store.tickets.get(id)) throw new RouteError(404, 'Ticket not found'); return id }
   const promptBody = (input: { body: (maxBytes?: number) => Promise<unknown> }) => input.body(4 * runtime.machine.promptMaxChars.get() + 4096)
   return {
-    'GET repositories': () => [{ id: 'default', name: 'Default', repository: runtime.configured() ? runtime.deployment.repository : '', configured: runtime.configured() }],
+    'GET repositories': catalog,
     'GET state': () => stateView(runtime),
     'GET overview': () => overview(views(runtime), runtime.health, policyVersion(store.settings()),
       executorLoad(store, runtime.executor.activeCount()), runtime.setupProblem ?? runtime.feishuProblem ?? runtime.discordProblem),
@@ -230,25 +233,30 @@ function match(table: Routes, method: string, segments: string[]) {
   return undefined
 }
 export function registerHttp(ctx: Context, runtime: HttpHost,
-  repositories: () => readonly { id: string; name: string; host: HttpHost }[] = () => [{ id: 'default', name: 'Default', host: runtime }]): () => void {
+  repositories: () => readonly { id: string; name: string; host?: HttpHost; error?: string }[] = () => [{ id: 'default', name: 'Default', host: runtime }]): () => void {
   if (ctx.webServer.host !== '127.0.0.1') throw new Error('Orchestrator management requires a loopback Web server')
-  const table = routes(runtime)
+  const catalog = (): ApiResponse<'GET repositories'> => repositories().map(({ id, name, host, error }) => {
+    const health = host?.repositoryHealth ?? host?.health ?? { runtime: { state: error ? 'error' as const : 'starting' as const, detail: error ?? 'Initializing repository' } }
+    const state = Object.values(health).some(item => item.state === 'error') ? 'error' : health.runtime?.state ?? 'starting'
+    return { id, name, repository: host?.configured() ? host.deployment.repository : '', configured: host?.configured() ?? false,
+      state, health, ...error ? { error } : {}, ...runtime.globalLoad ? { globalLoad: runtime.globalLoad() } : {} }
+  })
+  const table = routes(runtime, catalog)
   const disposers = [
     ctx.webServer.register({ kind: 'prefix', path: '/orchestrator', handler: async (req, res) => {
       const url = new URL(req.url ?? '/', 'http://localhost')
       if (!sameOrigin(req, ctx.webServer.port)) { json(res, 403, { error: 'Same-origin management request required' }); return }
       try {
-        if (req.method === 'GET' && url.pathname === '/orchestrator/api/repositories') {
-          json(res, 200, repositories().map(({ id, name, host }) => ({ id, name,
-            repository: host.configured() ? host.deployment.repository : '', configured: host.configured() }))); return
-        }
         const scoped = /^\/orchestrator\/repositories\/([^/]+)\/api\/(.*)$/.exec(url.pathname)
-        const selected = scoped ? repositories().find(entry => entry.id === scoped[1])?.host : runtime
-        if (!selected) throw new RouteError(404, 'Repository not found')
+        const entry = scoped ? repositories().find(entry => entry.id === scoped[1]) : undefined
+        if (scoped && !entry) throw new RouteError(404, 'Repository not found')
         if (!scoped && !url.pathname.startsWith('/orchestrator/api/')) throw new RouteError(404, 'Unknown operation')
-        await selected.ready
-        const route = match(selected === runtime ? table : routes(selected), req.method ?? 'GET',
-          (scoped ? scoped[2]! : url.pathname.slice('/orchestrator/api/'.length)).split('/'))
+        const path = scoped ? scoped[2]! : url.pathname.slice('/orchestrator/api/'.length)
+        if (req.method === 'GET' && path === 'repositories') { json(res, 200, catalog()); return }
+        if (entry && !entry.host) throw new RouteError(503, entry.error ?? 'Repository is still initializing')
+        const selected = entry?.host ?? runtime
+        if (req.method !== 'GET' && selected.repositoryHealth?.runtime?.state === 'starting') throw new RouteError(503, 'Repository setup is still running; retry after it finishes')
+        const route = match(selected === runtime ? table : routes(selected, catalog), req.method ?? 'GET', path.split('/'))
         if (!route) throw new RouteError(404, 'Unknown operation')
         const query = Object.fromEntries(url.searchParams)
         json(res, 200, await route.run({ params: route.params as never, query, body: maxBytes => readBody(req, maxBytes) }))

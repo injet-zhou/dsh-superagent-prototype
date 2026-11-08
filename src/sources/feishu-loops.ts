@@ -14,6 +14,7 @@ import { health, type SourceContext } from './host.ts'
 import { KV } from '../kv.ts'
 import { cursorAt, POLL_HORIZON_MS, polled, pollThreads as pollEach } from './poll.ts'
 import type { FeishuConfig } from './feishu.ts'
+import { sourceProcessEnvironment } from '../infra/environment.ts'
 
 export const runFeishu = (ctx: SourceContext, signal: AbortSignal): Promise<unknown> =>
   Promise.allSettled([watch, backfillLoop, chatNamesLoop].map(loop => loop(ctx, signal)))
@@ -69,7 +70,7 @@ export const consumerRetry = (previous: number | undefined, ranMs: number): numb
   previous === undefined || ranMs >= 60_000 ? 1000 : Math.min(previous * 2, 60_000)
 async function consume(ctx: SourceContext, signal: AbortSignal): Promise<void> {
   const child = spawn(bot(ctx).cli, ['event', 'consume', 'im.message.receive_v1', '--as', 'bot'],
-    { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, LARKSUITE_CLI_NO_UPDATE_NOTIFIER: '1',
+    { stdio: ['pipe', 'pipe', 'pipe'], env: { ...sourceProcessEnvironment(ctx.commandEnvironment), LARKSUITE_CLI_NO_UPDATE_NOTIFIER: '1',
       LARKSUITE_CLI_NO_SKILLS_NOTIFIER: '1' } })
   const stdout = createInterface({ input: child.stdout }); const stderr = createInterface({ input: child.stderr })
   let chain = Promise.resolve(); let diagnostic = ''; let ready = false

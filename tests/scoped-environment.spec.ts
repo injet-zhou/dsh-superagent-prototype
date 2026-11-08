@@ -36,12 +36,16 @@ it('keeps a shared seam installed until its last owner stops and rejects scoped 
   const service = { spawn: vi.fn(), resolveExecutable: vi.fn(), spawnTerminal: vi.fn() } as unknown as SubprocessRuntime
   const original = service.spawn
   const terminal = service.spawnTerminal
-  const one = installScopedEnvironment(service), two = installScopedEnvironment(service)
+  const one = installScopedEnvironment(service, id => id === 'worker-managed'), two = installScopedEnvironment(service, id => id === 'router-managed')
+  expect(() => service.spawnTerminal({ env: { DSH_SESSION_ID: 'worker-managed' } } as never)).toThrow('Interactive terminals')
   one(); one()
   expect(service.spawn).not.toBe(original)
   expect(() => withExecutionEnvironment({}, () => service.spawnTerminal({} as never))).toThrow('Interactive terminals')
+  // UI terminal controller calls outside tools/execute still carry the Session identity.
+  expect(() => service.spawnTerminal({ env: { DSH_SESSION_ID: 'router-managed' } } as never)).toThrow('Interactive terminals')
+  await service.spawnTerminal({ env: { DSH_SESSION_ID: 'personal-session' } } as never)
   await service.spawnTerminal({} as never)
-  expect(terminal).toHaveBeenCalledTimes(1)
+  expect(terminal).toHaveBeenCalledTimes(2)
   two()
   expect(service.spawn).toBe(original)
 })

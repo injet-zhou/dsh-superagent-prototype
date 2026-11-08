@@ -39,7 +39,7 @@ import { Outbox } from './outbox.ts'
 import { Passes } from './passes.ts'
 import { Setup } from './setup.ts'
 import { feishuSettings } from '../sources/feishu.ts'
-import { health, type Health, type SourceContext, type SourceHost } from '../sources/host.ts'
+import { health, type Health, type SourceContext, type SourceHost, type RepositoryMount, type SourceDisposer } from '../sources/host.ts'
 import { Sessions } from './sessions.ts'
 import { Settings } from './settings.ts'
 import { sourceContextOf, type SourceContextDeps } from './source-context.ts'
@@ -52,7 +52,10 @@ import type { Settings as SettingsValue } from '../policy.ts'
 declare module '@deepseek-ai/cordis' { interface Context { orchestrator: SourceHost } }
 const now = (): string => new Date().toISOString()
 export interface RuntimeOptions {
-  repositories?: () => readonly { id: string; name: string; runtime: Runtime }[]
+  repositories?: () => readonly { id: string; name: string; runtime?: Runtime; error?: string }[]
+  watchRepositories?: (mount: RepositoryMount) => SourceDisposer
+  globalLoad?: () => { running: number; maxWorkers: number }
+  aggregateHealth?: () => Record<string, Health>
   http?: boolean
   slots?: WorkerSlots
   validateSettings?: (settings: SettingsValue) => void
@@ -91,6 +94,7 @@ export class Runtime extends Service implements SourceHost {
   private readonly toolHost: MainToolsHost & ExecutorToolsHost
   /** Non-zero while a main-Session tool is executing an Engine command, suppressing self-triggered domain event notices. */
   private quiet = 0
+  private startupError?: string
   constructor(ctx: Context, readonly machine: Machine, restart: () => void, private readonly options: RuntimeOptions = {}) {
     super(ctx, 'orchestrator')
     const runtime = this
@@ -167,13 +171,18 @@ export class Runtime extends Service implements SourceHost {
       const passes = this.passes = new Passes({ engine: { receive: trigger => engine.receive(trigger), evaluateDue }, effects,
         health: this.runtimeHealth, lifetime: this.lifetime, configured: () => setup.configured(), closing: () => this.closing() })
       this.sourceDeps = { store, engine, outbox, commands, sources, get ready() { return runtime.ready },
-        get deployment() { return setup.deployment }, configured: () => setup.configured(),
+        get commandEnvironment() { return setup.sourceEnvironment },
+        get deployment() { return setup.deployment }, configured: () => runtime.configured(),
         get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem }, get discordProblem() { return setup.discordProblem }, receive: trigger => passes.receive(trigger) }
       this.toolHost = { context: ctx, engine, store, prompts, sessions, settings: this.settings, assessor, resources,
         get github() { return runtime.context({ kind: 'github', health: ['github'] }) },
         requestPass: () => { passes.request() }, sendReplies: () => outbox.sent(),
         quietly: run => { this.quiet++; try { return run() } finally { this.quiet-- } } }
-      this.ready = this.initialize()
+      this.ready = this.initialize().catch(error => {
+        this.startupError = String(error)
+        this.runtimeHealth.set({ state: 'error', detail: this.startupError, at: now() })
+        this.stopped.abort()
+      })
     } catch (error) {
       // Release the database and state lock if initialization fails so an in-process restart can reacquire them.
       try { opened?.close() } finally { release() }
@@ -184,10 +193,15 @@ export class Runtime extends Service implements SourceHost {
   /** Aborted when dsh-superagent stops or loses its state directory lock, cancelling running reads and subprocesses. */
   get lifetime(): AbortSignal { return this.stopped.signal }
   context(kind: { kind: string; health: readonly string[] }): SourceContext { return sourceContextOf(this.sourceDeps, kind) }
-  repositoryHosts(): readonly SourceHost[] { return this.options.repositories?.().map(entry => entry.runtime) ?? [this] }
+  repositoryHosts(): readonly SourceHost[] { return this.options.repositories?.().flatMap(entry => entry.runtime ? [entry.runtime] : []) ?? [this] }
+  watchRepositories(mount: RepositoryMount): SourceDisposer {
+    if (this.options.watchRepositories) return this.options.watchRepositories(mount)
+    const disposers = this.repositoryHosts().map(mount)
+    return async () => { await Promise.all(disposers.reverse().map(dispose => dispose())) }
+  }
   /** Resolved deployment; throws while waiting for setup (`!configured()`). */
   get deployment(): Deployment { return this.setup.deployment }
-  configured(): boolean { return this.setup.configured() }
+  configured(): boolean { return !this.startupError && this.setup.configured() }
   get setupProblem(): SetupProblem | undefined { return this.setup.problem }
   /** Why the Feishu bot is unavailable even though the Feishu Source configures a CLI. */
   get feishuProblem(): SetupProblem | undefined { return this.setup.feishuProblem }
@@ -201,23 +215,24 @@ export class Runtime extends Service implements SourceHost {
     const { setup: { deployment }, sources } = this
     return ticketEnvironment({ deployment, sources, settings: this.store.settings(), ticket, ...trigger ? { trigger } : {} })
   }
-  checkSetup(): void { this.setup.check() }
+  checkSetup(): void { if (this.startupError) this.setup.restart(); else this.setup.check() }
   receive(trigger: Trigger): ReceiveResult { return this.passes.receive(trigger) }
   idle(): Promise<void> { return this.passes.idle() }
   pump(): Promise<void> { return this.passes.pump() }
   sendReplies(): Promise<void> { return this.outbox.sent() }
   private closing(): boolean { return this.closingFlag }
   /** Hold evaluation, dispatch, and outbound delivery while paused or awaiting setup; sources still record incoming triggers. */
-  private paused(): boolean { return !this.setup.configured() || this.store.settings().paused }
+  private paused(): boolean { return !this.configured() || this.store.settings().paused }
   private async initialize(): Promise<void> {
-    this.options.validateSettings?.(this.store.settings())
     // Register management HTTP routes before setup completes so operators can fix setup problems in the UI.
     if (this.options.http !== false) this.disposers.push(registerHttp(this.ctx, this.httpHost(), () =>
-      this.options.repositories?.().map(({ id, name, runtime }) => ({ id, name, host: runtime.httpHost() })) ?? [{ id: 'default', name: 'Default', host: this.httpHost() }]))
+      this.options.repositories?.().map(({ id, name, runtime, error }) => ({ id, name, host: runtime?.httpHost(), error })) ?? [{ id: 'default', name: 'Default', host: this.httpHost() }]))
+    this.options.validateSettings?.(this.store.settings())
     if (!await this.setup.run(this.store.settings())) {
       this.runtimeHealth.set({ ...health('paused', 'setupPending'), at: now() })
       return
     }
+    if (this.closing()) return
     this.sessions.install()
     this.executor.install()
     await this.sessions.ensure(this.masterId, this.machine.stateDir, 'dsh-superagent orchestrator', 'orchestrator')
@@ -231,12 +246,15 @@ export class Runtime extends Service implements SourceHost {
   }
   private httpHost(): HttpHost {
     const runtime = this
-    const { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks, setup, passes } = this
-    return { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks,
+    const { store, sources, prompts, sessions, settings, engine, executor, machine, masterId, sourceLinks, setup, passes } = this
+    return { store, sources, prompts, sessions, settings, engine, executor, machine, masterId, sourceLinks,
+      get ready() { return runtime.ready }, get health() { return { ...runtime.health, ...runtime.options.aggregateHealth?.() } },
+      get repositoryHealth() { return runtime.health },
+      globalLoad: this.options.globalLoad,
       get deployment() { return setup.deployment },
       get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem }, get discordProblem() { return setup.discordProblem },
-      configured: () => setup.configured(), links: () => runtime.links(), ticketEnvironment: ticket => runtime.ticketEnvironment(ticket),
-      checkSetup: () => { setup.check() }, requestPass: () => { passes.request() }, models: () => this.ctx.sessionController.modelCatalog() }
+      configured: () => runtime.configured(), links: () => runtime.links(), ticketEnvironment: ticket => runtime.ticketEnvironment(ticket),
+      checkSetup: () => { runtime.checkSetup() }, requestPass: () => { passes.request() }, models: () => this.ctx.sessionController.modelCatalog() }
   }
   /** Idempotent stop; concurrent or repeated calls share the same shutdown promise. */
   stop(): Promise<void> { return this.stopping ??= this.shutdown() }

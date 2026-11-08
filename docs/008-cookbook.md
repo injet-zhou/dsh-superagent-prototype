@@ -39,7 +39,7 @@ import { z } from 'zod'
 import { key, threadKey, type OutboundMessage, type Trigger } from '../core/index.ts'
 import { CliError } from '../infra/commands.ts'
 import { KV } from '../kv.ts'
-import { health, sourceContext, type SourceContext } from './host.ts'
+import { health, mountSource, sourceContext, type SourceContext } from './host.ts'
 import type { SourceKind } from './kind.ts'
 ```
 
@@ -255,19 +255,11 @@ The prepare command reads environment variables; the worker reads their values i
 export const name = 'dsh-superagent-webhook'
 export const inject = ['orchestrator']
 export function apply(ctx: Context): void {
-  ctx.effect(() => ctx.orchestrator.sources.register(webhookKind), 'webhook: source kind')
-  ctx.effect(() => {
-    const source = sourceContext(ctx.orchestrator, webhookKind)
-    const controller = new AbortController()
-    // DSH ends its process on an unhandled rejection, so a failure that escapes the loop becomes the Source's health.
-    const running = watch(source, controller.signal)
-      .catch((error: unknown) => { source.report('webhook', { state: 'error', detail: String(error) }) })
-    return async () => { controller.abort(); await running }
-  })
+  mountSource(ctx, webhookKind, watch)
 }
 ```
 
-The plugin injects `orchestrator`. Its first effect registers the kind and unregisters it on disposal. The second runs the polling loop with a `SourceContext`. Disposal aborts the loop and awaits completion, including during application stop or restart.
+The plugin injects `orchestrator`. `mountSource` subscribes to current and future repository hosts using `watchRepositories`, registers the kind separately on each, and starts its loop after that repository is ready. Disposal aborts and awaits each loop, then unregisters its kind. Do not register directly on `ctx.orchestrator.sources` or take a one-time host snapshot: those patterns miss repositories mounted after startup. Long-lived native Source processes must use `ctx.commandEnvironment` with credential/git/DSH-identity sanitization, never `{ ...process.env }`.
 
 ```ts
 async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {

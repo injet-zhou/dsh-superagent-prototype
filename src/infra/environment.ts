@@ -11,6 +11,13 @@ import type { Deployment } from '../deployment.ts'
 import { SetupError } from '../setup.ts'
 import { CliError } from './commands.ts'
 import { withExecutionEnvironment } from './scoped-environment.ts'
+import { scrubbedParentEnv, SENSITIVE_ENV_PATTERN } from '@deepseek-ai/dsh-subprocess'
+
+/** Source consumers do not need operator credentials, git configuration or inherited DSH identity. */
+export function sourceProcessEnvironment(overrides: NodeJS.ProcessEnv = {}): Record<string, string> {
+  return Object.fromEntries(Object.entries({ ...scrubbedParentEnv(), ...overrides })
+    .filter((entry): entry is [string, string] => entry[1] !== undefined && !SENSITIVE_ENV_PATTERN.test(entry[0]) && !/^(GIT_|DSH_)/i.test(entry[0])))
+}
 
 const MARKER = '# Written by dsh-superagent on every start; edits are lost.'
 /** Markers of files written under the project's earlier names (`dsh-tag`, `dsh-go`, `dsh-freelancer`), which `dsh-superagent` owns and replaces too. */

@@ -2,7 +2,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { UserError } from '../core/index.ts'
 import { GithubAccountsSchema, SETUP_FIELDS, resolveDeployment, resolveFeishuBot, resolveDiscordBot, workerProbe, type Deployment, type Machine } from '../deployment.ts'
-import { agentVariables, applyEnvironment, runAsWorker, verifyEnvironment, withoutDirectory, workerBin, writeEnvironment } from '../infra/environment.ts'
+import { agentVariables, applyEnvironment, runAsWorker, sourceProcessEnvironment, verifyEnvironment, withoutDirectory, workerBin, writeEnvironment } from '../infra/environment.ts'
 import { delimiter } from 'node:path'
 import type { Settings, SettingsBlock } from '../policy.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
@@ -42,6 +42,7 @@ export class Setup {
   }
   /** Host command environment with agent git variables applied and the worker shim directory excluded from PATH. */
   get commandEnvironment(): Record<string, string | undefined> { return { ...this.variables, PATH: this.path } }
+  get sourceEnvironment(): Record<string, string> { return sourceProcessEnvironment({ PATH: this.path }) }
   get executionEnvironment(): NodeJS.ProcessEnv { return { ...this.variables, PATH: [workerBin(this.host.machine.stateDir), this.path].join(delimiter) } }
   get deployment(): Deployment {
     if (!this.resolved) throw new Error(`dsh-superagent is waiting for setup: ${this.problem?.detail ?? 'setup has not run'}`)

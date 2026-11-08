@@ -2,6 +2,12 @@
 
 Open **Superagent** in the DeepSeek Harness Web sidebar to supervise the agent. The panel prioritizes work that needs a person, then system health and history. This document builds on [000 Philosophy](000-philosophy.md) through [004 Prompts](004-prompts.md).
 
+## Repository selection
+
+With multiple local repositories configured, the header selector chooses the repository for all pages, searches, histories and settings. Selection is remembered in sessionStorage; an ID removed from configuration falls back to default. Switching repositories remounts forms and clears unsaved drafts, while existing in-flight requests keep their original destination. Each repository keeps separate navigation history.
+
+The header shows global running usage and the automatic-dispatch ceiling, alongside warnings linking to repositories with startup or Source errors. Local Execution load still describes the selected repository. The ceiling governs automatic launches and wakes, not direct user turns or background jobs handed off to a person.
+
 ## Three questions
 
 Opening the panel answers three questions, in this order:

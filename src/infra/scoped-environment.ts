@@ -3,7 +3,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 
 const environments = new AsyncLocalStorage<NodeJS.ProcessEnv>()
-const installed = new WeakMap<SubprocessRuntime, { users: number; restore: () => void }>()
+const installed = new WeakMap<SubprocessRuntime, { owners: Set<(id: string) => boolean>; restore: () => void }>()
 
 /** Async descendants, including background launches, inherit this tool's environment. */
 export function withExecutionEnvironment<T>(env: NodeJS.ProcessEnv, work: () => T): T {
@@ -11,10 +11,11 @@ export function withExecutionEnvironment<T>(env: NodeJS.ProcessEnv, work: () => 
 }
 
 /** Install once on the host seam; unrelated DSH Sessions retain their original behavior. */
-export function installScopedEnvironment(subprocess: SubprocessRuntime): () => void {
+export function installScopedEnvironment(subprocess: SubprocessRuntime, managedSession: (id: string) => boolean = () => false): () => void {
   let installation = installed.get(subprocess)
   if (!installation) {
     const { spawn, resolveExecutable, spawnTerminal } = subprocess
+    const owners = new Set<(id: string) => boolean>()
     subprocess.spawn = function (spec) {
       const env = environments.getStore()
       return spawn.call(this, env ? { ...spec, env: { ...spec.env, ...env } } : spec)
@@ -25,17 +26,20 @@ export function installScopedEnvironment(subprocess: SubprocessRuntime): () => v
       return resolveExecutable.call(this, command, merged, signal)
     }
     subprocess.spawnTerminal = function (spec) {
-      if (environments.getStore()) throw new Error('Interactive terminals are not supported in multi-repository Sessions; use bash or pwsh')
+      const sessionId = spec.env?.DSH_SESSION_ID
+      if (environments.getStore() || (sessionId && [...owners].some(owns => owns(sessionId)))) throw new Error('Interactive terminals are not supported in multi-repository Sessions; use bash or pwsh')
       return spawnTerminal.call(this, spec)
     }
-    installation = { users: 0, restore: () => { subprocess.spawn = spawn; subprocess.resolveExecutable = resolveExecutable; subprocess.spawnTerminal = spawnTerminal } }
+    installation = { owners, restore: () => { subprocess.spawn = spawn; subprocess.resolveExecutable = resolveExecutable; subprocess.spawnTerminal = spawnTerminal } }
     installed.set(subprocess, installation)
   }
-  installation.users++
+  const owner = (id: string) => managedSession(id)
+  installation.owners.add(owner)
   let released = false
   return () => {
     if (released) return
     released = true
-    if (--installation.users === 0) { installation.restore(); installed.delete(subprocess) }
+    installation.owners.delete(owner)
+    if (!installation.owners.size) { installation.restore(); installed.delete(subprocess) }
   }
 }

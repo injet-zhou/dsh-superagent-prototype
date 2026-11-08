@@ -32,15 +32,15 @@ flowchart TB
 
 Startup registers management routes and runs Setup. After setup resolves, it installs Session and Executor hooks, ensures the main Session exists, starts Policy syncs, resumes interrupted Assignments, and starts passes and effects. `ready` marks completion of startup.
 
-Shutdown cancels turns, waits for passes, effects and agents, restores the process environment, closes the Store and releases the lock. Source plugins inject Runtime as the `orchestrator` service through the narrow `SourceHost` interface.
+Shutdown cancels turns, waits for passes, effects and agents, restores the process environment, closes the Store and releases the lock. Source plugins inject Runtime as the `orchestrator` service through the narrow `SourceHost` interface. Source plugin entries should use `mountSource(ctx, kind, start)` to cover current and future repository contexts.
 
-When additional repositories are configured, `src/index.ts` constructs one Runtime per repository in isolated Cordis `orchestrator` scopes. The original Runtime remains `default`, using the original state directory and Session IDs; additional runtimes use `repositories/<id>` below it and namespace newly generated Ticket IDs by repository ID. Their separate Stores isolate native Trigger IDs, Thread keys, source cursors, settings, receipts and Effects. Source plugins enumerate `SourceHost.repositoryHosts()` and mount their existing adapter once per Runtime. This version keeps a router Session per repository and one Worker per Ticket; it adds neither distributed workers nor task decomposition.
+When additional repositories are configured, `src/index.ts` publishes the default Runtime without waiting for multi-repository setup, then mounts additional Runtimes in independent Cordis fibers and service scopes. Runtime readiness is observed separately; a slow probe does not delay other Source loops. A child constructor failure is retained in the catalog, and an asynchronous startup failure becomes that Runtime's error health. Management reads remain available during setup. The original Runtime remains `default`, using the original state directory and Session IDs; additional runtimes use `repositories/<id>` below it and namespace newly generated Ticket IDs by repository ID. Their separate Stores isolate native Trigger IDs, Thread keys, source cursors, settings, receipts and Effects. Source plugins use `mountSource` to subscribe to `SourceHost.watchRepositories()`, mounting adapters for both current and subsequently created Runtimes. A one-time `repositoryHosts()` snapshot is insufficient for dynamic startup. This version keeps a router Session per repository and one Worker per Ticket; it adds neither distributed workers nor task decomposition.
 
-The default repository's `maxWorkers` is a shared strict worker limit. Each runtime also applies its own local limit. Startup reservations and running Sessions from every repository count against the shared `WorkerSlots`. Unlike standalone mode, human follow-ups cannot exceed the shared limit.
+The default repository's `maxWorkers` is a shared ceiling for automatic launch/wake dispatch, not a hard limit on all Session activity. Each runtime also applies its own local limit. Startup reservations and running Sessions from every repository count against the shared `WorkerSlots`. Automatically delivered human follow-ups respect this ceiling. A person can still start a turn directly in a Worker Session, and handed-off background jobs may continue outside these slots; these paths are not admission-controlled by WorkerSlots.
 
-Multi-repository Setup writes separate git configurations and shims but never applies them to `process.env`. `Sessions` wraps tool execution, including worker subagents, in an async-local execution environment. A reference-counted subprocess adapter supplies that environment to pipe launches and executable lookup. `runAsWorker` establishes the explicit environment of control-plane operations as a new async scope, including effects scheduled from another tool's context. Managed interactive terminals are unavailable in this mode. These are account-routing guardrails, not an OS security boundary.
+Multi-repository Setup writes separate git configurations and shims but never applies them to `process.env`. `Sessions` wraps tool execution, including worker subagents, in an async-local execution environment. A reference-counted subprocess adapter supplies that environment to pipe launches and executable lookup. `runAsWorker` establishes the explicit environment of control-plane operations as a new async scope, including effects scheduled from another tool's context. Managed interactive terminals are rejected both inside tools and outside them by checking the terminal spec's `DSH_SESSION_ID` against managed router, Worker and descendant Sessions; unrelated personal Sessions retain their terminal behavior. Feishu event consumers use a sanitized Source command environment without operator credentials, git overrides or DSH identity. These are account-routing guardrails, not an OS security boundary.
 
-The root management handler serves a repository catalog and delegates scoped routes to the selected Runtime. The panel remounts its state and forms when the repository changes; API callers and navigation history are scoped to that repository, so in-flight operations retain their original destination. Settings validate duplicate repository and IM subscriptions synchronously at commit, after asynchronous account checks.
+The management handler serves the same global catalog at root and scoped catalog paths, validates unknown IDs, and delegates other scoped routes to the selected Runtime. The catalog includes initialization/Source health and the global automatic-dispatch ceiling; default state health also includes child errors for service monitoring. The panel remembers the selected repository in sessionStorage and remounts its state and forms when the repository changes; API callers and navigation history are scoped to that repository, so in-flight operations retain their original destination. Settings validate duplicate repository and explicit IM subscriptions synchronously at commit, after asynchronous account checks. Multi-repository mode rejects Feishu otherChats=mentions, requiring explicit chat lists; bot wrapper/token aliases are not identity validation and must not be used to share a bot across contexts.
 
 | Part | Module | Does |
 | --- | --- | --- |
@@ -156,7 +156,7 @@ Trigger and Thread `meta` belong to the Source. The core does not interpret them
 
 ### Store
 
-`Store` (`src/app/store.ts`) owns one SQLite database. Runtime acquires the directory lock before opening it, preventing a second process from migrating or writing the same state.
+`Store` (`src/app/store.ts`) owns one SQLite database per repository context. Runtime acquires the directory lock before opening it, preventing a second process from migrating or writing the same state.
 
 Its interfaces are grouped by purpose:
 
@@ -198,7 +198,7 @@ Registry configuration methods include `kind`, `instances`, `instance`, `validat
 
 Generic code accesses Source behavior through the registry. `send(message, commands)` calls the kind's Channel and returns `sent`, `gone` or `waiting` if the kind is not installed. `link` resolves its Channel link. `threadContext` pairs a kind's reader with its configuration, or returns nothing when the kind has no reader. Invalid stored configuration disables the instance.
 
-Plugins receive `SourceHost`: the registry and `context(kind)`. The kind itself uses a narrower `SourceContext`, built by `sourceContextOf` in `src/app/source-context.ts`.
+Plugins receive `SourceHost`: the registry, `context(kind)`, and `watchRepositories(mount)`. Use `mountSource` in plugin entries so late-mounted repositories are included. The kind itself uses a narrower `SourceContext`, built by `sourceContextOf` in `src/app/source-context.ts`.
 
 That context supplies deployment and commands, setup readiness (`ready`, `configured`, `problem`), configuration, `receive`, `atomic`, and typed `state`. It also exposes Thread reads and metadata writes, Ticket reads and binding/closure commands, Trigger reads, `notify` through Outbox, and `report` for declared health entries.
 
@@ -262,7 +262,7 @@ Each model request binds the Session to the current prompt revision. The revisio
 
 ## Dependency rules
 
-- **Explicit, narrow dependencies.** Each class receives an interface that names what it uses, mostly as `Pick` types of other classes: `ExecutorHost`, `AssessorHost`, `SessionsHost`, `SettingsHost`, `SetupHost`, `PassesHost` and `OutboxHost` for the core classes, and `HttpHost`, `MainToolsHost`, `ExecutorToolsHost`, `ResourceHost`, `LinkHost` and `SourceContextDeps` for the glue, with the Engine as the `Pick` of the role that calls it. The Runtime passes itself only behind such an interface. A Source plugin injects the `orchestrator` service, which its type names as a `SourceHost`: the registry and `context(kind)`; its kind's code sees only its `SourceContext`.
+- **Explicit, narrow dependencies.** Each class receives an interface that names what it uses, mostly as `Pick` types of other classes: `ExecutorHost`, `AssessorHost`, `SessionsHost`, `SettingsHost`, `SetupHost`, `PassesHost` and `OutboxHost` for the core classes, and `HttpHost`, `MainToolsHost`, `ExecutorToolsHost`, `ResourceHost`, `LinkHost` and `SourceContextDeps` for the glue, with the Engine as the `Pick` of the role that calls it. The Runtime passes itself only behind such an interface. A Source plugin injects the `orchestrator` service, which its type names as a `SourceHost`: the registry, `context(kind)`, and `watchRepositories(mount)` for dynamically mounted repository contexts; its kind's code sees only its `SourceContext`.
 - **What may import what.** `src/core` imports nothing outside itself apart from Node's hashing, and does no I/O. `src/sources` imports nothing from `src/app`. The panel imports only types from the host side, and the plain values of `src/admission.ts`, `src/limits.ts`, `src/setup.ts`, `src/navigation.ts`, `src/sources/host.ts`, `src/core/errors.ts`, `src/core/reasons.ts` and the filter lists of `src/app/api.ts`.
 - **One writer per state.** Each kind of state has one writer, and the others read it or ask that writer.
 
@@ -350,7 +350,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/tools/tool.ts` | The `Tool` type, `readTool`, the `orchestrator_read` of both roles, and `AcknowledgementSchema` |
 | `src/app/tools/main.ts` | The main Session's tools |
 | `src/app/tools/executor.ts` | An Executor Session's tools |
-| `src/app/http.ts` | The `/orchestrator/api` routes: the same-origin check, request limits and one status per kind of failure |
+| `src/app/http.ts` | The `/orchestrator/api` and `/orchestrator/repositories/<id>/api` routes: the same-origin check, request limits and one status per kind of failure |
 | `src/app/api.ts` | `Api`, every route with its parameters, query, body and response, and the filters of the lists; it imports only types, so the panel bundles it |
 | `src/app/views/text.ts` | The two forms of a view's text: `preview`, plain text on one line, and `markdown` without HTML; `plain` and `readable` |
 | `src/app/views/records.ts` | The rows the views share: Triggers, Tickets, Threads, Decisions and Channel links, and `ownersOf`, the owners of follow-ups as one request reads them |
@@ -468,7 +468,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 
 ## Persistence
 
-One SQLite file, `<stateDir>/orchestrator.sqlite`, which only the Store opens.
+One SQLite file per repository context, opened only by its Store: `<stateDir>/orchestrator.sqlite` for default and `<stateDir>/repositories/<id>/orchestrator.sqlite` for additional repositories.
 
 | Table | Holds | Written by |
 | --- | --- | --- |
@@ -622,7 +622,7 @@ Most built-in instructions live in `prompts/*.md`, with one sentence per line jo
 
 ## Configuration reload
 
-Every plugin configuration key except `stateDir` is volatile. The panel's Deployment settings and DeepSeek Harness's Plugin Manager edit them through DeepSeek Harness's configuration form; the host writes `cordis.patch.yml` and updates the values in place, and dsh-superagent reads each limit when it uses it, so a change applies without a restart.
+Only `promptMaxChars`, `admissionContextMaxPages` and `admissionContextTimeoutMs` are volatile. `stateDir` and `repositories` remount the bundle when changed. The panel's Deployment settings and DeepSeek Harness's Plugin Manager edit them through DeepSeek Harness's configuration form; the host writes `cordis.patch.yml` and updates the values in place, and dsh-superagent reads each limit when it uses it, so a change applies without a restart.
 
 A settings save that changes a Source field setup reads, such as an account's CLI, and any save while setup waits, restarts dsh-superagent. DeepSeek Harness's settings service does not serve the entry during that restart, so after its own restart dsh-superagent asks it to read the entry again, and an open form becomes editable again.
 

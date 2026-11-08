@@ -10,7 +10,7 @@ import { ticketMark } from './marks.ts'
 import { GLOSSARY, GLOSSARY_VALUES, en, zh, type DshSuperagentKey } from './locales.ts'
 import { OverviewPage } from './overview.tsx'
 import { PanelProvider, panelMessages, usePanel, usePanelData } from './provider.tsx'
-import { HOME, TABS, initialLocation, lastSettingsGroup, remember, routeLabel, settingsRoute, type Location, type Route,
+import { HOME, TABS, initialLocation, lastSettingsGroup, remember, rememberRepository, selectedRepository, routeLabel, settingsRoute, type Location, type Route,
   type Tab } from './route.ts'
 import { SettingsPage } from './settings.tsx'
 import { SourceStatus } from './source.tsx'
@@ -123,9 +123,12 @@ function Header({ masterId, repositories }: { masterId: string | undefined; repo
     call('GET search', { query: { q: text } }).then(value => { if (request === latest.current) setResult({ query: text, value }) },
       failure => { if (request === latest.current) notify(errorText(failure)) })
   }
-  return <header className="dt-head">
+  const failures = repositories.entries.filter(entry => entry.state === 'error' || entry.error)
+  const globalLoad = repositories.entries.find(entry => entry.id === repositories.id)?.globalLoad
+  return <><header className="dt-head">
     <div className="dt-head-title"><h1 className="dt-title">{t('title')}</h1></div>
     <div className="dt-toolbar">
+      {globalLoad && <span className="dt-hint">{t('repositoryGlobalLoad', globalLoad)}</span>}
       {repositories.entries.length > 1 && <select className="dt-input" aria-label={t('repositorySelector')} value={repositories.id}
         onChange={event => repositories.select(event.target.value)}>
         {repositories.entries.map(entry => <option key={entry.id} value={entry.id}>{entry.repository || entry.name}</option>)}
@@ -142,6 +145,9 @@ function Header({ masterId, repositories }: { masterId: string | undefined; repo
     </div>
     <Glossary open={glossary} onClose={() => setGlossary(false)} />
   </header>
+    {failures.length > 0 && <p className="dt-error" role="status">{t('repositoryFailures')} {failures.map(entry =>
+      <button key={entry.id} type="button" className="dt-open" onClick={() => repositories.select(entry.id)}>{entry.repository || entry.name} </button>)}</p>}
+  </>
 }
 
 function Pages({ route, openTab, deploymentForm, repositories }: { route: Route; openTab: (tab: Tab) => void; deploymentForm: DeploymentForm; repositories: RepositoryChoice }) {
@@ -180,8 +186,11 @@ export function App({ t, openSession, deploymentForm }: AppProps) {
   const copy = useRef(t)
   copy.current = t
   const call = useMemo(() => caller(() => panelMessages(copy.current)), [])
-  const { data } = usePoll(() => call('GET repositories'), [call], 30_000)
-  const [selected, select] = useState('default')
+  const { data, error } = usePoll(() => call('GET repositories'), [call], 5000)
+  const [selected, setSelected] = useState(selectedRepository)
+  const select = useCallback((id: string) => { setSelected(id); rememberRepository(id) }, [])
+  useEffect(() => { if (data && !data.some(entry => entry.id === selected)) select('default') }, [data, selected, select])
+  if (!data && selected !== 'default') return <p role="status">{error?.message ?? t('loading')}</p>
   const id = data?.some(entry => entry.id === selected) ? selected : 'default'
   const repositories: RepositoryChoice = { id, entries: data ?? [], select }
   return <RepositoryPanel key={id} t={t} openSession={openSession} deploymentForm={deploymentForm} repositories={repositories} />

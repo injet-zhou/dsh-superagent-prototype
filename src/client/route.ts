@@ -47,6 +47,13 @@ export function parseRoute(value: unknown): Route | undefined {
 }
 
 const ROUTE_KEY = 'dsh-superagent/route'
+const REPOSITORY_KEY = 'dsh-superagent/repository'
+export function selectedRepository(): string {
+  try { return sessionStorage.getItem(REPOSITORY_KEY) || 'default' } catch { return 'default' }
+}
+export function rememberRepository(id: string): void {
+  try { sessionStorage.setItem(REPOSITORY_KEY, id) } catch { /* Selection memory is optional. */ }
+}
 export interface Location { route: Route; stack: Route[]; group?: SettingsGroup | undefined }
 export const lastSettingsGroup = ({ route, group }: Location): SettingsGroup => route.page === 'settings' ? route.query.group
   : group ?? 'source'
