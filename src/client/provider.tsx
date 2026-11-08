@@ -8,6 +8,7 @@ import { errorText, setupText, valueLabel, type T } from './text.ts'
 
 export interface PanelContext {
   t: T
+  repositoryId: string
   call: Call
   navigate: (route: Route, replace?: boolean) => void
   back: () => void
@@ -98,7 +99,7 @@ export function PanelProvider({ t, interval = 5000, openSession = noSession, nav
     const timer = setTimeout(() => setRestarting(undefined), 30_000)
     return () => clearTimeout(timer)
   }, [restarting])
-  const context = useMemo(() => ({ t, call, navigate, back, backLabel, openSession, notify, restart }), [t, call, navigate, back, backLabel,
+  const context = useMemo(() => ({ t, repositoryId, call, navigate, back, backLabel, openSession, notify, restart }), [t, repositoryId, call, navigate, back, backLabel,
     openSession, notify, restart])
   const data = useMemo(() => ({ state, error, reload, setup: state?.setup, running: state?.load.running ?? 0, restarts }), [state, error,
     reload, restarts])

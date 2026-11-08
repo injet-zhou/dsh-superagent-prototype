@@ -4,9 +4,17 @@ Open **Superagent** in the DeepSeek Harness Web sidebar to supervise the agent. 
 
 ## Repository selection
 
+With multiple repositories, **Superagent** defaults to **Repositories** when reopened; the settings panel restores its previous scope when reopened instead. Each repository row shows runtime state, active Workers, queued Tickets, Tickets needing attention, and startup or Source errors. Required setup failures, including a repository whose Source has not been configured, appear as errors and in the repository header warning. A disabled optional Source contributes no setup or health error. Click a repository to open its operational pages, or its attention count to see those Tickets. **Repositories** in the repository header returns here.
+
+**Add repository** saves a name and stable ID through DeepSeek Harness's configuration form, then opens the new repository's Source settings once it appears in the catalog. If the list has not updated after 30 seconds, **Check repositories again** retries the read without resubmitting the change; **Stop waiting** releases the management controls. **Remove repository** asks for confirmation and stops managing that repository while retaining its settings, history and working directories. Its work stops until the same ID is added again. The original `default` repository cannot be removed. Both changes reload the bundle; interrupted work in repositories that remain follows the existing recovery rules. These controls require a writable local host configuration form.
+
 With multiple local repositories configured, the header selector chooses the repository for all pages, searches, histories and settings. Selection is remembered in sessionStorage; an ID removed from configuration falls back to default. Switching repositories remounts forms and clears unsaved drafts, while existing in-flight requests keep their original destination. Each repository keeps separate navigation history.
 
-The header shows global running usage and the automatic-dispatch ceiling, alongside warnings linking to repositories with startup or Source errors. Local Execution load still describes the selected repository. The ceiling governs automatic launches and wakes, not direct user turns or background jobs handed off to a person.
+With multiple repositories, the header shows global running usage and the automatic-dispatch ceiling, alongside warnings linking to repositories with startup or Source errors. Local Execution load still describes the selected repository. The ceiling governs automatic launches and wakes, not direct user turns or background jobs handed off to a person.
+
+## Independent configuration panel
+
+Open **Superagent settings** from the repository header or the Repositories tab bar. **Settings for** chooses **Global settings** or a repository and remembers that scope across panel remounts; a removed scope falls back to Global settings. Global settings hold machine limits and the shared Worker dispatch limit. The default repository's Execution page labels the same value **Global Worker dispatch limit**; other repositories have a local limit constrained by it. Repository settings reuse Sources, Eval (permissions and the Router model), Execution (Worker model and execution parameters), and Prompts. Each save retains its repository scope even if selection changes before it completes. Global model defaults continue to come from the DSH profile; repositories can override them independently.
 
 ## Three questions
 
@@ -40,7 +48,7 @@ Ticket details show the originating Trigger, Decision and reason, scope and Poli
 ## Settings groups
 
 - **Sources:** one card per Source with its switch, fields and verified account facts. GitHub also offers receive-all switches for new Issues, pull requests, comments and default-branch CI. Polling and read limits are under Advanced.
-- **Eval:** the Policy version and rules, followed by **On each Source** and the Eval settings. Each Source tab contains its allowed list, membership sync, admission table and bot list. Sync runs at startup and on **Sync now**. The admission table distinguishes receiving scope, sender membership and whether the message addresses the agent. Eval settings select the accept mode, timeout and assessment model.
+- **Eval:** the Policy version and rules, followed by **On each Source** and the Eval settings. Each Source tab contains its allowed list, membership sync, admission table and bot list. Sync runs at startup and on **Sync now**. The admission table distinguishes receiving scope, sender membership and whether the message addresses the agent. Eval settings select the accept mode, timeout and Router model.
 - **Execution:** worker model, concurrency, directory root, prepare command and blocked commands. Clicking an available variable inserts it into the prepare command.
 - **Prompts:** **Edit** changes team sections, built-in parts and skills. **Full prompt** shows the assembled text and compares it with saved text or defaults. **History** lists versions. Edited built-in parts are marked changed and can be reset; templates list their required placeholders.
 

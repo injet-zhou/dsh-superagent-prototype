@@ -58,13 +58,15 @@ it('isolates identical Issue IDs, Sessions, callbacks and management mutations o
   expect(child.store.tickets.get(tickets[0]!)).toBeUndefined()
   expect(h.runtime.store.tickets.get(tickets[1]!)).toBeUndefined()
   const catalog = await h.api('GET', 'repositories')
-  expect(catalog.body).toMatchObject([{ id: 'default', repository: 'acme/widgets' }, { id: 'second', repository: 'acme/second' }])
+  expect(catalog.body).toMatchObject([{ id: 'default', repository: 'acme/widgets', load: { running: 1, queued: 0, maxWorkers: 3 }, attention: 0 },
+    { id: 'second', repository: 'acme/second', load: { running: 1, queued: 0, maxWorkers: 3 }, attention: 0 }])
   expect((await h.api('GET', '/orchestrator/repositories/second/api/repositories')).body).toEqual(catalog.body)
   expect((await h.api('GET', `/orchestrator/repositories/second/api/tickets/${tickets[0]}`)).status).toBe(404)
   expect((await h.api('GET', '/orchestrator/repositories/missing/api/state')).status).toBe(404)
   expect((await h.api('POST', '/orchestrator/repositories/second/api/executor/pause', { paused: true })).status).toBe(200)
   expect(child.store.settings().paused).toBe(true)
   expect(h.runtime.store.settings().paused).toBe(false)
+  expect((await h.api('GET', 'repositories')).body).toMatchObject([{ state: 'ready' }, { state: 'paused' }])
   const personal = (runtime: Runtime) => (runtime.executor as unknown as { personal: Map<string, string> }).personal
   const agent = h.agents.get(`worker-${tickets[1]}`)!
   h.ctx.emit('agent/inbox/claimed', { agent, message: { source: { kind: 'user' } } } as never)

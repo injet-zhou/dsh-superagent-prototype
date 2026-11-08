@@ -1,4 +1,4 @@
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { registerHttp } from '../src/app/http.ts'
 import { PromptConflict } from '../src/app/prompts.ts'
@@ -10,10 +10,10 @@ import { SetupError } from '../src/setup.ts'
 type Handler = (req: unknown, res: unknown) => Promise<void>
 type Headers = Record<string, string | undefined>
 /** Mount management HTTP routes on a fake web server and return a request helper that includes default panel headers. */
-function serve(runtime: Partial<Record<keyof HttpHost, unknown>>, host = '127.0.0.1') {
+function serve(runtime: Partial<Record<keyof HttpHost, unknown>>, host = '127.0.0.1', repositories?: Parameters<typeof registerHttp>[2]) {
   let handler: Handler = async () => {}
   const ctx = { webServer: { host, port: 3082, register: (route: { handler: Handler }) => { handler = route.handler; return () => {} } } }
-  registerHttp(ctx as never, { ready: Promise.resolve(), ...runtime } as unknown as HttpHost)
+  registerHttp(ctx as never, { ready: Promise.resolve(), ...runtime } as unknown as HttpHost, repositories)
   return async (method: string, path: string, body?: unknown, headers: Headers = {}) => {
     let status = 0, text = ''
     const chunks = body === undefined ? [] : [Buffer.from(typeof body === 'string' ? body : JSON.stringify(body))]
@@ -24,6 +24,62 @@ function serve(runtime: Partial<Record<keyof HttpHost, unknown>>, host = '127.0.
     return { status, body: JSON.parse(text) as Record<string, unknown> }
   }
 }
+
+function catalogHost() {
+  const settings = SettingsSchema.parse({})
+  const host = { store: { settings: vi.fn(() => settings), tickets: { open: vi.fn(() => []) } },
+    executor: { activeCount: vi.fn(() => 2) }, health: { runtime: { state: 'ready', detail: '' } },
+    configured: () => true, deployment: { repository: 'acme/widgets' }, globalLoad: vi.fn(() => { throw new Error('Must reuse the catalog snapshot') }) }
+  return { host, settings }
+}
+
+it('reads each repository once and derives global usage from the same snapshots', async () => {
+  const hosts = Array.from({ length: 4 }, catalogHost)
+  const repositories = hosts.map(({ host }, index) => ({ id: index ? `repo-${index}` : 'default', name: `Repository ${index}`, host: host as unknown as HttpHost }))
+  const call = serve(hosts[0]!.host, '127.0.0.1', () => repositories)
+  const result = await call('GET', 'repositories')
+  expect(result.status).toBe(200)
+  expect(result.body).toHaveLength(4)
+  for (const { host } of hosts) {
+    expect(host.store.settings).toHaveBeenCalledTimes(1)
+    expect(host.store.tickets.open).toHaveBeenCalledTimes(1)
+    expect(host.executor.activeCount).toHaveBeenCalledExactlyOnceWith([])
+    expect(host.globalLoad).not.toHaveBeenCalled()
+  }
+  expect(result.body).toMatchObject(hosts.map(() => ({ globalLoad: { running: 8, maxWorkers: 3 } })))
+})
+
+it('keeps a failing repository in a successful catalog while healthy repositories stay readable', async () => {
+  const { host } = catalogHost(), { host: broken } = catalogHost()
+  broken.store.settings.mockImplementationOnce(() => { throw new Error('Cannot read database') })
+  const call = serve(host, '127.0.0.1', () => [{ id: 'default', name: 'Default', host: host as unknown as HttpHost },
+    { id: 'broken', name: 'Broken', host: broken as unknown as HttpHost }])
+  expect(await call('GET', 'repositories')).toMatchObject({ status: 200, body: [
+    { id: 'default', state: 'ready', load: { running: 2 } }, { id: 'broken', state: 'error', error: 'Cannot read database' },
+  ] })
+  expect((await call('GET', 'repositories')).body).toMatchObject([{ state: 'ready' }, { state: 'ready' }])
+})
+
+it('reports required setup and retained entry errors ahead of a paused or ready runtime', async () => {
+  const { host } = catalogHost()
+  host.health.runtime.state = 'paused'
+  const problem = new SetupError('repositoryUnset').problem
+  const call = serve({ ...host, setupProblem: problem })
+  expect((await call('GET', 'repositories')).body).toMatchObject([{ state: 'error', problems: [problem] }])
+  const retained = serve(host, '127.0.0.1', () => [{ id: 'default', name: 'Default', host: host as unknown as HttpHost, error: 'Startup failed' }])
+  expect((await retained('GET', 'repositories')).body).toMatchObject([{ state: 'error', error: 'Startup failed' }])
+})
+
+it('ignores disabled optional bot setup and stale bot health errors', async () => {
+  const { host, settings } = catalogHost()
+  settings.sources.feishu = { enabled: false, config: {} }
+  settings.sources.discord = { enabled: false, config: {} }
+  const call = serve({ ...host, feishuProblem: new SetupError('feishuNoBot').problem, discordProblem: new SetupError('discordBotFailed').problem,
+    health: { ...host.health, feishu: { state: 'error', detail: 'Old Feishu failure' }, discord: { state: 'error', detail: 'Old Discord failure' } } })
+  expect((await call('GET', 'repositories')).body).toMatchObject([{ state: 'ready', health: { runtime: { state: 'ready' } } }])
+  settings.sources.feishu.enabled = true
+  expect((await call('GET', 'repositories')).body).toMatchObject([{ state: 'error', problems: [{ code: 'feishuNoBot' }] }])
+})
 
 it('answers each kind of failure with its own status', async () => {
   const saves: unknown[] = []

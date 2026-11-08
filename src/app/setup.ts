@@ -16,6 +16,7 @@ export interface SetupHost {
 
 const setupFields = (settings: Settings) =>
   JSON.stringify(Object.entries(SETUP_FIELDS).map(([id, keys]) => {
+    if (id !== 'github' && settings.sources[id]?.enabled === false) return [false]
     // Old settings omit the provider; materializing the default must not look like an account change.
     const config: Record<string, unknown> = id === 'github' ? GithubAccountsSchema.parse(settings.sources[id]?.config ?? {}) : settings.sources[id]?.config ?? {}
     return keys.map(key => config[key] ?? '')
@@ -68,6 +69,7 @@ export class Setup {
   /** Verify account CLIs for a modified source block before saving, ignoring setup errors belonging to other blocks. */
   async checkAccounts(block: SettingsBlock, settings: Settings): Promise<void> {
     const { machine } = this.host
+    if ((block === 'source:feishu' || block === 'source:discord') && settings.sources[block.slice(7)]?.enabled === false) return
     let check: Promise<unknown>
     if (block === 'source:discord') check = resolveDiscordBot(settings.sources.discord?.config, this.host.lifetime)
     else if (block === 'source:feishu') check = resolveFeishuBot(machine, settings.sources.feishu?.config, this.probe())
@@ -89,13 +91,13 @@ export class Setup {
     const { context, machine, lifetime } = this.host
     const probe = this.probe()
     const deployment = await resolveDeployment(machine, settings.sources.github?.config, probe)
-    const feishu = await resolveFeishuBot(machine, settings.sources.feishu?.config, probe).catch((error: unknown) => {
+    const feishu = settings.sources.feishu?.enabled === false ? undefined : await resolveFeishuBot(machine, settings.sources.feishu?.config, probe).catch((error: unknown) => {
       if (!(error instanceof SetupError)) throw error
       this.feishuProblem = error.problem
       context.logger.warn('dsh-superagent leaves Feishu out: %s', error.message)
       return undefined
     })
-    const discord = await resolveDiscordBot(settings.sources.discord?.config, lifetime).catch((error: unknown) => {
+    const discord = settings.sources.discord?.enabled === false ? undefined : await resolveDiscordBot(settings.sources.discord?.config, lifetime).catch((error: unknown) => {
       if (!(error instanceof SetupError)) throw error
       this.discordProblem = error.problem
       context.logger.warn('dsh-superagent leaves Discord out: %s', error.message)

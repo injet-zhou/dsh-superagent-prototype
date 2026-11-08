@@ -340,7 +340,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/sessions.ts` | Sessions |
 | `src/app/delivery.ts` | `AgentDelivery`: delivers a message to a DeepSeek Harness agent once per request id, also across a restored Session |
 | `src/app/retry-health.ts` | `RetryHealth`: which Sessions wait on a model budget retry, for the `models` health entry |
-| `src/app/role-models.ts` | Resolves the Eval and Executor models, and seeds a new Session with its role's model |
+| `src/app/role-models.ts` | Resolves the Router and Worker models, and seeds a new Session with its role's model |
 | `src/app/assessment.ts` | The MasterAssessor, the assessment schema and the window `orchestrator_eval` answers |
 | `src/app/execution-environment.ts` | The execution environment: its variables, a Ticket's values, the directory root and the lines of the prompt section, which `src/app/prompts.ts` fills into its template |
 | `src/app/source-context.ts` | `sourceContextOf`: each Source kind's `SourceContext` |
@@ -394,6 +394,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/client/api.ts` | Calls and polls of the management API, typed by `src/app/api.ts`, and the Decision filters of the Eval status |
 | `src/client/route.ts` | The tabs, the settings groups, the typed routes that `parseRoute` reads, and the route memory with the settings group opened last |
 | `src/client/overview.tsx` | The overview |
+| `src/client/repositories.tsx` | Multi-repository overview, host configuration form writes for adding/removing repositories, and independent global/repository settings |
 | `src/client/source.tsx`, `trigger.tsx`, `eval.tsx`, `execution.tsx` | One file per stage: its status, and its settings where it has some |
 | `src/client/thread.tsx`, `ticket.tsx` | The record pages: a Thread with its timeline, and a Ticket with its authorization, Inputs and Assignments |
 | `src/client/settings.tsx` | The Settings tab: the group navigation and the group on screen |
@@ -441,7 +442,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/tools.spec.ts` | The Sessions' tools: what `orchestrator_read` reads for each role, and the shapes and checks of the other main Session tools |
 | `tests/runtime-concurrency.spec.ts` | Work that overlaps: Triggers during a pass, Tickets that change during deliveries and launches |
 | `tests/multi-repository.spec.ts` | Identical Issue IDs and independent Sessions on one host, scoped management mutations and tool environments, shared worker reservations and subscription conflicts |
-| `tests/panel-repositories.spec.tsx` | Repository selection remounts panel forms and scopes requests without changing in-flight callers |
+| `tests/panel-repositories.spec.tsx` | Repository overview, host-backed add/remove and read-only/refused saves, centralized model settings, and repository-scoped navigation and writes |
 | `tests/scoped-environment.spec.ts` | Interleaved execution environments, async descendants, unchanged ambient process state and shared adapter disposal |
 | `tests/http.spec.ts` | The same-origin and loopback checks, the status of each kind of failure, the body limit, path parameters and queries |
 | `tests/settings.spec.ts` | Settings saves that race a model or account check, a Policy sync that a save outran, and the refusals of the pause, a sync and a block |
@@ -622,7 +623,7 @@ Most built-in instructions live in `prompts/*.md`, with one sentence per line jo
 
 ## Configuration reload
 
-Only `promptMaxChars`, `admissionContextMaxPages` and `admissionContextTimeoutMs` are volatile. `stateDir` and `repositories` remount the bundle when changed. The panel's Deployment settings and DeepSeek Harness's Plugin Manager edit them through DeepSeek Harness's configuration form; the host writes `cordis.patch.yml` and updates the values in place, and dsh-superagent reads each limit when it uses it, so a change applies without a restart.
+Only `promptMaxChars`, `admissionContextMaxPages` and `admissionContextTimeoutMs` are volatile. `stateDir` and `repositories` remount the bundle when changed. The repository overview adds and removes entries by writing only `repositories` through DeepSeek Harness's revision-fenced configuration form; the host persists `cordis.patch.yml` and reloads the bundle. Global settings and the Plugin Manager edit the volatile machine limits through the same form. dsh-superagent reads each limit when it uses it, so those changes apply without a restart.
 
 A settings save that changes a Source field setup reads, such as an account's CLI, and any save while setup waits, restarts dsh-superagent. DeepSeek Harness's settings service does not serve the entry during that restart, so after its own restart dsh-superagent asks it to read the entry again, and an open form becomes editable again.
 

@@ -12,7 +12,9 @@ Plugin configuration holds the state directory and machine limits. Use the panel
 
 ### Multiple local repositories
 
-Keep the existing repository as `default`. To add repositories to the same DSH service, extend the `dsh-superagent` profile configuration:
+Keep the existing repository as `default`. In the sidebar, open **Superagent → Repositories → Add repository**, enter a name and stable ID, and confirm the service reload. When the repository appears, its Source settings open automatically; configure its repository account, permissions and models there. Use **Superagent settings** to switch between global and repository settings. Removing a repository from the overview stops its runtime and retains its files; the default repository stays in place.
+
+For configuration-file-based deployments, the equivalent `dsh-superagent` profile configuration is:
 
 ```yaml
 - id: dsh-superagent
@@ -302,7 +304,7 @@ curl -s -X PUT -H 'x-orchestrator-request: 1' -H 'content-type: application/json
 
 Setup uses the DeepSeek Harness subprocess service, as worker shells do. It removes environment variables whose names contain KEY, PASSWORD, SECRET or TOKEN.
 
-Setup verifies the selected repository and the agent's push access, writes the worker environment, and checks that git uses the selected provider's agent credential helper. A Feishu or Discord setup failure disables only that Source.
+Setup verifies the selected repository and the agent's push access, writes the worker environment, and checks that git uses the selected provider's agent credential helper. A Feishu or Discord setup failure pauses only that Source. Disabled optional Sources are not probed. Changing their enabled state reloads the bundle to update account bindings and worker shims; disabling one with a broken account does not require its account check to pass.
 
 The process environment that setup writes:
 

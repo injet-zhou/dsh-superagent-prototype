@@ -10,7 +10,9 @@ import { ticketMark } from './marks.ts'
 import { GLOSSARY, GLOSSARY_VALUES, en, zh, type DshSuperagentKey } from './locales.ts'
 import { OverviewPage } from './overview.tsx'
 import { PanelProvider, panelMessages, usePanel, usePanelData } from './provider.tsx'
-import { HOME, TABS, initialLocation, lastSettingsGroup, remember, rememberRepository, selectedRepository, routeLabel, settingsRoute, type Location, type Route,
+import { ManagementPanel, repositoryState, type ManagementView } from './repositories.tsx'
+import STYLES from './client.css?raw'
+import { HOME, TABS, initialLocation, lastSettingsGroup, remember, rememberRepository, rememberPanelView, rememberSettingsScope, selectedPanelView, selectedRepository, selectedSettingsScope, routeLabel, settingsRoute, type Location, type Route,
   type Tab } from './route.ts'
 import { SettingsPage } from './settings.tsx'
 import { SourceStatus } from './source.tsx'
@@ -99,7 +101,10 @@ function SearchResults({ result, query, onClose }: { result: SearchView; query: 
   </div>
 }
 
-interface RepositoryChoice { id: string; entries: ApiResponse<'GET repositories'>; select: (id: string) => void }
+interface RepositoryChoice {
+  id: string; entries: ApiResponse<'GET repositories'>; select: (id: string) => void
+  manage: (view: ManagementView) => void
+}
 function Header({ masterId, repositories }: { masterId: string | undefined; repositories: RepositoryChoice }) {
   const { t, call, openSession, notify } = usePanel()
   const [glossary, setGlossary] = useState(false)
@@ -123,12 +128,14 @@ function Header({ masterId, repositories }: { masterId: string | undefined; repo
     call('GET search', { query: { q: text } }).then(value => { if (request === latest.current) setResult({ query: text, value }) },
       failure => { if (request === latest.current) notify(errorText(failure)) })
   }
-  const failures = repositories.entries.filter(entry => entry.state === 'error' || entry.error)
+  const failures = repositories.entries.filter(entry => repositoryState(entry) === 'error')
   const globalLoad = repositories.entries.find(entry => entry.id === repositories.id)?.globalLoad
   return <><header className="dt-head">
-    <div className="dt-head-title"><h1 className="dt-title">{t('title')}</h1></div>
+    <div className="dt-head-title"><h1 className="dt-title">{t('title')}</h1>
+      <Button size="sm" onClick={() => repositories.manage('repositories')}>{t('repositoryOverview')}</Button>
+    </div>
     <div className="dt-toolbar">
-      {globalLoad && <span className="dt-hint">{t('repositoryGlobalLoad', globalLoad)}</span>}
+      {repositories.entries.length > 1 && globalLoad && <span className="dt-hint">{t('repositoryGlobalLoad', globalLoad)}</span>}
       {repositories.entries.length > 1 && <select className="dt-input" aria-label={t('repositorySelector')} value={repositories.id}
         onChange={event => repositories.select(event.target.value)}>
         {repositories.entries.map(entry => <option key={entry.id} value={entry.id}>{entry.repository || entry.name}</option>)}
@@ -140,13 +147,15 @@ function Header({ masterId, repositories }: { masterId: string | undefined; repo
       </form>
       <Button variant="ghost" size="sm" icon={<Icon name="question" />} aria-label={t('glossary')} title={t('glossary')} aria-haspopup="dialog"
         onClick={() => setGlossary(true)} />
+      <Button variant="ghost" size="sm" icon={<Icon name="settings" />} aria-label={t('repositorySettings')}
+        title={t('repositorySettings')} onClick={() => repositories.manage('configuration')} />
       <Button variant="outline" size="sm" icon={<Icon name="session" size={14} />} disabled={!masterId}
         onClick={() => { if (masterId) openSession(masterId).catch(failure => notify(errorText(failure))) }}>{t('openMaster')}</Button>
     </div>
     <Glossary open={glossary} onClose={() => setGlossary(false)} />
   </header>
     {failures.length > 0 && <p className="dt-error" role="status">{t('repositoryFailures')} {failures.map(entry =>
-      <button key={entry.id} type="button" className="dt-open" onClick={() => repositories.select(entry.id)}>{entry.repository || entry.name} </button>)}</p>}
+      <button key={entry.id} type="button" className="dt-textlink" onClick={() => repositories.select(entry.id)}>{entry.repository || entry.name} </button>)}</p>}
   </>
 }
 
@@ -186,17 +195,42 @@ export function App({ t, openSession, deploymentForm }: AppProps) {
   const copy = useRef(t)
   copy.current = t
   const call = useMemo(() => caller(() => panelMessages(copy.current)), [])
-  const { data, error } = usePoll(() => call('GET repositories'), [call], 5000)
+  const { data, error, reload } = usePoll(() => call('GET repositories'), [call], 5000)
   const [selected, setSelected] = useState(selectedRepository)
   const select = useCallback((id: string) => { setSelected(id); rememberRepository(id) }, [])
+  const [management, setManagement] = useState(selectedPanelView)
+  const [scope, setScope] = useState(selectedSettingsScope)
+  const [configurationRoute, setConfigurationRoute] = useState<Extract<Route, { page: 'settings' }>>({ page: 'settings', query: { group: 'source' } })
+  const [destination, setDestination] = useState<Route>()
+  const view = management ?? (data && data.length > 1 ? 'repositories' : 'repository')
+  useEffect(() => { if (data && management === undefined) setManagement(data.length > 1 ? 'repositories' : 'repository') }, [data, management])
+  useEffect(() => { if (data) rememberPanelView(view) }, [data, view])
+  useEffect(() => { if (data) rememberSettingsScope(scope) }, [data, scope])
+  const configureScope = (id: string) => { setScope(id); setConfigurationRoute({ page: 'settings', query: { group: 'source' } }) }
+  const open = (id: string, route: Route = HOME) => { select(id); setDestination(route); setManagement('repository') }
   useEffect(() => { if (data && !data.some(entry => entry.id === selected)) select('default') }, [data, selected, select])
-  if (!data && selected !== 'default') return <p role="status">{error?.message ?? t('loading')}</p>
+  useEffect(() => { if (data && scope && !data.some(entry => entry.id === scope)) setScope('') }, [data, scope])
+  if (!data) return <div className="dt-page"><style>{STYLES}</style><p role="status">{error?.message ?? t('loading')}</p></div>
   const id = data?.some(entry => entry.id === selected) ? selected : 'default'
-  const repositories: RepositoryChoice = { id, entries: data ?? [], select }
-  return <RepositoryPanel key={id} t={t} openSession={openSession} deploymentForm={deploymentForm} repositories={repositories} />
+  const settingsScope = data.some(entry => entry.id === scope) ? scope : ''
+  if (view !== 'repository') return <PanelProvider key={view === 'configuration' && settingsScope ? settingsScope : '@global'} t={t} openSession={openSession}
+    repositoryId={view === 'configuration' && settingsScope ? settingsScope : 'default'}
+    navigate={route => {
+      if (route.page === 'settings') {
+        if (route.query.group === 'deployment') setScope('')
+        setConfigurationRoute(route)
+      } else open(settingsScope || 'default', route)
+    }}>
+    <ManagementPanel view={view} entries={data} error={error} form={deploymentForm} scope={settingsScope} configurationRoute={configurationRoute}
+      onScope={configureScope} onView={setManagement} onOpen={open} reload={reload} />
+  </PanelProvider>
+  const repositories: RepositoryChoice = { id, entries: data ?? [], select: id => { setDestination(undefined); select(id) },
+    manage: view => { if (view === 'configuration') configureScope(id); setManagement(view) } }
+  return <RepositoryPanel key={id} t={t} openSession={openSession} deploymentForm={deploymentForm} repositories={repositories} initialRoute={destination} />
 }
-function RepositoryPanel({ t, openSession, deploymentForm, repositories }: AppProps & { repositories: RepositoryChoice }) {
-  const [location, setLocation] = useState(() => initialLocation(repositories.id))
+function RepositoryPanel({ t, openSession, deploymentForm, repositories, initialRoute }: AppProps & { repositories: RepositoryChoice; initialRoute?: Route }) {
+  const [location, setLocation] = useState(() => initialRoute ? { ...initialLocation(repositories.id), route: initialRoute, stack: [] }
+    : initialLocation(repositories.id))
   useEffect(() => { remember(location, repositories.id) }, [location, repositories.id])
   // Preserve the last opened settings group across navigation so the Settings tab reopens at it.
   const move = useCallback((next: (current: Location) => Pick<Location, 'route' | 'stack'>) =>

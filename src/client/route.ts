@@ -48,6 +48,21 @@ export function parseRoute(value: unknown): Route | undefined {
 
 const ROUTE_KEY = 'dsh-superagent/route'
 const REPOSITORY_KEY = 'dsh-superagent/repository'
+const VIEW_KEY = 'dsh-superagent/view'
+const SCOPE_KEY = 'dsh-superagent/settings-scope'
+export type PanelView = 'repository' | 'repositories' | 'configuration'
+export function selectedPanelView(): PanelView | undefined {
+  try { return pick(['repositories', 'configuration'] as const, sessionStorage.getItem(VIEW_KEY)) } catch { return undefined }
+}
+export function rememberPanelView(view: PanelView): void {
+  try { sessionStorage.setItem(VIEW_KEY, view) } catch { /* View memory is optional. */ }
+}
+export function selectedSettingsScope(): string {
+  try { return sessionStorage.getItem(SCOPE_KEY) ?? '' } catch { return '' }
+}
+export function rememberSettingsScope(scope: string): void {
+  try { sessionStorage.setItem(SCOPE_KEY, scope) } catch { /* Scope memory is optional. */ }
+}
 export function selectedRepository(): string {
   try { return sessionStorage.getItem(REPOSITORY_KEY) || 'default' } catch { return 'default' }
 }

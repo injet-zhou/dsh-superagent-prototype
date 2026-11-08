@@ -20,6 +20,8 @@ type Delivery = 'injected' | 'pending'
 export interface Api {
   'GET repositories': { response: { id: string; name: string; repository: string; configured: boolean;
     state?: 'starting' | 'ready' | 'paused' | 'error'; health?: Record<string, import('../sources/host.ts').Health>; error?: string;
+    load?: { running: number; queued: number; maxWorkers: number }; attention?: number;
+    problems?: import('../setup.ts').SetupProblem[];
     globalLoad?: { running: number; maxWorkers: number } }[] }
   'GET state': { response: StateView }
   'GET overview': { response: OverviewView }
