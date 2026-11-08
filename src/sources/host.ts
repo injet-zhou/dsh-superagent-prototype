@@ -1,5 +1,7 @@
 /** Host and context interfaces connecting Source plugins to the application; also imported by the web panel, so it must not import Node-only modules. */
 import type { ChannelRef, ReceiveResult, OutboundMessage, Thread, ThreadFact, ThreadRef, Ticket, Trigger } from '../core/index.ts'
+import type { Context } from '@deepseek-ai/cordis'
+import type { SourceKind } from './kind.ts'
 import type { Commands } from '../infra/commands.ts'
 import type { Deployment } from '../deployment.ts'
 import type { SourceRegistry } from './registry.ts'
@@ -23,8 +25,35 @@ export function health(state: Health['state'], code: HealthCode, values: Record<
 }
 export interface SourceHost {
   readonly sources: SourceRegistry
+  /** Local repository contexts; omitted by single-repository hosts and third-party fixtures. */
+  repositoryHosts?(): readonly SourceHost[]
+  /** Subscribe to current and subsequently mounted repositories. Disposing unregisters every mounted adapter. */
+  watchRepositories?(mount: RepositoryMount): SourceDisposer
   /** Returns the context for one Source kind; its `report` writes only the health entries declared by the kind. */
   context(kind: { kind: string; health: readonly string[] }): SourceContext
+}
+export type SourceDisposer = () => void | Promise<void>
+export type RepositoryMount = (host: SourceHost) => SourceDisposer
+export const repositoryHosts = (host: SourceHost): readonly SourceHost[] => host.repositoryHosts?.() ?? [host]
+/** Mount a Source once per repository, including repositories created after the root service becomes active. */
+export function mountSource<C extends Record<string, unknown>>(ctx: Context & { orchestrator: SourceHost }, kind: SourceKind<C>,
+  start: (source: SourceContext, signal: AbortSignal) => Promise<unknown>): void {
+  ctx.effect(() => {
+    const mount = (host: SourceHost) => {
+      const unregister = host.sources.register(kind)
+      const source = sourceContext(host, kind), controller = new AbortController()
+      let abort!: () => void
+      const stopped = new Promise<void>(resolve => { abort = resolve })
+      controller.signal.addEventListener('abort', abort, { once: true })
+      const running = Promise.race([source.ready, stopped]).then(() => controller.signal.aborted ? undefined : start(source, controller.signal))
+        .catch(error => { if (!controller.signal.aborted && kind.health[0]) source.report(kind.health[0], { state: 'error', detail: String(error) }) })
+        .finally(() => controller.signal.removeEventListener('abort', abort))
+      return async () => { controller.abort(); try { await running } finally { unregister() } }
+    }
+    if (ctx.orchestrator.watchRepositories) return ctx.orchestrator.watchRepositories(mount)
+    const disposers = repositoryHosts(ctx.orchestrator).map(mount)
+    return async () => { await Promise.all(disposers.reverse().map(dispose => dispose())) }
+  })
 }
 /** Display label, URL, and facts (`null` removes a fact) that a Source publishes on a Thread. */
 export interface ThreadDescription { label?: string; url?: string; facts?: Record<string, ThreadFact | null> }
@@ -32,6 +61,8 @@ export interface ThreadDescription { label?: string; url?: string; facts?: Recor
 export interface SourceContext {
   readonly deployment: Deployment
   readonly commands: Commands
+  /** Sanitized environment for long-lived native Source subprocesses, not a Worker shell environment. */
+  readonly commandEnvironment?: Readonly<Record<string, string>>
   readonly ready: Promise<void>
   /** True once setup resolved the repository and accounts; Sources poll only then. */
   configured(): boolean

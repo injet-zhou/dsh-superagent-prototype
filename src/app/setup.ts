@@ -2,7 +2,8 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { UserError } from '../core/index.ts'
 import { GithubAccountsSchema, SETUP_FIELDS, resolveDeployment, resolveFeishuBot, resolveDiscordBot, workerProbe, type Deployment, type Machine } from '../deployment.ts'
-import { agentVariables, applyEnvironment, verifyEnvironment, withoutDirectory, workerBin, writeEnvironment } from '../infra/environment.ts'
+import { agentVariables, applyEnvironment, runAsWorker, sourceProcessEnvironment, verifyEnvironment, withoutDirectory, workerBin, writeEnvironment } from '../infra/environment.ts'
+import { delimiter } from 'node:path'
 import type { Settings, SettingsBlock } from '../policy.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
 
@@ -41,6 +42,8 @@ export class Setup {
   }
   /** Host command environment with agent git variables applied and the worker shim directory excluded from PATH. */
   get commandEnvironment(): Record<string, string | undefined> { return { ...this.variables, PATH: this.path } }
+  get sourceEnvironment(): Record<string, string> { return sourceProcessEnvironment({ PATH: this.path }) }
+  get executionEnvironment(): NodeJS.ProcessEnv { return { ...this.variables, PATH: [workerBin(this.host.machine.stateDir), this.path].join(delimiter) } }
   get deployment(): Deployment {
     if (!this.resolved) throw new Error(`dsh-superagent is waiting for setup: ${this.problem?.detail ?? 'setup has not run'}`)
     return this.resolved
@@ -78,6 +81,8 @@ export class Setup {
   /** Probes CLIs the way worker shells run them, using `stateDir` as `cwd` since it exists even before the repository clone is valid. */
   private probe() {
     const { context, machine, lifetime } = this.host
+    if (machine.scopedEnvironment) return (argv: string[]) => runAsWorker(context.subprocess, argv, machine.stateDir,
+      AbortSignal.any([lifetime, AbortSignal.timeout(60_000)]), this.commandEnvironment)
     return workerProbe(context.subprocess, machine.stateDir, machine.stateDir, lifetime)
   }
   private async resolve(settings: Settings): Promise<Deployment> {
@@ -102,8 +107,8 @@ export class Setup {
       throw new SetupError('environmentFailed', { output: error instanceof Error ? error.message : String(error) })
     }
     await writeEnvironment(resolved, settings.executor.blockedCommands).catch(machineProblem)
-    this.restoreEnvironment = applyEnvironment(this.variables, machine.stateDir, this.path)
-    await verifyEnvironment(resolved, context.subprocess, lifetime).catch((error: unknown) => {
+    if (!machine.scopedEnvironment) this.restoreEnvironment = applyEnvironment(this.variables, machine.stateDir, this.path)
+    await verifyEnvironment(resolved, context.subprocess, lifetime, machine.scopedEnvironment ? this.executionEnvironment : undefined).catch((error: unknown) => {
       this.restore()
       machineProblem(error)
     })

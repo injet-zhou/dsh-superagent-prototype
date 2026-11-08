@@ -8,6 +8,8 @@ import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'v
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { Runtime } from '../src/app/runtime.ts'
+import { Setup } from '../src/app/setup.ts'
+import { Sessions } from '../src/app/sessions.ts'
 import { jobRegistry } from './fixtures/host.ts'
 import { evalsHealth } from '../src/app/views/overview.ts'
 import { mandateInstructions } from '../src/executor/dsh.ts'
@@ -976,6 +978,40 @@ it('runs setup again while the Feishu bot check failed, and restores the process
   expect(broken.setupProblem).toMatchObject({ place: 'deployment', code: 'gitTooOld' })
   expect(process.env.GIT_CONFIG_GLOBAL).toBeUndefined()
   expect(process.env.PATH?.split(':')).not.toContain(join(directory, 'worker-bin'))
+})
+
+it.each(['validateSettings', 'setup.run', 'sessions.ensure'] as const)('logs unexpected %s startup failures, exposes them through setup and health, and restores the environment before stop', async stage => {
+  await runtime.stop()
+  const previous = { ...process.env }
+  const failure = new Error('simulated startup failure')
+  const ctx = new Context()
+  for (const [name, service] of Object.entries(services)) ctx.reflect.provide(name, service)
+  const logged = vi.spyOn(ctx.logger, 'error').mockImplementation(() => {})
+  if (stage === 'setup.run') vi.spyOn(Setup.prototype, 'run').mockRejectedValueOnce(failure)
+  if (stage === 'sessions.ensure') vi.spyOn(Sessions.prototype, 'ensure').mockImplementationOnce(async () => {
+    // This fails after setup applied the legacy process-wide environment, not during an account probe.
+    expect(process.env.GIT_CONFIG_GLOBAL).toBe(workerGitConfig(directory))
+    expect(process.env.PATH?.split(':')[0]).toBe(join(directory, 'worker-bin'))
+    throw failure
+  })
+  runtime = new Runtime(ctx, testMachine({ stateDir: directory }), restarts,
+    stage === 'validateSettings' ? { validateSettings: () => { throw failure } } : {})
+  await expect(runtime.ready).resolves.toBeUndefined()
+  expect(logged).toHaveBeenCalledWith('dsh-superagent repository %s failed during %s: %s', 'default', stage, failure.stack)
+  expect(runtime.configured()).toBe(false)
+  expect(runtime.lifetime.aborted).toBe(true)
+  expect(runtime.setupProblem).toMatchObject({ place: 'deployment', code: 'startupFailed', values: { stage, output: String(failure) } })
+  expect(runtime.health.runtime).toMatchObject({ state: 'error', detail: runtime.setupProblem!.detail })
+  expect(runtime.health.runtime!.detail).toContain(stage)
+  expect(process.env).toEqual(previous)
+  // Management reads and retry remain available even though startup failed.
+  expect(await api('GET', 'state')).toMatchObject({ status: 200, body: {
+    setup: { problem: runtime.setupProblem, accounts: null }, health: { runtime: { state: 'error' } },
+  } })
+  expect(await api('POST', 'setup/check')).toMatchObject({ status: 200, body: { restarting: true } })
+  await vi.waitFor(() => expect(restarts).toHaveBeenCalledTimes(1))
+  await runtime.stop()
+  expect(process.env).toEqual(previous)
 })
 
 it('writes worker shims and the agent environment from the configuration only, and restores the environment on stop', async () => {

@@ -4,11 +4,38 @@ Use this guide to install, configure and operate dsh-superagent. It covers accou
 
 ## What runs
 
-- **A dedicated DeepSeek Harness profile**, called `superagent` in this guide. Create it from the Web profile template. It loads the bundle and serves its panel on `127.0.0.1`. Keep it separate from the profile you work in: the plugin changes process-wide `PATH` and git settings, and its process needs independent restarts and upgrades.
+- **A dedicated DeepSeek Harness profile**, called `superagent` in this guide. Create it from the Web profile template. It loads the bundle and serves its panel on `127.0.0.1`. Keep it separate from the profile you work in: standalone mode changes process-wide `PATH` and git settings (multi-repository mode uses scoped subprocess environments), and its process needs independent restarts and upgrades.
 - **An agent repository account, on GitHub or Gitea.** The agent comments, pushes branches and opens pull requests through a CLI configured only for that account. Workers run in DeepSeek Harness for both providers.
 - **Optional:** a Feishu bot for chat requests.
 
 Plugin configuration holds the state directory and machine limits. Use the panel for everything else: Sources for the repository and accounts, Policy for allowed lists, and Execution for worker directories and commands.
+
+### Multiple local repositories
+
+Keep the existing repository as `default`. To add repositories to the same DSH service, extend the `dsh-superagent` profile configuration:
+
+```yaml
+- id: dsh-superagent
+  config:
+    stateDir: /srv/dsh-superagent
+    repositories:
+      - id: backend
+        name: Backend
+      - id: frontend
+        name: Frontend
+```
+
+Restart the service, open the panel, and select each repository in the header. On its Sources page set its GitHub/Gitea repository and CLI; then configure its allowed users, execution prepare command and optional prompts. Each repository initializes independently. A pending probe or hard failure in an additional repository does not delay configured repositories or hide the panel; its catalog entry shows starting/error and details. State and settings reads do not wait for setup. Mutations during active setup return 503 so a settings write cannot race an old startup snapshot; retry once setup has finished. A context that could not open its Store returns 503 for scoped operations while remaining visible in the catalog. Adding entries does not grant any user access to the new repository.
+
+IDs must be unique lowercase identifiers starting with a letter (up to 48 characters); `default` is reserved. Keep IDs stable: each additional repository stores its SQLite database, locks, shims and workspaces under `<stateDir>/repositories/<id>`. The default repository keeps its original state directory, database, history and Sessions. Changing an ID creates a new repository context; removing one stops its runtime but retains its files. Do not copy an existing database into another repository context or repoint a populated context at a different repository/provider. Account changes and configuration changes currently restart the whole bundle, with the existing Assignment recovery behavior.
+
+Each repository keeps its existing router Session and one local Worker per Ticket, launched only when work exists. The default repository's Execution `maxWorkers` is the global ceiling for automatic launch/wake dispatch, and each additional repository's setting can impose a lower local ceiling. All repositories share startup reservations and running-worker slots; automatically delivered human follow-ups also respect that ceiling in multi-repository mode. Direct user turns in Worker Sessions and background jobs handed off to a person are not admission-controlled by WorkerSlots, so this is not a hard cap on total running Sessions or processes. No remote workers, task splitting or cross-repository work routing are added.
+
+Native event IDs and Issue/PR numbers can repeat because each repository has a separate Store. Additional repositories namespace generated Ticket IDs so their Worker Sessions cannot collide in the shared DSH host. Multi-repository Sessions use per-tool subprocess environments instead of changing process-wide PATH/git settings; unrelated Sessions keep their ambient environment. The bundled bash/pwsh tools are supported; managed interactive terminals are rejected using the Session identity even when opened from the Web UI outside tool execution; personal Sessions retain terminal access. Native Feishu event consumers receive sanitized Source environments without operator tokens, git configuration overrides or inherited DSH identity. All Sessions still run under the operator's OS account, so these boundaries do not provide hostile-code isolation.
+
+In this version, give each repository distinct IM bot configurations and channel/chat destinations. Shared-channel request disambiguation is not implemented. The application rejects duplicate configured repositories and overlapping explicit IM destinations during settings saves. Feishu `otherChats: mentions` is rejected in multi-repository mode; use `otherChats: none` and explicit chat lists. Do not use alternate wrappers or token-file aliases for the same bot to bypass these checks.
+
+The management catalog is `GET /orchestrator/api/repositories`; scoped `GET repositories` returns that same catalog with correct IDs, per-repository health/startup failures and global automatic-dispatch usage. Existing `/orchestrator/api/...` requests still address `default`; `/orchestrator/repositories/<id>/api/...` addresses one configured repository. Scoped routes use the same loopback and same-origin checks and never fall back to a different repository for an unknown ID. Select an explicit repository when writing through the API. The default state endpoint also aggregates child health errors for the service script and hourly check. The panel warns about errors in other repositories, shows global running/dispatch-limit information and remembers selection in sessionStorage. Inspect the scoped state for detailed local load.
 
 ### Permissions and isolation
 
@@ -48,7 +75,7 @@ Both presets run with `danger-full-access` as the operator's OS user and read me
 
 ### Agent Gitea account
 
-Choose Gitea instead of the GitHub account steps above. GitHub CLI is not needed in this mode. The existing repository Source appears as **GitHub / Gitea**; its persisted kind, health entry, policy namespace, `github/` read resources and `DSH_SUPERAGENT_GITHUB_*` environment variables retain their historical names. They refer to the selected Gitea repository, not github.com. One deployment watches one repository on one provider.
+Choose Gitea instead of the GitHub account steps above. GitHub CLI is not needed for a Gitea repository. The existing repository Source appears as **GitHub / Gitea**; its persisted kind, health entry, policy namespace, `github/` read resources and `DSH_SUPERAGENT_GITHUB_*` environment variables retain their historical names. They refer to the selected Gitea repository, not github.com. Each repository context watches one repository on one provider; contexts in the same deployment may use different providers.
 
 1. Create a dedicated Gitea account with write access to the repository. Create an access token for that account with the permissions needed to read the account, notifications, repository, issues and reviews, and write issues and pull requests. Restrict repository access where your Gitea version supports it. Do not paste the token into chat or the panel.
 2. Save a private JSON file outside the checkout, for example `/srv/agent/gitea.json`, owned by the agent's OS user with mode `0600`:
@@ -70,7 +97,7 @@ Choose Gitea instead of the GitHub account steps above. GitHub CLI is not needed
 5. Configure the allowed repository usernames under **Eval → On each Source**, as for GitHub. Feishu configuration and authorization are independent and work with either provider. `source:github` and `policy.sources.github` remain the management API keys.
 6. Use the ordinary worktree prepare command with a clone whose `origin` is the Gitea HTTPS URL. Workers get an account-isolated `gitea` shim and Git credential helper scoped to the configured instance and repository. `gh` fails with a Gitea-specific instruction, preventing accidental GitHub writes. The helper refuses credentials for another host, protocol or repository. Standard git@host: and ssh://git@host/ origins are rewritten to the configured instance root, preserving any HTTP proxy prefix. Unrecognized SSH URLs (including custom SSH ports) fail with SSH transport disabled; they do not fall back to operator keys.
 
-Start with a fresh state directory when changing the repository or provider. Existing Thread, Trigger and PR identifiers belong to the old deployment and are not a migration between hosting services. Changing provider, URL, account, repository or commit email re-runs setup; polling and admission switches still apply normally.
+To use another repository or provider, add a `repositories` context; to replace the default context's repository or provider, start with a fresh state directory. Do not repoint a populated context at a different repository or provider: its existing Thread, Trigger and PR identifiers belong to that context and are not a migration between hosting services. Changing provider, URL, account, repository or commit email re-runs setup; polling and admission switches still apply normally.
 
 #### Gitea compatibility
 

@@ -308,7 +308,7 @@ export class Evals extends EnginePart {
     const basis = { ...evaluation.basis, ...(outcome.rules ? { rules: outcome.rules } : {}) }
     const { strength, policyVersion, actor } = evaluation
     const mandate: Mandate = { strength, policyVersion, basis, actor, scope: outcome.scope }
-    const ticketId = key('ticket', evaluation.id)
+    const ticketId = this.options.namespace ? key('ticket', this.options.namespace, evaluation.id) : key('ticket', evaluation.id)
     const audit = outcome.audit ? { audit: outcome.audit } : {}
     const decision = this.finish(thread, evaluation, { kind: 'accept', reason: reasonOf(outcome.reason), ...audit, mandate, ticketId })
     this.tickets.create(ticketId, decision.id, mandate, evaluation, outcome, at)

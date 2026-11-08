@@ -76,6 +76,8 @@ export interface ExecutorHost {
   paused(): boolean
   /** Execution environment variables for `ticket`, passed to its workspace prepare command. */
   environment(ticket: Ticket): Variable[]
+  executionEnvironment?: () => NodeJS.ProcessEnv
+  slots?: WorkerSlots
   sourceLink(trigger: Trigger, signal?: AbortSignal): Promise<{ source_url?: string; source_url_read?: string }>
   /** Stored Trigger of the message `trigger` replies to, when it replies to one. */
   repliedTo(trigger: Trigger): Trigger | undefined
@@ -175,13 +177,14 @@ export class WorkerSlots {
    * @param running - Returns the ticket IDs whose worker holds a slot (see `DshExecutor.running`).
    * @param max - Returns the configured maximum number of concurrent worker slots.
    */
-  constructor(private readonly running: () => string[], private readonly max: () => number) {}
+  constructor(private readonly running: () => string[], private readonly max: () => number, private readonly humanOverflow = 1,
+    private readonly shared?: WorkerSlots) {}
   /** Number of slots currently in use across running workers and starting reservations. */
   used(): number { return new Set([...this.running(), ...this.starting.keys()]).size }
   /** How many launches may run concurrently: the slots not held by a running worker or a wake reservation. */
   launches(): number {
     const wakes = [...this.starting].flatMap(([ticketId, by]) => by !== 'launch' ? [ticketId] : [])
-    return this.max() - new Set([...this.running(), ...wakes]).size
+    return Math.min(this.max() - new Set([...this.running(), ...wakes]).size, this.shared?.launches() ?? Infinity)
   }
   /**
    * Reserves a startup slot for `ticketId`; idempotent if `ticketId` already holds a starting slot.
@@ -191,11 +194,12 @@ export class WorkerSlots {
    */
   reserve(ticketId: string, by: 'launch' | 'wake' | 'person'): void {
     if (this.starting.has(ticketId)) return
-    if (this.used() >= this.max() + (by === 'person' ? 1 : 0)) throw new Later('No worker slot is free')
+    if (this.used() >= this.max() + (by === 'person' ? this.humanOverflow : 0)) throw new Later('No worker slot is free')
+    this.shared?.reserve(ticketId, by)
     this.starting.set(ticketId, by)
   }
   /** Releases `ticketId`'s starting slot once its worker session is running or the launch/wake attempt has ended. */
-  free(ticketId: string): void { this.starting.delete(ticketId) }
+  free(ticketId: string): void { this.starting.delete(ticketId); this.shared?.free(ticketId) }
 }
 
 /**
@@ -227,7 +231,7 @@ export class DshExecutor implements Executor {
   /** Registers the `launch` and `delivery` effect handlers; both are held (concurrency limit 0) while processing is paused. */
   constructor(private readonly host: ExecutorHost) {
     this.slots = new WorkerSlots(() => host.store.tickets.open().filter(ticket => this.running(ticket)).map(ticket => ticket.id),
-      () => host.store.settings().executor.maxWorkers)
+      () => host.store.settings().executor.maxWorkers, host.slots ? 0 : 1, host.slots)
     // Each launch reserves a worker slot so launches run concurrently while slots are free.
     host.effects.handle('launch', payload => this.launchQueued(payload), { limit: () => host.paused() ? 0 : this.slots.launches(),
       retry: [5000, 300_000] })
@@ -248,7 +252,7 @@ export class DshExecutor implements Executor {
     const directory = ticket.execution?.directory ?? ''
     await mkdir(dirname(directory), { recursive: true })
     const command = this.host.store.settings().executor.prepare.trim()
-    const env = Object.fromEntries(this.host.environment(ticket).map(variable => [variable.key, variable.value]))
+    const env = { ...this.host.executionEnvironment?.(), ...Object.fromEntries(this.host.environment(ticket).map(variable => [variable.key, variable.value])) }
     // Enforce a timeout so a hung prepare command (such as on a credential prompt) fails the ticket instead of holding a worker slot indefinitely.
     const signal = AbortSignal.any([this.host.lifetime, AbortSignal.timeout(PREPARE_TIMEOUT_MS)])
     if (command) await runAsWorker(this.host.context.subprocess, ['sh', '-c', command], dirname(directory), signal, env)
@@ -258,7 +262,7 @@ export class DshExecutor implements Executor {
         throw new PrepareFailed(`The prepare command failed: ${error instanceof Error ? error.message : String(error)}`)
       })
     await mkdir(directory, { recursive: true })
-    await verifyDirectory(directory, this.host.context.subprocess, this.host.lifetime)
+    await verifyDirectory(directory, this.host.context.subprocess, this.host.lifetime, this.host.executionEnvironment?.())
   }
   /** Enqueues a `launch` effect for an accepted or resumed assignment; launches start in queue order as worker slots free up. */
   start(ticket: Ticket, assignment: Assignment): void {
@@ -402,6 +406,7 @@ export class DshExecutor implements Executor {
   }
   /** Number of open tickets whose worker holds a worker slot: its turn runs, or its shell jobs or subagents still run after its turn ended. */
   activeCount(): number { return this.host.store.tickets.open().filter(ticket => this.running(ticket)).length }
+  activeTicketIds(): string[] { return this.host.store.tickets.open().filter(ticket => this.running(ticket)).map(ticket => ticket.id) }
   /** Whether a ticket's worker holds a worker slot: its turn runs, or its shell jobs or subagents do after its turn ended. */
   private running(ticket: Ticket): boolean {
     if (!runningAssignment(ticket)) return false
@@ -477,24 +482,29 @@ export class DshExecutor implements Executor {
   install(): void {
     const ctx = this.host.context
     this.disposers.push(ctx.on('agent/status', ({ agent, status }) => {
+      const ticket = this.ticketOf(agent)
+      if (!ticket) return
       // A turn that starts ends the look at its worker's background work; the turn's own idle looks afresh.
       if (status === 'running') { this.settling.get(ticketOfSession(agent.id) ?? '')?.abort(); return }
       // The turn a stop of the worker's subagents woke and cancelled is no turn of the worker's.
       if (status !== 'idle' || cancelled.delete(agent) || this.host.closing()) return
-      const ticket = this.ticketOf(agent)
       const assignment = ticket && runningAssignment(ticket)
       if (ticket && assignment && liveTicket(ticket)) void this.background(this.workerIdle(ticket, assignment, agent))
     }))
     // A person's message typed into a worker's Session, which the ticket does not record.
     this.disposers.push(ctx.on('agent/inbox/claimed', ({ agent, message }) => {
       const ticketId = ticketOfSession(agent.id)
-      if (ticketId !== undefined && message.source.kind === 'user') this.personal.set(ticketId, now())
+      if (ticketId !== undefined && this.host.store.tickets.get(ticketId) && message.source.kind === 'user') this.personal.set(ticketId, now())
+    }))
+    this.disposers.push(ctx.on('agent/disposed', ({ agent }) => {
+      const ticketId = ticketOfSession(agent.id)
+      if (ticketId !== undefined) this.personal.delete(ticketId)
     }))
     // The Inputs a message of dsh-superagent's carries, which its worker reads once the Session took the message into its
     // history: a step that claimed it may be cancelled or fail before, which drops it.
     this.disposers.push(ctx.on('session/event', (session, event) => {
       const ticketId = ticketOfSession(session.id)
-      if (event.type !== 'user/message' || ticketId === undefined || event.data.source.kind !== 'dsh-superagent' || this.host.closing()) return
+      if (event.type !== 'user/message' || ticketId === undefined || !this.host.store.tickets.get(ticketId) || event.data.source.kind !== 'dsh-superagent' || this.host.closing()) return
       const message = event.data
       void this.background(Promise.resolve().then(() => {
         const read = this.host.store.tickets.get(ticketId)?.inputs.filter(input => input.kind === 'trigger' && !input.readAt

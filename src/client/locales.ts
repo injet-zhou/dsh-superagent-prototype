@@ -8,6 +8,9 @@ import { HEALTH_TEXT } from '../sources/host.ts'
 const TEXT = {
   // Shared
   title: ['Superagent', 'Superagent'],
+  repositorySelector: ['切换仓库', 'Switch repository'],
+  repositoryGlobalLoad: ['全局运行 {running} / 自动派工上限 {maxWorkers}', 'Global running {running} / dispatch limit {maxWorkers}'],
+  repositoryFailures: ['仓库存在异常：', 'Repository errors:'],
   close: ['关闭', 'Close'],
   cancel: ['取消', 'Cancel'],
   confirm: ['确定', 'Confirm'],
@@ -737,6 +740,7 @@ const TEXT = {
   'setup.foreignFile': ['{file} 不是 dsh-superagent 写入的文件；移走它，或换一个状态目录。', SETUP_PROBLEMS.foreignFile[1]],
   'setup.gitTooOld': ['git 没有读取 dsh-superagent 为代码托管平台写的凭据配置；需要 git 2.32 或更新版本。', SETUP_PROBLEMS.gitTooOld[1]],
   'setup.environmentFailed': ['准备智能体的运行环境失败。', SETUP_PROBLEMS.environmentFailed[1]],
+  'setup.startupFailed': ['启动在 {stage} 阶段失败；修复报告的错误后重新运行部署检查。', SETUP_PROBLEMS.startupFailed[1]],
   'setup.agentCliUnset': ['没有设置智能体的仓库 CLI。', SETUP_PROBLEMS.agentCliUnset[1]],
   'setup.agentCliMissing': ['找不到智能体的仓库 CLI。', SETUP_PROBLEMS.agentCliMissing[1]],
   'setup.agentCliSignedOut': ['智能体的仓库 CLI 读不到它的账号。', SETUP_PROBLEMS.agentCliSignedOut[1]],

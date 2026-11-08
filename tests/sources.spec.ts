@@ -96,7 +96,7 @@ describe('feishu source', () => {
       const value = host({ sources: emptyRegistry(), ...overrides })
       const disposers: (() => unknown)[] = []
       applyFeishu({ orchestrator: value, effect: (effect: () => () => unknown) => { disposers.push(effect()) } } as never)
-      await vi.waitFor(() => expect(value.health.history).toBeDefined())
+      await vi.waitFor(() => expect(value.health.history?.state).toBe('paused'))
       const registered = value.sources.kind('feishu')
       // Snapshot health before disposal clears the registered entries.
       const health = { ...value.health }
@@ -1047,6 +1047,7 @@ describe('feishu event consumer', () => {
     const path = join(dir, 'lark-bot')
     writeFileSync(path, `#!/bin/sh
   [ "$1" = event ] || { echo '{"ok":true,"data":{}}'; exit 0; }
+  env > '${dir}/consumer-env'
   n=$(cat '${dir}/runs' 2>/dev/null || echo 0); n=$((n + 1)); echo $n > '${dir}/runs'; echo $$ > '${dir}/pid'
   case ${mode} in
     never) exec sleep 60 ;;
@@ -1060,6 +1061,20 @@ describe('feishu event consumer', () => {
     return path
   }
   const runs = () => existsSync(join(dir, 'runs')) ? Number(readFileSync(join(dir, 'runs'), 'utf8')) : 0
+  it('does not pass operator credentials or git configuration into the native Feishu event consumer', async () => {
+    vi.stubEnv('GH_TOKEN', 'operator-token')
+    vi.stubEnv('GITEA_TOKEN', 'operator-token')
+    vi.stubEnv('GIT_CONFIG_GLOBAL', '/operator/gitconfig')
+    vi.stubEnv('DSH_SESSION_ID', 'personal-session')
+    const { ctx, store } = consumerSource(cli('ready'))
+    try {
+      running = runFeishu(ctx, controller.signal)
+      await vi.waitFor(() => expect(existsSync(join(dir, 'consumer-env'))).toBe(true), until)
+      const environment = readFileSync(join(dir, 'consumer-env'), 'utf8')
+      expect(environment).not.toMatch(/^(GH_TOKEN|GITEA_TOKEN|GIT_CONFIG_GLOBAL|DSH_SESSION_ID)=/m)
+      expect(environment).toContain('LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1')
+    } finally { controller.abort(); await running; store.close(); vi.unstubAllEnvs() }
+  })
   const alive = (pid: number) => { try { process.kill(pid, 0); return true } catch { return false } }
   /** The Feishu Source's context, on a fresh Store whose Feishu Source is on, with `cli` as the bot CLI. */
   function consumerSource(path: string, config: Record<string, unknown> = { chats: [] }) {

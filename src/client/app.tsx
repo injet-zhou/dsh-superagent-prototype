@@ -1,6 +1,7 @@
 /** Root panel shell: header with global search and glossary, top-level navigation tabs, and active route view. */
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
-import type { SearchView } from './api.ts'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { caller, usePoll, type SearchView } from './api.ts'
+import type { ApiResponse } from '../app/api.ts'
 import { Button, Dot, Icon, Input, Modal, SegmentedTabs } from './controls.tsx'
 import type { DeploymentForm } from './deployment.tsx'
 import { EvalStatus } from './eval.tsx'
@@ -8,8 +9,8 @@ import { ExecutionStatus } from './execution.tsx'
 import { ticketMark } from './marks.ts'
 import { GLOSSARY, GLOSSARY_VALUES, en, zh, type DshSuperagentKey } from './locales.ts'
 import { OverviewPage } from './overview.tsx'
-import { PanelProvider, usePanel, usePanelData } from './provider.tsx'
-import { HOME, TABS, initialLocation, lastSettingsGroup, remember, routeLabel, settingsRoute, type Location, type Route,
+import { PanelProvider, panelMessages, usePanel, usePanelData } from './provider.tsx'
+import { HOME, TABS, initialLocation, lastSettingsGroup, remember, rememberRepository, selectedRepository, routeLabel, settingsRoute, type Location, type Route,
   type Tab } from './route.ts'
 import { SettingsPage } from './settings.tsx'
 import { SourceStatus } from './source.tsx'
@@ -98,7 +99,8 @@ function SearchResults({ result, query, onClose }: { result: SearchView; query: 
   </div>
 }
 
-function Header({ masterId }: { masterId: string | undefined }) {
+interface RepositoryChoice { id: string; entries: ApiResponse<'GET repositories'>; select: (id: string) => void }
+function Header({ masterId, repositories }: { masterId: string | undefined; repositories: RepositoryChoice }) {
   const { t, call, openSession, notify } = usePanel()
   const [glossary, setGlossary] = useState(false)
   const [query, setQuery] = useState('')
@@ -121,9 +123,16 @@ function Header({ masterId }: { masterId: string | undefined }) {
     call('GET search', { query: { q: text } }).then(value => { if (request === latest.current) setResult({ query: text, value }) },
       failure => { if (request === latest.current) notify(errorText(failure)) })
   }
-  return <header className="dt-head">
+  const failures = repositories.entries.filter(entry => entry.state === 'error' || entry.error)
+  const globalLoad = repositories.entries.find(entry => entry.id === repositories.id)?.globalLoad
+  return <><header className="dt-head">
     <div className="dt-head-title"><h1 className="dt-title">{t('title')}</h1></div>
     <div className="dt-toolbar">
+      {globalLoad && <span className="dt-hint">{t('repositoryGlobalLoad', globalLoad)}</span>}
+      {repositories.entries.length > 1 && <select className="dt-input" aria-label={t('repositorySelector')} value={repositories.id}
+        onChange={event => repositories.select(event.target.value)}>
+        {repositories.entries.map(entry => <option key={entry.id} value={entry.id}>{entry.repository || entry.name}</option>)}
+      </select>}
       <form ref={search} className="dt-search" role="search" onSubmit={submit} onKeyDown={event => { if (event.key === 'Escape') show() }}>
         <Input type="search" icon={<Icon name="search" />} value={query} placeholder={t('searchPlaceholder')} aria-label={t('searchLabel')}
           onChange={event => { setQuery(event.target.value); if (!event.target.value) show() }} />
@@ -136,9 +145,12 @@ function Header({ masterId }: { masterId: string | undefined }) {
     </div>
     <Glossary open={glossary} onClose={() => setGlossary(false)} />
   </header>
+    {failures.length > 0 && <p className="dt-error" role="status">{t('repositoryFailures')} {failures.map(entry =>
+      <button key={entry.id} type="button" className="dt-open" onClick={() => repositories.select(entry.id)}>{entry.repository || entry.name} </button>)}</p>}
+  </>
 }
 
-function Pages({ route, openTab, deploymentForm }: { route: Route; openTab: (tab: Tab) => void; deploymentForm: DeploymentForm }) {
+function Pages({ route, openTab, deploymentForm, repositories }: { route: Route; openTab: (tab: Tab) => void; deploymentForm: DeploymentForm; repositories: RepositoryChoice }) {
   const { t } = usePanel()
   const { state, error, reload } = usePanelData()
   // Keep the active tab scrolled into view on narrow screens when routes change via links.
@@ -160,7 +172,7 @@ function Pages({ route, openTab, deploymentForm }: { route: Route; openTab: (tab
   })()
   return <div className="dt-page">
     <div className="dt-column">
-      <Header masterId={state?.masterId} />
+      <Header masterId={state?.masterId} repositories={repositories} />
       {error && state && <p className="dt-error" role="status">{error.message}</p>}
       <SegmentedTabs className="dt-tabs" label={t('pagesLabel')} value={route.page} onChange={openTab}
         items={TABS.map(value => ({ value, label: t(`tab.${value}`), id: `dt-tab-${value}`, panelId: 'dt-page' }))} />
@@ -171,8 +183,21 @@ function Pages({ route, openTab, deploymentForm }: { route: Route; openTab: (tab
 
 /** Root panel component managing route history and shared panel state. */
 export function App({ t, openSession, deploymentForm }: AppProps) {
-  const [location, setLocation] = useState(initialLocation)
-  useEffect(() => { remember(location) }, [location])
+  const copy = useRef(t)
+  copy.current = t
+  const call = useMemo(() => caller(() => panelMessages(copy.current)), [])
+  const { data, error } = usePoll(() => call('GET repositories'), [call], 5000)
+  const [selected, setSelected] = useState(selectedRepository)
+  const select = useCallback((id: string) => { setSelected(id); rememberRepository(id) }, [])
+  useEffect(() => { if (data && !data.some(entry => entry.id === selected)) select('default') }, [data, selected, select])
+  if (!data && selected !== 'default') return <p role="status">{error?.message ?? t('loading')}</p>
+  const id = data?.some(entry => entry.id === selected) ? selected : 'default'
+  const repositories: RepositoryChoice = { id, entries: data ?? [], select }
+  return <RepositoryPanel key={id} t={t} openSession={openSession} deploymentForm={deploymentForm} repositories={repositories} />
+}
+function RepositoryPanel({ t, openSession, deploymentForm, repositories }: AppProps & { repositories: RepositoryChoice }) {
+  const [location, setLocation] = useState(() => initialLocation(repositories.id))
+  useEffect(() => { remember(location, repositories.id) }, [location, repositories.id])
   // Preserve the last opened settings group across navigation so the Settings tab reopens at it.
   const move = useCallback((next: (current: Location) => Pick<Location, 'route' | 'stack'>) =>
     setLocation(current => ({ ...next(current), group: lastSettingsGroup(current) })), [])
@@ -182,7 +207,7 @@ export function App({ t, openSession, deploymentForm }: AppProps) {
   const back = useCallback(() => move(current => ({ route: current.stack.at(-1) ?? HOME, stack: current.stack.slice(0, -1) })), [move])
   const openTab = useCallback((tab: Tab) => move(current => ({ stack: [], route: tab === 'settings'
     ? settingsRoute(lastSettingsGroup(current)) : { page: tab, id: undefined } })), [move])
-  return <PanelProvider t={t} openSession={openSession} navigate={navigate} back={back} backLabel={routeLabel(t, location.stack.at(-1) ?? HOME)}>
-    <Pages route={location.route} openTab={openTab} deploymentForm={deploymentForm} />
+  return <PanelProvider t={t} repositoryId={repositories.id} openSession={openSession} navigate={navigate} back={back} backLabel={routeLabel(t, location.stack.at(-1) ?? HOME)}>
+    <Pages route={location.route} openTab={openTab} deploymentForm={deploymentForm} repositories={repositories} />
   </PanelProvider>
 }
