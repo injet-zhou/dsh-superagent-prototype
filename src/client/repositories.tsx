@@ -2,7 +2,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import type { ApiResponse } from '../app/api.ts'
 import { LIMITS } from '../limits.ts'
-import { Button, Dot, Icon, Input, Modal, SegmentedTabs } from './controls.tsx'
+import { Button, Dot, Icon, Input, Modal, SegmentedTabs, Tag } from './controls.tsx'
 import { DeploymentPage, type DeploymentForm } from './deployment.tsx'
 import { SaveBar, useDraft } from './draft.tsx'
 import { useAction, usePanel, usePanelData } from './provider.tsx'
@@ -14,6 +14,10 @@ import { Hint, LoadState, SetupMessage } from './widgets.tsx'
 
 export type RepositoryCatalog = ApiResponse<'GET repositories'>
 export type ManagementView = 'repositories' | 'configuration'
+export function repositoryState(entry: RepositoryCatalog[number]) {
+  return entry.error || entry.problems?.length || Object.values(entry.health ?? {}).some(health => health.state === 'error' || health.code === 'setupPending')
+    ? 'error' : entry.state ?? 'starting'
+}
 interface RepositoryConfig { id: string; name: string }
 export interface ManagementProps {
   view: ManagementView
@@ -66,7 +70,7 @@ function RepositoryList({ entries, configure, open, remove, editable }: {
 }) {
   const { t } = usePanel()
   return <ul className="dt-list dt-repositories">{entries.map(entry => {
-    const state = entry.state ?? 'starting'
+    const state = repositoryState(entry)
     const dot = state === 'error' ? 'error' : state === 'ready' ? 'done' : state === 'starting' ? 'ongoing' : 'warning'
     const failures = Object.entries(entry.health ?? {}).filter(([, health]) => health.state === 'error')
     return <li key={entry.id} className="dt-row dt-link dt-repository">
@@ -74,6 +78,7 @@ function RepositoryList({ entries, configure, open, remove, editable }: {
         <div className="dt-row-title">
           <button type="button" className="dt-open" onClick={() => open(entry.id)}>{entry.name === 'Default' && entry.id === 'default'
             ? entry.repository || t('repositoryDefault') : entry.name}</button>
+          {entry.id === 'default' && (entry.repository || entry.name !== 'Default') && <Tag tone="quiet">{t('repositoryDefault')}</Tag>}
           <span className="dt-repository-state"><Dot state={dot} />{t(`repositoryState.${state}`)}</span>
         </div>
         {entry.repository && entry.repository !== entry.name && !(entry.id === 'default' && entry.name === 'Default')
@@ -104,7 +109,7 @@ export function ManagementPanel({ view, entries, error, form, scope, configurati
   const [removing, setRemoving] = useState<RepositoryCatalog[number]>()
   const [id, setId] = useState('')
   const [name, setName] = useState('')
-  const [pending, setPending] = useState<{ id: string; adding: boolean }>()
+  const [pending, setPending] = useState<{ id: string; adding: boolean; timedOut?: boolean }>()
   const snapshot = form?.state
   const editable = snapshot?.status === 'ready' && snapshot.writable
   const configured = (snapshot?.value?.repositories ?? []) as RepositoryConfig[]
@@ -114,29 +119,35 @@ export function ManagementPanel({ view, entries, error, form, scope, configurati
     setPending(undefined)
     if (pending.adding) configure(pending.id)
   }, [pending, entries])
+  useEffect(() => {
+    if (!pending || pending.timedOut) return
+    const timer = setTimeout(() => setPending(current => current ? { ...current, timedOut: true } : current), 30_000)
+    return () => clearTimeout(timer)
+  }, [pending])
   const mutation = useAction(async (next: RepositoryConfig[], target: { id: string; adding: boolean }) => {
     if (!editable || !form || !await form.mutate([{ op: 'set', path: ['repositories'], value: next }], snapshot.revision)) {
       throw new Error(t('repositorySaveRefused'))
     }
     setAdding(false); setRemoving(undefined); setPending(target)
     notify(t('savedRestarting')); restart()
-    await reload()
+    void reload()
   })
-  const invalid = id === 'default' || configured.some(entry => entry.id === id) || entries?.some(entry => entry.id === id)
-  const valid = /^[a-z][a-z0-9-]{0,47}$/.test(id) && !invalid
+  const invalid = id === 'default' ? t('repositoryIdReserved') : id && !/^[a-z][a-z0-9-]{0,47}$/.test(id) ? t('repositoryIdInvalid')
+    : configured.some(entry => entry.id === id) || entries?.some(entry => entry.id === id) ? t('repositoryIdTaken') : undefined
+  const valid = !!id && !invalid
   const add = (event: FormEvent) => {
     event.preventDefault()
     if (!valid) return
     void mutation.run([...configured, { id, name: name.trim() || id }], { id, adding: true })
   }
-  const readOnly = !form ? t('deploymentNoForms') : snapshot?.mode === 'memory' ? t('deploymentReadOnly')
-    : snapshot?.status === 'loading' ? t('loading') : snapshot?.status === 'unavailable' ? t('deploymentUnavailable') : t('deploymentReadOnly')
+  const readOnly = !form ? t('repositoryNoForms') : snapshot?.mode === 'memory' ? t('repositoryReadOnly')
+    : snapshot?.status === 'loading' ? t('loading') : snapshot?.status === 'unavailable' ? t('repositoryUnavailable') : t('repositoryReadOnly')
   const load = entries?.find(entry => entry.globalLoad)?.globalLoad
   return <div className="dt-page"><div className="dt-column">
     <header className="dt-head">
       <h1 className="dt-title">{t('title')}</h1>
       <div className="dt-toolbar">
-        {load && <span className="dt-hint">{t('repositoryGlobalLoad', load)}</span>}
+        {entries && entries.length > 1 && load && <span className="dt-hint">{t('repositoryGlobalLoad', load)}</span>}
         {view === 'repositories' && <Button variant="outline" size="sm" icon={<Icon name="plus" size={14} />} disabled={!editable || mutation.busy || !!pending}
           onClick={() => { setId(''); setName(''); setAdding(true) }}>{t('repositoryAdd')}</Button>}
       </div>
@@ -146,7 +157,12 @@ export function ManagementPanel({ view, entries, error, form, scope, configurati
         id: `dt-management-${value}`, panelId: 'dt-management' }))} />
     <main id="dt-management" role="tabpanel" aria-labelledby={`dt-management-${view}`} className="dt-main">
       {error && <LoadState error={error} loading={false} />}
-      {pending && <p role="status" className="dt-hint">{t('repositoryReloading')}</p>}
+      {pending && <div className="dt-row-meta dt-row-buttons">
+        <p role={pending.timedOut ? 'alert' : 'status'} className={pending.timedOut ? 'dt-error' : 'dt-hint'}>
+          {t(pending.timedOut ? 'repositoryReloadTimeout' : 'repositoryReloading')}</p>
+        {pending.timedOut && <Button size="sm" onClick={() => { setPending({ ...pending, timedOut: false }); void reload() }}>{t('repositoryCheckAgain')}</Button>}
+        <Button size="sm" onClick={() => setPending(undefined)}>{t('repositoryStopWaiting')}</Button>
+      </div>}
       {view === 'repositories' ? <>
         {!editable && <Hint>{readOnly}</Hint>}
         {entries ? <RepositoryList entries={entries} configure={configure} open={onOpen} editable={!!editable && !mutation.busy && !pending}
@@ -169,16 +185,16 @@ export function ManagementPanel({ view, entries, error, form, scope, configurati
       <form id="dt-repository-add" className="dt-form" onSubmit={add}>
         <Fields disabled={mutation.busy}>
           <Field label={t('repositoryName')}><Input value={name} onChange={event => setName(event.target.value)} /></Field>
-          <Field label={t('repositoryId')} note={t('repositoryIdHint')}>
+          <Field label={t('repositoryId')} note={invalid ? undefined : t('repositoryIdHint')}>
             <Input value={id} required pattern="[a-z][a-z0-9\-]{0,47}" maxLength={48} spellCheck={false}
               onChange={event => setId(event.target.value.trim())} />
           </Field>
-          {invalid && <p className="dt-error" role="alert">{t('repositoryIdTaken')}</p>}
+          {invalid && <p className="dt-error" role="alert">{invalid}</p>}
         </Fields>
       </form>
     </Modal>
     <Modal open={!!removing} onClose={() => { if (!mutation.busy) setRemoving(undefined) }} title={t('repositoryRemove')}
-      closeLabel={t('close')} description={t('repositoryRemoveConfirm', { name: removing?.repository || removing?.name || '' })}
+      closeLabel={t('close')} description={t('repositoryRemoveConfirm', { name: removing?.name || '' })}
       footer={<>
         <Button disabled={mutation.busy} onClick={() => setRemoving(undefined)}>{t('cancel')}</Button>
         <Button variant="primary" disabled={!editable || mutation.busy} onClick={() => {

@@ -140,7 +140,7 @@ Once a person's message reached a blocked or failed Ticket, the Executor has the
 
 A retry ends the current Assignment and starts a new one in the same Executor Session, directory, branch and pull request.
 
-The Executor model applies only when a Session is created; an existing Session keeps its model.
+The Worker model applies only when a Session is created; an existing Session keeps its model.
 ### Restart
 
 Running Assignments end with "host restarted" and new ones start with a recovery note that tells the Executor to check its directory, git history and GitHub before repeating any outside action, oldest Ticket first.

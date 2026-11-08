@@ -238,7 +238,7 @@ export class Runtime extends Service implements SourceHost {
     this.options.validateSettings?.(this.store.settings())
     this.startupStage = 'setup.run'
     if (!await this.setup.run(this.store.settings())) {
-      this.runtimeHealth.set({ ...health('paused', 'setupPending'), at: now() })
+      this.runtimeHealth.set({ ...health('error', 'setupPending'), at: now() })
       return
     }
     if (this.closing()) return

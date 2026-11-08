@@ -235,18 +235,37 @@ function match(table: Routes, method: string, segments: string[]) {
 export function registerHttp(ctx: Context, runtime: HttpHost,
   repositories: () => readonly { id: string; name: string; host?: HttpHost; error?: string }[] = () => [{ id: 'default', name: 'Default', host: runtime }]): () => void {
   if (ctx.webServer.host !== '127.0.0.1') throw new Error('Orchestrator management requires a loopback Web server')
-  const catalog = (): ApiResponse<'GET repositories'> => repositories().map(({ id, name, host, error }) => {
-    const health = host?.repositoryHealth ?? host?.health ?? { runtime: { state: error ? 'error' as const : 'starting' as const, detail: error ?? 'Initializing repository' } }
-    const settings = host?.store.settings()
-    const problems = [host?.setupProblem, host?.feishuProblem, host?.discordProblem].flatMap(problem => problem ? [problem] : [])
-    const state = Object.values(health).some(item => item.state === 'error') || host?.feishuProblem || host?.discordProblem ? 'error'
-      : health.runtime?.state === 'starting' ? 'starting' : settings?.paused ? 'paused' : health.runtime?.state ?? 'starting'
-    return { id, name, repository: host?.configured() ? host.deployment.repository : '', configured: host?.configured() ?? false,
-      state, health, ...error ? { error } : {}, ...problems.length ? { problems } : {},
-      ...host && settings ? { load: { ...executorLoad(host.store, host.executor.activeCount()), maxWorkers: settings.executor.maxWorkers },
-        attention: host.store.tickets.open().filter(ticket => ticketStage(ticket).stage === 'person').length } : {},
-      globalLoad: runtime.globalLoad?.() ?? { running: runtime.executor.activeCount(), maxWorkers: runtime.store.settings().executor.maxWorkers } }
-  })
+  const catalog = (): ApiResponse<'GET repositories'> => {
+    let complete = true
+    const entries: ApiResponse<'GET repositories'> = repositories().map(({ id, name, host, error }) => {
+      try {
+        if (!host) return { id, name, repository: '', configured: false, state: error ? 'error' : 'starting', ...error ? { error } : {} }
+        const settings = host.store.settings(), tickets = host.store.tickets.open()
+        const health = Object.fromEntries(Object.entries(host.repositoryHealth ?? host.health).filter(([key]) =>
+          settings.sources.feishu?.enabled !== false || !['feishu', 'history', 'sync:feishu'].includes(key))
+          .filter(([key]) => settings.sources.discord?.enabled !== false || !['discord', 'sync:discord'].includes(key)))
+        const problems = [host.setupProblem, settings.sources.feishu?.enabled !== false ? host.feishuProblem : undefined,
+          settings.sources.discord?.enabled !== false ? host.discordProblem : undefined].flatMap(problem => problem ? [problem] : [])
+        const state = error || problems.length || Object.values(health).some(item => item.state === 'error' || item.code === 'setupPending') ? 'error'
+          : health.runtime?.state === 'starting' ? 'starting' : settings.paused ? 'paused' : health.runtime?.state ?? 'starting'
+        let queued = 0, attention = 0
+        for (const ticket of tickets) {
+          const stage = ticketStage(ticket)
+          if (stage.stage === 'person') attention++
+          if (stage.stage === 'working' && stage.action === 'queued') queued++
+        }
+        return { id, name, repository: host.configured() ? host.deployment.repository : '', configured: host.configured(), state, health,
+          ...error ? { error } : {}, ...problems.length ? { problems } : {}, attention,
+          load: { running: host.executor.activeCount(tickets), queued, maxWorkers: settings.executor.maxWorkers } }
+      } catch (error) {
+        complete = false
+        return { id, name, repository: '', configured: false, state: 'error', error: error instanceof Error ? error.message : String(error) }
+      }
+    })
+    const primary = entries.find(entry => entry.id === 'default')?.load
+    const globalLoad = complete && primary ? { running: entries.reduce((sum, entry) => sum + (entry.load?.running ?? 0), 0), maxWorkers: primary.maxWorkers } : undefined
+    return entries.map(entry => ({ ...entry, ...globalLoad ? { globalLoad } : {} }))
+  }
   const table = routes(runtime, catalog)
   const disposers = [
     ctx.webServer.register({ kind: 'prefix', path: '/orchestrator', handler: async (req, res) => {

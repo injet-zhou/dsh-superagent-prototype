@@ -28,7 +28,7 @@ it('lists Tickets under Execution by who they wait on, with the Executor state a
   await click(find(zh['tab.settings'], '.dt-status-head button'))
   expect(tab(zh['tab.settings']).getAttribute('aria-selected')).toBe('true')
   expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['promptPart.runtime/work'])
-  await type(field<HTMLInputElement>(zh.maxWorkers), '4')
+  await type(field<HTMLInputElement>(zh.repositoryWorkerLimit), '4')
   await click(tab(zh['tab.execution']))
   await click(zh.pauseProcessing)
   await click(zh.confirm)
@@ -124,7 +124,7 @@ it('keeps what a person types in the Execution settings, converting it once on s
   await click(zh['tab.execution'])
   await click(find(zh['tab.settings'], '.dt-status-head button'))
   const blocked = () => field<HTMLInputElement>(zh.blockedCommands), root = () => field<HTMLInputElement>(zh.executionDirectory),
-    workers = () => field<HTMLInputElement>(zh.maxWorkers)
+    workers = () => field<HTMLInputElement>(zh.repositoryWorkerLimit)
   // A separator typed before the next command, a space inside a path and a cleared number stay as typed.
   await type(blocked(), 'gh-personal ')
   expect(blocked().value).toBe('gh-personal ')

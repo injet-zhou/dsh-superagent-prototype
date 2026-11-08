@@ -304,7 +304,7 @@ curl -s -X PUT -H 'x-orchestrator-request: 1' -H 'content-type: application/json
 
 Setup uses the DeepSeek Harness subprocess service, as worker shells do. It removes environment variables whose names contain KEY, PASSWORD, SECRET or TOKEN.
 
-Setup verifies the selected repository and the agent's push access, writes the worker environment, and checks that git uses the selected provider's agent credential helper. A Feishu or Discord setup failure disables only that Source.
+Setup verifies the selected repository and the agent's push access, writes the worker environment, and checks that git uses the selected provider's agent credential helper. A Feishu or Discord setup failure pauses only that Source. Disabled optional Sources are not probed. Changing their enabled state reloads the bundle to update account bindings and worker shims; disabling one with a broken account does not require its account check to pass.
 
 The process environment that setup writes:
 

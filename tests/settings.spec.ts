@@ -5,9 +5,36 @@ import { Commands } from '../src/infra/commands.ts'
 import { Setup } from '../src/app/setup.ts'
 import { SettingsConflict } from '../src/app/settings.ts'
 import { startRuntime, type Host } from './fixtures/host.ts'
+import { SettingsSchema } from '../src/policy.ts'
 
 let h: Host | undefined
 afterEach(async () => { await h?.stop(); h = undefined })
+
+it('skips disabled optional bot probes at startup even when their account configuration is invalid', async () => {
+  h = await startRuntime(store => {
+    const settings = store.settings()
+    store.saveSettings(SettingsSchema.parse({ ...settings, sources: { ...settings.sources,
+      feishu: { enabled: false, config: { cli: '/missing/feishu' } }, discord: { enabled: false, config: { tokenFile: '/missing/discord-token' } } } }))
+  })
+  expect(h.runtime.configured()).toBe(true)
+  expect(h.runtime.deployment.feishu).toBeUndefined()
+  expect(h.runtime.deployment.discord).toBeUndefined()
+  expect(h.runtime.feishuProblem).toBeUndefined()
+  expect(h.subprocess.spawn.mock.calls.some(([spec]) => spec.argv.includes('/missing/feishu'))).toBe(false)
+  expect((await h.api('GET', 'state')).body.setup).toMatchObject({ feishuProblem: null })
+})
+
+it('allows disabling a broken optional bot without probing it and reloads its execution environment', async () => {
+  h = await startRuntime()
+  const { settings, store } = h.runtime
+  const feishu = settings.block('source:feishu')
+  expect(await settings.save('source:feishu', { enabled: false, config: { cli: '/missing/feishu' } }, feishu.revision, 'panel'))
+    .toMatchObject({ saved: true, restarting: true })
+  expect(store.settings().sources.feishu?.enabled).toBe(false)
+  const setup = new Setup({ context: h.ctx, machine: h.runtime.machine, lifetime: new AbortController().signal, restart: () => {} })
+  await expect(setup.checkAccounts('source:discord', SettingsSchema.parse({ sources: {
+    discord: { enabled: false, config: { tokenFile: '/missing/discord-token' } } } }))).resolves.toBeUndefined()
+})
 function deferred<T>() {
   let resolve!: (value: T) => void
   const promise = new Promise<T>(settle => { resolve = settle })
