@@ -10,8 +10,9 @@ import { SettingsProvider } from './settings-kit.tsx'
 import { SourceSettings } from './source.tsx'
 
 const STAGE_GROUPS: readonly SettingsGroup[] = ['source', 'eval', 'execution']
-export function SettingsPage({ group, query, state, deploymentForm }: {
+export function SettingsPage({ group, query, state, deploymentForm, repositoryOnly }: {
   group: SettingsGroup; query: { source?: string; version?: string }; state: StateView; deploymentForm: DeploymentForm
+  repositoryOnly?: boolean
 }) {
   const { t, navigate } = usePanel()
   const content = (() => {
@@ -25,7 +26,7 @@ export function SettingsPage({ group, query, state, deploymentForm }: {
   })()
   return <div className="dt-settings">
     <nav className="dt-settings-nav" aria-label={t('tab.settings')}>
-      {SETTINGS_GROUPS.map(value => <button key={value} type="button" className="dt-settings-link" data-stage={STAGE_GROUPS.includes(value)
+      {SETTINGS_GROUPS.filter(value => !repositoryOnly || value !== 'deployment').map(value => <button key={value} type="button" className="dt-settings-link" data-stage={STAGE_GROUPS.includes(value)
         || undefined}
         aria-current={value === group ? 'page' : undefined} onClick={() => navigate(settingsRoute(value),
           true)}>{t(`settingsGroup.${value}`)}</button>)}

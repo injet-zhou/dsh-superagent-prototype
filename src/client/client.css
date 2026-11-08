@@ -11,6 +11,11 @@
 .dt-mark { background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 25%, transparent); color: inherit; border-radius: 2px; }
 [data-platform='darwin'] .dt-page .dt-head { padding-top: var(--dsh-frame-top-clearance, 0px); }
 .dt-title { margin: 0; font-size: 15px; line-height: 22px; font-weight: 600; color: var(--dsw-alias-label-secondary); }
+.dt-head-title { display: flex; align-items: center; gap: 12px; }
+.dt-list.dt-repositories { gap: 0; }
+.dt-row.dt-repository { border-radius: 0; padding: 18px 8px; border-bottom: 0.5px solid var(--dsw-alias-border-l3); }
+.dt-repository .dt-open::after { border-radius: 0; }
+.dt-repository-state { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; white-space: nowrap; font-size: 12px; font-weight: 400; color: var(--dsw-alias-label-secondary); }
 .dt-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .dt-page .dt-tabs { overflow-x: auto; display: flex; gap: 20px; max-width: none; padding: 0; border-radius: 0; background: none; border-bottom: 0.5px solid var(--dsw-alias-border-l3); }
 .dt-segmented { width: 100%; max-width: 420px; box-sizing: border-box; display: inline-grid; gap: 2px; padding: 3px; border-radius: 9px; background: var(--dsw-alias-interactive-bg-hover); }

@@ -11,7 +11,7 @@ import { PromptConflict, SKILL_NAME, SKILL_PREFIX, TEAM_SECTIONS, builtInBase, b
 import { policyVersion } from '../policy.ts'
 import { SettingsConflict, type Settings } from './settings.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
-import { UserError, type EngineForPeople, type Ticket } from '../core/index.ts'
+import { UserError, ticketStage, type EngineForPeople, type Ticket } from '../core/index.ts'
 import type { Deployment, Machine } from '../deployment.ts'
 import type { DshExecutor } from '../executor/dsh.ts'
 import type { Health } from '../sources/host.ts'
@@ -237,9 +237,15 @@ export function registerHttp(ctx: Context, runtime: HttpHost,
   if (ctx.webServer.host !== '127.0.0.1') throw new Error('Orchestrator management requires a loopback Web server')
   const catalog = (): ApiResponse<'GET repositories'> => repositories().map(({ id, name, host, error }) => {
     const health = host?.repositoryHealth ?? host?.health ?? { runtime: { state: error ? 'error' as const : 'starting' as const, detail: error ?? 'Initializing repository' } }
-    const state = Object.values(health).some(item => item.state === 'error') ? 'error' : health.runtime?.state ?? 'starting'
+    const settings = host?.store.settings()
+    const problems = [host?.setupProblem, host?.feishuProblem, host?.discordProblem].flatMap(problem => problem ? [problem] : [])
+    const state = Object.values(health).some(item => item.state === 'error') || host?.feishuProblem || host?.discordProblem ? 'error'
+      : health.runtime?.state === 'starting' ? 'starting' : settings?.paused ? 'paused' : health.runtime?.state ?? 'starting'
     return { id, name, repository: host?.configured() ? host.deployment.repository : '', configured: host?.configured() ?? false,
-      state, health, ...error ? { error } : {}, ...runtime.globalLoad ? { globalLoad: runtime.globalLoad() } : {} }
+      state, health, ...error ? { error } : {}, ...problems.length ? { problems } : {},
+      ...host && settings ? { load: { ...executorLoad(host.store, host.executor.activeCount()), maxWorkers: settings.executor.maxWorkers },
+        attention: host.store.tickets.open().filter(ticket => ticketStage(ticket).stage === 'person').length } : {},
+      globalLoad: runtime.globalLoad?.() ?? { running: runtime.executor.activeCount(), maxWorkers: runtime.store.settings().executor.maxWorkers } }
   })
   const table = routes(runtime, catalog)
   const disposers = [

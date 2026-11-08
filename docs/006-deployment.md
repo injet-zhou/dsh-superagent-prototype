@@ -12,7 +12,9 @@ Plugin configuration holds the state directory and machine limits. Use the panel
 
 ### Multiple local repositories
 
-Keep the existing repository as `default`. To add repositories to the same DSH service, extend the `dsh-superagent` profile configuration:
+Keep the existing repository as `default`. In the sidebar, open **Superagent → Repositories → Add repository**, enter a name and stable ID, and confirm the service reload. When the repository appears, its Source settings open automatically; configure its repository account, permissions and models there. Use **Superagent settings** to switch between global and repository settings. Removing a repository from the overview stops its runtime and retains its files; the default repository stays in place.
+
+For configuration-file-based deployments, the equivalent `dsh-superagent` profile configuration is:
 
 ```yaml
 - id: dsh-superagent
