@@ -4,7 +4,7 @@ import { KV } from '../../kv.ts'
 import { Later } from '../effects.ts'
 import type { MemoryStore } from './store.ts'
 import { MemoryConflict } from './store.ts'
-import { MemoryProposal, type MemoryAnalysisInput } from './analyzer.ts'
+import { MemoryProposal, MEMORY_INPUT_BYTES, serializeAnalysisInput, type MemoryAnalysisInput } from './analyzer.ts'
 import { analyze, type CaptureHost } from './capture.ts'
 import { cleanNote, fingerprint, safeText } from './security.ts'
 import type { MemoryDetails } from './types.ts'
@@ -71,18 +71,19 @@ export class MemoryDreaming {
     if (!this.host.memory.dreamingEnabled()) return false
     const snapshot = this.input()
     if (!snapshot.notes.length) return false
-    const batchId = fingerprint(snapshot.notes.map(item => [item.note.id, item.note.revision]))
+    // A new key version permits an initial review of pages published before durable rotation existed.
+    const batchId = fingerprint(['memory-review-v1', snapshot.notes.map(item => [item.note.id, item.note.revision])])
     if (this.host.store.get(KV.memory.published(fingerprint(batchId)))) return false
     this.host.effects.enqueue('memory-consolidate', batchId, { batchId }); return true
   }
   private input(): MemoryAnalysisInput {
     const memory = this.host.memory.publisher()
     const notes: MemoryDetails[] = []
-    const candidates = memory.list('candidate', 10), verified = memory.list('verified', 5), stale = memory.list('stale', 5)
+    const candidates = memory.reviewable('candidate', 10), verified = memory.reviewable('verified', 5), stale = memory.reviewable('stale', 5)
     for (const note of [...candidates, ...verified, ...stale]) {
       const details = memory.get(note.id)!
       const entry = { note: details.note, evidence: details.evidence.slice(0, 5).map(item => ({ ...item, excerpt: safeText(item.excerpt, 500) })), revisions: [] }
-      if (Buffer.byteLength(JSON.stringify([...notes, entry])) > 95_000) break
+      if (Buffer.byteLength(serializeAnalysisInput({ mode: 'consolidate', events: [], notes: [...notes, entry] })) > MEMORY_INPUT_BYTES) break
       notes.push(entry)
     }
     return { mode: 'consolidate', events: [], notes }
@@ -92,9 +93,15 @@ export class MemoryDreaming {
     if (host.store.get(KV.memory.published(fingerprint(batchId)))) return
     try {
       const input = this.input()
+      if (!input.notes.length) return
       const proposals = await analyze(host, input)
       if (!host.memory.dreamingEnabled() || host.paused() || host.lifetime.aborted) throw new Later('memory_consolidation_paused')
-      publish(host.memory.publisher(), batchId, proposals, input.notes)
+      host.store.atomic(() => {
+        publish(host.memory.publisher(), batchId, proposals, input.notes)
+        const sequence = (host.store.get(KV.memory.reviewSequence) ?? 0) + 1
+        for (const { note } of input.notes) host.store.set(KV.memory.reviewed(note.id), { revision: note.revision, sequence })
+        host.store.set(KV.memory.reviewSequence, sequence)
+      })
       host.memory.refresh()
     } catch (error) {
       if (error instanceof Later) throw error

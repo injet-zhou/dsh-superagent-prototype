@@ -1,6 +1,11 @@
 /** Capability-limited analysis contract. An analyzer proposes JSON; it has no publisher, tools or Engine. */
 import { z } from 'zod'
 import { MemoryId, NoteInput, type MemoryDetails } from './types.ts'
+import { redact } from './security.ts'
+
+export const MEMORY_INPUT_BYTES = 100_000
+/** Shared wire representation: batching and budget preflight measure exactly what the adapter sends. */
+export const serializeAnalysisInput = (input: Readonly<MemoryAnalysisInput>): string => redact(JSON.stringify(input))
 
 export const CaptureProposal = z.object({ action: z.literal('create'), note: NoteInput,
   evidenceRefs: z.array(z.string().regex(/^seq:\d+:[a-f0-9]{64}$/)).min(1).max(20),

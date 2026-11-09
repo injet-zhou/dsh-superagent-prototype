@@ -516,3 +516,16 @@ git diff --check
 未运行：真实 provider 的生成/权限烟测、真实 Coding Worker 的完成率/命令数/token/费用 A/B；本次未开启真实 provider 和非零实际模型预算。未实施 Memory Panel、通用可信测试结果认证器、通用 PII 检测或 SQLite 查询的硬中断。这些不能用离线 fake、保守字节上界或软截止冒充。
 
 关闭与回滚：把当前仓库 `memory.enabled` 保存为 `false` 可立即停止自动工作、移除 Worker 入口并保留 DB/投影；已有队列不删除。若回滚到 schema 11 的旧二进制，停止服务并恢复升级前完整 SQLite 备份，不能仅 git revert 后让旧版本打开 schema 12。默认仓库路径不变，额外仓库分别备份/恢复，未对实际部署执行迁移或回滚。
+
+### PR #5 复审修正（基于 `7ee760a`）
+
+四项复审问题均已通过回归用例复现并修正：
+
+- Memory 开关只同步替换 Worker 的记忆搜索和资源读取注册，不释放 Ticket guard、工具限制、仓库执行环境、Prompt 或 skills；尚未完成首次装配的 Worker 等待原装配使用最新设置。延迟 skills 的测试覆盖连续开关、进程环境、原授权检查和非记忆工具注册的保留。
+- 禁止从 stale/retracted 笔记向其他笔记复制证据，覆盖 merge 与 duplicate-create 两条路径，避免抹掉失效边界后用旧认证证据提升 candidate。允许把新 verified 证据合入 stale 目标，目标仍须凭失效后的证据单独重新验证。
+- Capture、预算预检和生产 DSH 适配器共享完整脱敏 JSON 的序列化与 100,000 UTF-8 字节上限。分批计算包含来源引用、事件类型、JSON 转义及多字节字符；不适配的输入在扣预算前拒绝。55 条长消息及后续 turn 的测试使用真实适配器配离线 stream，验证检查点推进、队列排空、每次载荷上限及预算与 stream 调用次数一致。
+- Dreaming 在现有 KV 表保存每个已审笔记的修订号与审阅顺序，和 proposals/published 标记同事务提交；合法 `[]` 也推进轮转。未审笔记优先，已审后发生变化的笔记按上次审阅顺序重新排队。自动多页、手动后续页、dispatcher 重启、修订变化与进度写失败回滚均有回归测试。批次键版本变化使旧版仅存 published 标记的库可以开始轮转，无须人工搬迁；Schema 仍为 12。
+
+本次新增 9 项回归测试；新增轮转元数据不改变既有 DB 路径、默认设置、Engine 或授权语义。全部模型调用使用 fake/offline stream，真实模型未开启。此前最终验证表对应 `7ee760a`，本次验证另行记录。
+
+复审最终验证：在同一 Node/pnpm 环境，按顺序运行 `pnpm install --frozen-lockfile`、`pnpm typecheck`、`pnpm test`、`pnpm build`、`pnpm check`、`git diff --check`，全部通过。两次全量测试均为 70 文件、1317 项测试全部通过（`VITEST_MAX_WORKERS=2`，正常本机 loopback/进程权限），未跳过测试或弱化原断言；lockfile 未修改。

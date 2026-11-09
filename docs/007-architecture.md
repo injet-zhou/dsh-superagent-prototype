@@ -158,7 +158,7 @@ Trigger and Thread `meta` belong to the Source. The core does not interpret them
 
 Repository memory is an optional application subsystem, composed once per Runtime after Setup resolves repository identity. It has no Engine port. SQLite schema 12 adds notes, source evidence, immutable revisions and capture checkpoints in the existing connection. Schemas 10 and 11 upgrade transactionally; an older binary requires a pre-upgrade backup. FTS5 is optional and uses a bounded substring fallback. The default Runtime keeps its database path.
 
-Workers receive only verified memory through repository-bound read/search tools and a precomputed short index. Router Sessions have no memory access. Settings changes use the repository's independent `memory` revision and do not change `policyVersion`. Memory contents remain untrusted data under Policy and Mandate.
+Workers receive only verified memory through repository-bound read/search tools and a precomputed short index. Router Sessions have no memory access. Settings changes use the repository's independent `memory` revision and do not change `policyVersion`. Memory visibility changes replace only memory-related tool registrations, preserving Ticket guards, tool restrictions and scoped execution environments. Memory contents remain untrusted data under Policy and Mandate.
 
 `Store` (`src/app/store.ts`) owns one SQLite database per repository context. Runtime acquires the directory lock before opening it, preventing a second process from migrating or writing the same state.
 
@@ -519,7 +519,7 @@ A generated column is computed from its row's JSON and is empty outside its set,
 | Session prompt history | `session-prompts:<session id>` |
 | Source state | Read positions such as `github-cursor:<number>`, PR CI fingerprints and seen Feishu-topic messages; keys begin with the kind or `thread-` plus a Thread key |
 | Display names | `source-labels:<source id>` |
-| Memory | Immutable repository identity, UTC daily call reservations and published-job replay markers |
+| Memory | Immutable repository identity, UTC daily call reservations, published-job replay markers, reviewed note revisions and durable rotation sequence |
 
 Dismissal is stored on its Decision. Input text is rendered from the Ticket when read, so neither needs a separate key-value record.
 

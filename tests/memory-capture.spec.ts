@@ -2,7 +2,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { MessageId } from '@deepseek-ai/dsh-llm'
 import { expect, it, onTestFinished, vi } from 'vitest'
-import { MemoryCapture } from '../src/app/memory/capture.ts'
+import { analyze, MemoryCapture } from '../src/app/memory/capture.ts'
 import { MemoryConfigSchema } from '../src/policy.ts'
 import { Effects } from '../src/app/effects.ts'
 import type { MemoryAnalysisInput, MemoryAnalyzer } from '../src/app/memory/analyzer.ts'
@@ -12,6 +12,9 @@ import { startRuntime, feishu } from './fixtures/host.ts'
 import { waitUntil, deferred } from './fixtures/async.ts'
 import { fingerprint } from '../src/app/memory/security.ts'
 import { cancelled } from '../src/executor/background.ts'
+import { DshMemoryAnalyzer } from '../src/app/memory/dsh-analyzer.ts'
+import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
+import { KV } from '../src/kv.ts'
 
 function turn(session: Session, number: number, text = 'Migration regression command passed on this checkout') {
   session.append('turn/start', { turn: number })
@@ -57,6 +60,35 @@ it('deduplicates repeated effects, keeps identical text at distinct events, and 
   expect(notes).toHaveLength(2)
   expect(new Set(notes.map(note => f.memory.get(note.id)!.evidence[0]!.eventRef)).size).toBe(2)
   expect(f.memory.list()).toEqual([])
+})
+
+it.each(['x'.repeat(2000), '"\\'.repeat(1000), '记忆'.repeat(1000)])('splits complete serialized payloads (%#) for the production adapter without blocking later turns', async text => {
+  const stream = vi.fn(async function* (_options: GenerateOptions): AsyncIterable<StreamChunk> {
+    yield { type: 'text-delta', index: 0, text: '[]' }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })
+  const f = captureFixture(new DshMemoryAnalyzer({ stream }, { provider: 'p', model: 'm' }))
+  let end!: SessionEvent<'turn/end'>
+  for (let i = 1; i <= 55; i++) end = turn(f.session, i, text)
+  f.capture.enqueue('ticketA', 'assignmentA', end)
+  const later = turn(f.session, 56, 'Follow-up after the long batch')
+  f.capture.enqueue('ticketA', 'assignmentA', later)
+  await f.effects.idle('memory-capture')
+  expect(f.cursor()?.seq).toBe(Number(later.seq))
+  expect(f.effects.pending('memory-capture')).toBe(false)
+  expect(stream.mock.calls.length).toBeGreaterThan(1)
+  expect(stream.mock.calls.every(([options]) => Buffer.byteLength(options.messages.map(message => message.content
+    .filter(block => block.type === 'text').map(block => block.text).join('')).join('')) <= 100_000)).toBe(true)
+  expect(f.store.get(KV.memory.usage)?.calls).toBe(stream.mock.calls.length)
+})
+
+it('does not debit the budget when the complete analysis payload exceeds the adapter limit', async () => {
+  const propose = vi.fn(async () => [])
+  const f = captureFixture({ propose })
+  await expect(analyze(f.host, { mode: 'capture', events: [{ ref: 'source', type: 'user/message', text: 'x'.repeat(100_001) }], notes: [] }))
+    .rejects.toThrow('memory_input_too_large')
+  expect(f.store.get(KV.memory.usage)).toBeUndefined()
+  expect(propose).not.toHaveBeenCalled()
 })
 
 it('rolls back candidates and evidence when checkpoint publication fails, then retries exactly once', async () => {

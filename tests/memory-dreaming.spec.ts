@@ -4,6 +4,8 @@ import { join } from 'node:path'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import { Context } from '@deepseek-ai/cordis'
+import type { MemoryAnalysisInput } from '../src/app/memory/analyzer.ts'
+import { HealthBoard } from '../src/infra/health.ts'
 import { MemoryConfigSchema } from '../src/policy.ts'
 import { MemoryProjection } from '../src/app/memory/projection.ts'
 import { DshMemoryAnalyzer } from '../src/app/memory/dsh-analyzer.ts'
@@ -82,6 +84,21 @@ it('deduplicates creates through existing evidence and requires new attestations
     expect(verified.status).toBe('verified')
     expect(memory.search({ query: 'SQLite' })).toHaveLength(1)
   } finally { vi.useRealTimers() }
+})
+
+it('cannot launder stale attestations into a candidate through merge or duplicate publication', () => {
+  const { memory } = memoryFixture()
+  const old = memory.create(exampleNote, [exampleEvidence], 'old-proof', 'verified')
+  memory.update(old.id, 1, { status: 'stale' }, [], 'The evidence is invalid for the changed environment', 'invalidate')
+  const candidate = memory.create(exampleNote, [{ ...exampleEvidence, eventRef: `seq:8:${fingerprint('new observation')}`, supportsVerification: false }], 'candidate')
+  const stale = memory.get(old.id)!, before = memory.get(candidate.id)!
+  expect(() => memory.merge(old.id, 2, candidate.id, 1, 'Duplicate', 'launder')).toThrow('invalidated_evidence')
+  expect(() => publish(memory, 'launder-create', [{ action: 'create', note: exampleNote,
+    evidenceIds: stale.evidence.map(item => item.id), ...audit }], [stale, before])).toThrow('invalidated_evidence')
+  expect(memory.get(candidate.id)).toEqual(before)
+  expect(memory.get(old.id)).toEqual(stale)
+  expect(() => memory.update(candidate.id, 1, { status: 'verified' }, before.evidence.map(item => item.id), 'Old proof', 'promote')).toThrow('verification_required')
+  expect(memory.search({ query: 'SQLite' })).toEqual([])
 })
 
 it('rebuilds private projections and a damaged FTS index, preserving redaction and invalidation', async () => {
@@ -230,6 +247,78 @@ it('holds Dreaming while processing is paused and resumes without taking an auto
   await h.runtime.effects.idle('memory-consolidate')
   expect(propose).toHaveBeenCalledTimes(1)
   expect(h.runtime.executor.activeCount()).toBe(0)
+})
+
+it('rotates through all candidate, verified and stale pages after empty proposals and revisits changed revisions', async () => {
+  const f = memoryFixture(), effects = new Effects(f.store, f.board), lifetime = new AbortController()
+  const ids: string[] = []
+  for (const [status, count] of [['candidate', 27], ['verified', 13], ['stale', 12]] as const) {
+    for (let index = 0; index < count; index++) {
+      const id = `${status}-${String(index).padStart(2, '0')}`
+      const note = f.memory.create({ ...exampleNote, title: id }, [exampleEvidence], id, status === 'candidate' ? 'candidate' : 'verified', id)
+      if (status === 'stale') f.memory.update(note.id, 1, { status: 'stale' }, [], 'Changed environment', 'host')
+      ids.push(id)
+    }
+  }
+  f.store.saveSettings({ ...f.store.settings(), memory: MemoryConfigSchema.parse({ enabled: true, dreaming: true, dailyCallBudget: 20 }) })
+  f.service.configure(f.store.settings().memory)
+  const propose = vi.fn(async (_input: Readonly<MemoryAnalysisInput>) => [])
+  const dreaming = new MemoryDreaming({ store: f.store, memory: f.service, effects, context: new Context(), lifetime: lifetime.signal,
+    analyzer: { propose }, paused: () => false })
+  onTestFinished(async () => { lifetime.abort(); await effects.drain() })
+  dreaming.enqueue(); effects.start(); await effects.idle('memory-consolidate')
+  const seen = propose.mock.calls.flatMap(([input]) => input.notes.map(details => details.note.id))
+  expect(seen.sort()).toEqual(ids.sort())
+  expect(dreaming.enqueue()).toBe(false)
+  const changed = f.memory.get('candidate-00')!.note
+  f.memory.update(changed.id, changed.revision, { body: 'Updated evidence needs another review' }, [], 'New finding', 'host')
+  await effects.idle('memory-consolidate')
+  expect(propose.mock.calls.at(-1)![0].notes).toMatchObject([{ note: { id: changed.id, revision: changed.revision + 1 } }])
+})
+
+it('lets manual consolidation reach later pages and preserves review progress across dispatcher restart', async () => {
+  const f = memoryFixture(), effects = new Effects(f.store, f.board), lifetime = new AbortController()
+  for (let index = 0; index < 12; index++) f.memory.create({ ...exampleNote, title: `Note ${index}` }, [exampleEvidence], `manual-${index}`, 'verified')
+  f.store.saveSettings({ ...f.store.settings(), memory: MemoryConfigSchema.parse({ enabled: true, dreaming: true, dailyCallBudget: 10 }) })
+  f.service.configure(f.store.settings().memory)
+  const propose = vi.fn(async (_input: Readonly<MemoryAnalysisInput>) => [])
+  const host = { store: f.store, memory: f.service, effects, context: new Context(), lifetime: lifetime.signal, analyzer: { propose }, paused: () => false }
+  const dreaming = new MemoryDreaming(host)
+  effects.start()
+  expect(dreaming.enqueue()).toBe(true); await effects.idle('memory-consolidate')
+  await effects.drain()
+  const restarted = new Effects(f.store, new HealthBoard()), resumed = new MemoryDreaming({ ...host, effects: restarted })
+  onTestFinished(async () => { lifetime.abort(); await restarted.drain() })
+  restarted.start()
+  expect(resumed.enqueue()).toBe(true); await restarted.idle('memory-consolidate')
+  expect(resumed.enqueue()).toBe(true); await restarted.idle('memory-consolidate')
+  expect(resumed.enqueue()).toBe(false)
+  expect(new Set(propose.mock.calls.flatMap(([input]) => input.notes.map(details => details.note.id))).size).toBe(12)
+})
+
+it('rolls back proposals and review progress together when a review checkpoint cannot be persisted', async () => {
+  const f = memoryFixture(), effects = new Effects(f.store, f.board), lifetime = new AbortController()
+  const note = f.memory.create(exampleNote, [exampleEvidence], 'atomic-review', 'verified')
+  f.store.saveSettings({ ...f.store.settings(), memory: MemoryConfigSchema.parse({ enabled: true, dreaming: true, dailyCallBudget: 3 }) })
+  f.service.configure(f.store.settings().memory)
+  const propose = vi.fn(async (input: Readonly<MemoryAnalysisInput>) => [{ action: 'stale', id: note.id, expectedRevision: 1,
+    evidenceIds: input.notes[0]!.evidence.map(item => item.id), ...audit }])
+  const dreaming = new MemoryDreaming({ store: f.store, memory: f.service, effects, context: new Context(), lifetime: lifetime.signal,
+    analyzer: { propose }, paused: () => false })
+  onTestFinished(async () => { lifetime.abort(); await effects.drain() })
+  f.store.db.prepare(`CREATE TRIGGER reject_review BEFORE INSERT ON kv WHEN NEW.key LIKE '${KV.memory.reviewed.prefix}%' BEGIN SELECT RAISE(ABORT,'review unavailable'); END`).run()
+  dreaming.enqueue(); effects.start(); await effects.idle('memory-consolidate')
+  expect(f.memory.get(note.id)!.note).toMatchObject({ status: 'verified', revision: 1 })
+  expect(f.store.get(KV.memory.reviewed(note.id))).toBeUndefined()
+  expect(f.store.keys(KV.memory.published)).toEqual([])
+  expect(effects.pending('memory-consolidate')).toBe(true)
+  f.store.db.exec('DROP TRIGGER reject_review; UPDATE effect SET due=0')
+  await effects.idle('memory-consolidate')
+  expect(f.memory.get(note.id)!.note).toMatchObject({ status: 'stale', revision: 2 })
+  expect(f.store.get(KV.memory.reviewed(note.id))).toMatchObject({ revision: 1 })
+  expect(f.memory.reviewable('stale', 5)).toMatchObject([{ id: note.id, revision: 2 }])
+  expect(propose).toHaveBeenCalledTimes(2)
+  expect(effects.pending('memory-consolidate')).toBe(false)
 })
 
 it('bounds a non-cooperative analyzer with the configured deadline and retains its global reservation until completion', async () => {

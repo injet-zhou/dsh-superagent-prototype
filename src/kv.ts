@@ -22,6 +22,8 @@ export const KV = {
   /** Memory: immutable repository binding; private memory is never inherited by another context. */
   memory: { repository: record<string>('memory-repository'),
     usage: record<{ day: string; calls: number }>('memory-usage'),
+    reviewSequence: record<number>('memory-review-sequence'),
+    reviewed: family<{ revision: number; sequence: number }, [note: string]>('memory-reviewed:'),
     published: family<boolean, [job: string]>('memory-published:') },
   /** Store: current database schema version. */
   store: { schema: record<number>('schema') },

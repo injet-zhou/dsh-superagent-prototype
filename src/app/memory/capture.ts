@@ -6,7 +6,7 @@ import { KV } from '../../kv.ts'
 import { Later, type Effects } from '../effects.ts'
 import type { Store } from '../store.ts'
 import type { MemoryService } from './service.ts'
-import { CaptureProposal, type MemoryAnalyzer, type MemoryAnalysisInput } from './analyzer.ts'
+import { CaptureProposal, MEMORY_INPUT_BYTES, serializeAnalysisInput, type MemoryAnalyzer, type MemoryAnalysisInput } from './analyzer.ts'
 import { fingerprint, safeText } from './security.ts'
 
 export interface CaptureBatch { ticketId: string; assignmentId: string; sessionId: string; endSeq: number; endHash: string }
@@ -39,6 +39,7 @@ export async function analyze(host: CaptureHost, input: MemoryAnalysisInput): Pr
   const signal = AbortSignal.any([host.lifetime, host.memory.analysisSignal(), AbortSignal.timeout(15_000)])
   const config = host.store.settings().memory, day = new Date().toISOString().slice(0, 10)
   if (!host.memory.active() || host.paused() || signal.aborted) throw new Later('memory_analysis_paused')
+  if (Buffer.byteLength(serializeAnalysisInput(input)) > MEMORY_INPUT_BYTES) throw new Error('memory_input_too_large')
   host.store.atomic(() => {
     const previous = host.store.get(KV.memory.usage)
     const calls = previous?.day === day ? previous.calls : 0
@@ -111,7 +112,6 @@ export class MemoryCapture {
       }
       const chunk = range.slice(0, 200)
       let last = chunk[0]!
-      let bytes = 0
       const input: MemoryAnalysisInput = { mode: 'capture', events: [], notes: [] }
       const textEvents: { ref: string; type: string; text: string }[] = []
       for (const event of chunk) {
@@ -119,10 +119,10 @@ export class MemoryCapture {
         const blocks = event.type === 'user/message' ? event.data.content
           : event.type === 'assistant/message' || event.type === 'tool/result' ? event.data.message.content : []
         const text = safeText(blocks.filter(block => block.type === 'text').map(block => block.text).join('\n'), 2000)
-        if (bytes + Buffer.byteLength(text) > 100_000) break
-        bytes += Buffer.byteLength(text)
+        const entry = text.trim() ? { ref: `seq:${event.seq}:${fingerprint(event)}`, type: event.type, text } : undefined
+        if (entry && Buffer.byteLength(serializeAnalysisInput({ ...input, events: [...textEvents, entry] })) > MEMORY_INPUT_BYTES) break
         last = event
-        if (text.trim()) textEvents.push({ ref: `seq:${event.seq}:${fingerprint(event)}`, type: event.type, text })
+        if (entry) textEvents.push(entry)
       }
       const raw = textEvents.length ? await analyze(host, Object.freeze({ ...input,
         events: Object.freeze(textEvents.map(event => Object.freeze({ ...event }))) })) : []

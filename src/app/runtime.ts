@@ -163,7 +163,9 @@ export class Runtime extends Service implements SourceHost {
         sourceHost: this, setup, requestPass: () => { this.passes.request() },
         settingsChanged: settings => {
           memory.analyzerAvailable(!!options.memoryAnalyzer || !!settings.memory.analyzerModel)
-          if (memory.configure(settings.memory)) void sessions.redecorate().catch(() => { memory.degraded('memory_tools_unavailable') })
+          if (memory.configure(settings.memory)) {
+            try { sessions.refreshMemoryTools() } catch { memory.degraded('memory_tools_unavailable') }
+          }
         },
         ...options.validateSettings ? { validateSettings: options.validateSettings } : {} })
       this.executor = new DshExecutor({ context: ctx, get engine() { return runtime.engine }, store, effects, health: board.claim('worker'), machine,

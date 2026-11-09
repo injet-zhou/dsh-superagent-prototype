@@ -10,6 +10,10 @@ import { testMachine } from './fixtures/deployment.ts'
 import { credentialHelper, workerGitConfig } from '../src/infra/environment.ts'
 import { vi } from 'vitest'
 import { KV } from '../src/kv.ts'
+import type { Context } from '@deepseek-ai/cordis'
+import { SessionId } from '@deepseek-ai/dsh-session'
+import { deferred } from './fixtures/async.ts'
+import { installScopedEnvironment } from '../src/infra/scoped-environment.ts'
 
 it('leaves default Workers and Router unchanged, then enables repository memory through a revisioned setting', async () => {
   const h = await startRuntime(store => {
@@ -81,4 +85,47 @@ it('keeps default, backend and frontend memory, scoped settings and health isola
   const selected = await h.api('GET', '/orchestrator/repositories/backend/api/state')
   expect(selected.body.health).toMatchObject({ memory: { detail: 'partial_capture' } })
   expect((await h.api('GET', '/orchestrator/repositories/missing/api/state')).status).toBe(404)
+})
+
+it('keeps authorization, tool restrictions and repository environments installed while Memory changes and skills are delayed', async () => {
+  const h = await startRuntime(undefined, { scopedEnvironment: true })
+  onTestFinished(() => h.stop())
+  type Guard = Parameters<Context['tools']['guard']>[0]
+  type Restriction = Parameters<Context['tools']['restrict']>[0]
+  const guards = new Set<Guard>(), restrictions = new Set<Restriction>()
+  const create = h.controller.create.getMockImplementation()!
+  h.controller.create.mockImplementation(async args => {
+    await create(args)
+    const tools = h.ctx.agents.get(SessionId(args.sessionId))!.ctx.tools
+    vi.mocked(tools.guard).mockImplementation(guard => { guards.add(guard); return () => { guards.delete(guard) } })
+    vi.mocked(tools.restrict).mockImplementation(restriction => { restrictions.add(restriction); return () => { restrictions.delete(restriction) } })
+  })
+  const { ticket, sessionId } = await h.acceptedTicket(feishu('1', '检查隔离'))
+  const agent = h.ctx.agents.get(SessionId(sessionId))!, guard = [...guards][0]!, restriction = [...restrictions][0]!
+  const originalAck = h.tools.get(sessionId)!.get('orchestrator_ack')
+  const skills = deferred()
+  const delayed = agent.ctx.inject(['skills'], async () => { await skills.promise })
+  const inject = agent.ctx.inject.bind(agent.ctx)
+  const initialize = vi.spyOn(agent.ctx, 'inject').mockImplementation((deps, callback) =>
+    Array.isArray(deps) && deps.includes('skills') ? delayed : inject(deps, callback))
+  const launches = h.subprocess.spawn, restore = installScopedEnvironment(h.ctx.subprocess)
+  try {
+    for (const [revision, enabled] of [true, false, true].entries()) {
+      expect((await h.api('PUT', 'settings/memory', { revision, value: { enabled } })).status).toBe(200)
+      await agent.ctx.waterfall('tools/execute', {} as never, async () => {
+        h.ctx.subprocess.spawn({ argv: ['probe'], cwd: '/', graceMs: 0, stdio: { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' } })
+        return { content: [] } as never
+      })
+      const spec = launches.mock.calls.at(-1)![0] as { env?: NodeJS.ProcessEnv }
+      expect(spec.env?.GIT_CONFIG_GLOBAL).toBe(workerGitConfig(h.directory))
+      expect(spec.env?.DSH_SUPERAGENT_GITHUB_REPOSITORY).toBe('acme/widgets')
+      expect(guards.has(guard)).toBe(true)
+      expect(restrictions.has(restriction)).toBe(true)
+      expect(h.tools.get(sessionId)!.get('orchestrator_ack')).toBe(originalAck)
+      expect(h.tools.get(sessionId)!.has('orchestrator_memory_search')).toBe(enabled)
+      expect(initialize).not.toHaveBeenCalled()
+    }
+    h.runtime.engine.stopTicket(ticket.id)
+    expect(await guard({} as never)).toContain('Ticket ended')
+  } finally { skills.resolve(); initialize.mockRestore(); await delayed.dispose(); restore() }
 })

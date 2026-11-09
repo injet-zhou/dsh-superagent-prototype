@@ -43,6 +43,13 @@ export class MemoryStore {
     return this.store.db.prepare('SELECT * FROM memory_note WHERE repository=? AND status=? ORDER BY updated_at DESC,id LIMIT ?')
       .all(this.repository, status, Math.min(limit, 200)).map(row => this.note(row))
   }
+  /** Durable review rotation: unseen notes precede changed notes, ordered by their last successful review. */
+  reviewable(status: MemoryNote['status'], limit: number): MemoryNote[] {
+    return this.store.db.prepare(`SELECT n.* FROM memory_note n LEFT JOIN kv r ON r.key=?||n.id
+      WHERE n.repository=? AND n.status=? AND (r.value IS NULL OR json_extract(r.value,'$.revision')<>n.revision)
+      ORDER BY COALESCE(json_extract(r.value,'$.sequence'),0),n.id LIMIT ?`)
+      .all(KV.memory.reviewed.prefix, this.repository, status, Math.min(limit, 200)).map(row => this.note(row))
+  }
   /** Bounded pages for rebuilding the private projection, including stale/retracted records. */
   page(after = ''): MemoryNote[] {
     return this.store.db.prepare('SELECT * FROM memory_note WHERE repository=? AND id>? ORDER BY id LIMIT 100')
@@ -128,16 +135,17 @@ export class MemoryStore {
       return note
     })
   }
-  /** Copies only existing same-repository evidence, preserving its original attestation and capture time. */
+  /** Copies evidence only from live same-repository notes, preserving original attestations and capture times. */
   addEvidenceFrom(id: string, revision: number, evidenceIds: string[], reason: string, job: string): MemoryNote {
     return this.store.atomic(() => {
       const target = this.get(id)
       if (!target || target.note.revision !== revision) throw new MemoryConflict('memory_revision_conflict')
       let added = 0
       for (const evidenceId of evidenceIds) {
-        const row = this.store.db.prepare('SELECT e.* FROM memory_evidence e JOIN memory_note n ON e.note_id=n.id WHERE e.id=? AND n.repository=?')
+        const row = this.store.db.prepare('SELECT e.*,n.status AS source_status FROM memory_evidence e JOIN memory_note n ON e.note_id=n.id WHERE e.id=? AND n.repository=?')
           .get(evidenceId, this.repository)
         if (!row) throw new Error('memory_unknown_evidence')
+        if (row.source_status === 'stale' || row.source_status === 'retracted') throw new Error('memory_invalidated_evidence')
         const evidence = this.evidence(row)
         // Copy the original claim fingerprint, never attest a new claim just because it cites this evidence.
         const result = this.store.db.prepare('INSERT OR IGNORE INTO memory_evidence VALUES (?,?,?,?,?,?,?,?,?,?,?)')
