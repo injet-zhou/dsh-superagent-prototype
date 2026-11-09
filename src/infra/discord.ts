@@ -20,18 +20,21 @@ export type DiscordMessage = z.infer<typeof DiscordMessage>
 /** Identifies an insecure token file without including its content in diagnostics. */
 class TokenPermissionsError extends Error {}
 
+/** Only the bot identity, the channel/message endpoints this Source reads, and the bot's own reactions are exposed. */
+const CHANNEL_PATH = /^users\/@me$|^channels\/[0-9]{1,20}(?:\/messages(?:\/[0-9]{1,20})?)?(?:\?(?:limit|before|after)=[0-9]+(?:&(?:limit|before|after)=[0-9]+)*)?$/
+const REACTION_PATH = /^channels\/[0-9]{1,20}\/messages\/[0-9]{1,20}\/reactions\/(?!\.\.?\/)[A-Za-z0-9%._~!*'()-]+\/@me$/
+
 /** One shared queue across command clones; conservatively pauses all routes when any bucket is exhausted. */
 export class DiscordApi {
   private queue: Promise<unknown> = Promise.resolve()
   private resumeAt = 0
   constructor(readonly tokenFile: string) {}
-  async request<T>(schema: z.ZodType<T>, path: string, signal: AbortSignal, body?: unknown): Promise<T> {
-    // Only the bot identity and channel/message endpoints used by this Source are exposed.
-    if (!/^users\/@me$|^channels\/[0-9]{1,20}(?:\/messages(?:\/[0-9]{1,20})?)?(?:\?(?:limit|before|after)=[0-9]+(?:&(?:limit|before|after)=[0-9]+)*)?$/.test(path)) {
-      throw new Error('Unsupported Discord API path')
-    }
+  async request<T>(schema: z.ZodType<T>, path: string, signal: AbortSignal, body?: unknown,
+    method: 'GET' | 'POST' | 'PUT' = body === undefined ? 'GET' : 'POST'): Promise<T> {
+    // A body-carrying message endpoint is the only POST; adding a reaction is the only PUT this Source needs.
+    if (!(method === 'PUT' ? REACTION_PATH : CHANNEL_PATH).test(path)) throw new Error('Unsupported Discord API path')
     const bounded = AbortSignal.any([signal, AbortSignal.timeout(30_000)])
-    const result = this.queue.then(() => this.perform(schema, path, bounded, body))
+    const result = this.queue.then(() => this.perform(schema, path, bounded, body, method))
     this.queue = result.catch(() => {})
     return new Promise<T>((resolve, reject) => {
       const stop = () => reject(bounded.reason)
@@ -40,7 +43,18 @@ export class DiscordApi {
       result.then(resolve, reject).finally(() => bounded.removeEventListener('abort', stop))
     })
   }
-  private async perform<T>(schema: z.ZodType<T>, path: string, signal: AbortSignal, body: unknown): Promise<T> {
+  /**
+   * Adds one emoji reaction as the bot. Discord answers 204 without a body and treats adding the same reaction again as success.
+   * @throws CliError with the HTTP status when Discord refuses the message or the bot's permissions.
+   */
+  async react(channel: string, message: string, emoji: string, signal: AbortSignal): Promise<void> {
+    // A dot-only segment would normalize the reaction URL back onto the message endpoint.
+    if (!emoji || /^\.{1,2}$/.test(emoji)) throw new Error('Invalid Discord reaction emoji')
+    const path = `channels/${Snowflake.parse(channel)}/messages/${Snowflake.parse(message)}/reactions/${encodeURIComponent(emoji)}/@me`
+    await this.request(z.void(), path, signal, undefined, 'PUT')
+  }
+  private async perform<T>(schema: z.ZodType<T>, path: string, signal: AbortSignal, body: unknown,
+    method: 'GET' | 'POST' | 'PUT'): Promise<T> {
     signal.throwIfAborted()
     if (!isAbsolute(this.tokenFile)) throw new Error('Discord token file must be an absolute path')
     let token: string
@@ -59,7 +73,7 @@ export class DiscordApi {
       let response: Response
       try {
         response = await fetch(`https://discord.com/api/v10/${path}`, {
-          method: body === undefined ? 'GET' : 'POST', redirect: 'error',
+          method, redirect: 'error',
           headers: { Authorization: `Bot ${token}`, 'Content-Type': 'application/json', 'User-Agent': 'DiscordBot (https://github.com/injet-zhou/dsh-superagent-prototype, 0.1.0)' },
           ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal,
         })
@@ -67,7 +81,8 @@ export class DiscordApi {
         signal.throwIfAborted()
         throw new Error('Discord API connection failed')
       }
-      const data: unknown = await response.json().catch(() => undefined)
+      // A reaction answers 204 with no body; an empty-body schema is the only one that accepts it.
+      const data: unknown = response.status === 204 ? undefined : await response.json().catch(() => undefined)
       const reset = Number(response.headers.get('X-RateLimit-Reset-After'))
       if (response.headers.get('X-RateLimit-Remaining') === '0' && Number.isFinite(reset) && reset > 0) {
         this.resumeAt = Math.max(this.resumeAt, Date.now() + reset * 1000)
