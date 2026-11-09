@@ -62,6 +62,8 @@ Executors also read DeepSeek Harness's coding prompt and the repository's `AGENT
 
 Executors work unattended. Their tools exclude those that ask a person, present UI to them or change the profile, such as `ask_user_question`, `present` and `plugin_manager`.
 
+When repository memory is enabled, only current Workers receive a precomputed index with an explicit untrusted-data boundary. Memory precedes the final Mandate restriction and never changes Policy, permissions or the request. Rendering this index performs no database, file or model access. The snapshot has a conservative 600 UTF-8 byte ceiling (a token upper bound, not an exact tokenizer measurement). Full notes and evidence are paged through `orchestrator_read memory/<id>`; `memory/index` reads the snapshot. `orchestrator_memory_search` returns only verified notes, optionally filtered by a repository-relative path. Disabled memory and Router prompts keep their previous tool and prompt surfaces.
+
 From strongest to weakest:
 
 1. Facts enforced by tools and the host: identities, permissions, tool argument checks, reply purposes, length limits. Prompt text cannot change them.

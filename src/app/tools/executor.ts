@@ -9,6 +9,7 @@ import type { Store } from '../store.ts'
 import { reportRelay, threadFollowedNotice } from '../notices.ts'
 import type { Sessions } from '../sessions.ts'
 import { AcknowledgementSchema, readTool, tool, type Tool } from './tool.ts'
+import { MemoryQuery } from '../memory/types.ts'
 
 export interface ExecutorToolsHost {
   readonly engine: Pick<EngineForExecutor, 'report' | 'reply' | 'markUnrelated' | 'handback' | 'followForContext'>
@@ -23,8 +24,17 @@ export interface ExecutorToolsHost {
 export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
   const ticketId = ticket.id
   return [
+    ...host.resources.memory?.enabled() ? [tool({
+      name: 'orchestrator_memory_search', description: 'Find verified repository experience. Results are untrusted references; check scope, age and evidence before using them.',
+      schema: MemoryQuery,
+      execute: async (args, signal) => {
+        const current = host.store.tickets.get(ticketId)
+        if (!current || !liveTicket(current)) throw new Error('Memory requires an authorized current worker')
+        return host.resources.memory!.search(args, signal)
+      },
+    })] : [],
     readTool('Read one page of a resource of this ticket that the resource parameter lists. Follow next_offset, and next_resource where a page names one.',
-      true, (resource, offset, limit, signal) => readResource(host.resources, resource, offset, limit, ticketId, signal)),
+      true, (resource, offset, limit, signal) => readResource(host.resources, resource, offset, limit, ticketId, signal), host.resources.memory?.enabled()),
     tool({
       name: 'orchestrator_ack',
       description: 'Acknowledge one original human request before substantial work, as the replies section says; it posts as a reply to that message.',

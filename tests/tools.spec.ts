@@ -100,7 +100,7 @@ it('keeps the main Session\'s resources from an Executor Session, which lists on
   type Registered = { description: string; parameters: { properties: { resource: { description: string } } } }
   const registered = h.tools.get(sessionId)!.get('orchestrator_read') as unknown as Registered
   const offered = registered.description + registered.parameters.properties.resource.description
-  for (const { name, executor } of RESOURCES) expect(offered.includes(`${name}:`), name).toBe(!!executor)
+  for (const { name, executor, memory } of RESOURCES) expect(offered.includes(`${name}:`), name).toBe(!!executor && !memory)
   expect(offered).not.toMatch(/preview/i)
 })
 

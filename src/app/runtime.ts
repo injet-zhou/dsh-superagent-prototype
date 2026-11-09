@@ -47,6 +47,7 @@ import type { ResourceHost } from './resources.ts'
 import { mainTools, type MainToolsHost } from './tools/main.ts'
 import { executorTools, type ExecutorToolsHost } from './tools/executor.ts'
 import type { Settings as SettingsValue } from '../policy.ts'
+import { MemoryService } from './memory/service.ts'
 
 // Source plugins interact with dsh-superagent exclusively through the `SourceHost` service interface.
 declare module '@deepseek-ai/cordis' { interface Context { orchestrator: SourceHost } }
@@ -71,6 +72,7 @@ export class Runtime extends Service implements SourceHost {
   readonly setup: Setup
   readonly prompts: Prompts
   readonly effects: Effects
+  readonly memory: MemoryService
   readonly sources: SourceRegistry
   readonly commands: Commands
   readonly sessions: Sessions
@@ -118,6 +120,7 @@ export class Runtime extends Service implements SourceHost {
       const commands = this.commands = new Commands(() => setup.deployment, setup.commandEnvironment, this.lifetime)
       const board = this.board
       const effects = this.effects = new Effects(store, board)
+      const memory = this.memory = new MemoryService(store, board.claim('memory'))
       const sources = this.sources = new SourceRegistry(() => store.settings(), board, kind => {
         // Sync source member lists once startup completes when a source plugin loads dynamically.
         if (kind.policy?.sync) void this.ready?.then(() => this.settings.syncable().includes(kind.kind) ? this.settings.sync(kind.kind) : undefined)
@@ -129,16 +132,18 @@ export class Runtime extends Service implements SourceHost {
       const environment = (ticket: Ticket) => this.ticketEnvironment(ticket)
       const executionEnvironment = (ticket?: Ticket): NodeJS.ProcessEnv => ({ ...setup.executionEnvironment,
         ...ticket ? Object.fromEntries(environment(ticket).map(variable => [variable.key, variable.value])) : {} })
-      const resources: ResourceHost = { store, pages: new TextCache(4_000_000), prompts, commands, masterId, context: ctx,
+      const resources: ResourceHost = { store, memory, pages: new TextCache(4_000_000), prompts, commands, masterId, context: ctx,
         promptVersion: id => this.sessions.promptVersion(id), mayRead: (id, revision) => this.sessions.mayRead(id, revision),
         feishuPageSize: () => feishuSettings(sources).readPageSize, sourceLink: link }
       const sessions = this.sessions = new Sessions({ context: ctx, store, prompts, effects, health: board.claim('models'), masterId,
-        lifetime: this.lifetime,
+        lifetime: this.lifetime, memory,
         closing: () => this.closing(), environment, ...machine.scopedEnvironment ? { executionEnvironment } : {},
         tools: (agent, ticket) => ticket ? executorTools(this.toolHost, ticket) : mainTools(this.toolHost, agent) })
       const policyChanged: EngineForSettings['policyChanged'] = (from, to, effects) => { this.engine.policyChanged(from, to, effects) }
       this.settings = new Settings({ store, sources, engine: { policyChanged }, health: board, context: ctx, lifetime: this.lifetime, sessions,
-        sourceHost: this, setup, requestPass: () => { this.passes.request() }, ...options.validateSettings ? { validateSettings: options.validateSettings } : {} })
+        sourceHost: this, setup, requestPass: () => { this.passes.request() },
+        settingsChanged: settings => { memory.configure(settings.memory); void sessions.redecorate().catch(() => { memory.degraded('memory_tools_unavailable') }) },
+        ...options.validateSettings ? { validateSettings: options.validateSettings } : {} })
       this.executor = new DshExecutor({ context: ctx, get engine() { return runtime.engine }, store, effects, health: board.claim('worker'), machine,
         lifetime: this.lifetime, sessions, closing: () => this.closing(), paused: () => this.paused(), environment, sourceLink: link,
         repliedTo: trigger => repliedTo({ store, sources }, trigger), ...options.slots ? { slots: options.slots } : {},
@@ -242,6 +247,9 @@ export class Runtime extends Service implements SourceHost {
       return
     }
     if (this.closing()) return
+    const deployment = this.setup.deployment
+    this.memory.bind(JSON.stringify([this.machine.repositoryId ?? 'default', deployment.github.provider ?? 'github',
+      deployment.github.baseUrl ?? 'https://github.com', deployment.repository.toLowerCase()]))
     this.startupStage = 'sessions.install'
     this.sessions.install()
     this.startupStage = 'executor.install'

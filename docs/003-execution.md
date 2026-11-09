@@ -152,6 +152,8 @@ Sessions, directories, Subscriptions, pending messages and the stored work below
 A retry or a restart gives the new Assignment again the messages delivered to the Assignment it replaces that its Executor Session did not take, which a cancel or a cut-off step may have dropped; a copy still waiting in the Session, kept by a restart or persisted across a crash, is taken out before the new Assignment's first message, so the new delivery is the only copy.
 ### Stored work
 
+Optional repository memory runs outside WorkerSlots. Closing or reporting a Ticket does not itself prove that its background work ended. Memory never authorizes work, changes a Ticket outcome or makes a failed retrieval fail the Worker. Its feature switch defaults off and retains saved data when disabled.
+
 What dsh-superagent does after a decision, such as relaying a candidate, a follow-up or a report to the main Session, launching an Assignment or delivering an Input, is stored first and done afterwards.
 
 A relay or a delivery that fails, such as when its Session cannot be reached, is retried after 2 seconds, then after a delay that doubles up to a minute; a launch that fails fails its Ticket, unless the failure was a passing one, as above.

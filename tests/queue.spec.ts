@@ -11,6 +11,7 @@ it('delivers the relays, subscription changes and notifications that a version b
   h = await startRuntime(store => {
     // A schema 10 database, which the schema 11 migration brings up to date when the Runtime opens it.
     store.set('schema', 10)
+    store.db.exec('DROP TABLE memory_note_fts; DROP TABLE memory_revision; DROP TABLE memory_evidence; DROP TABLE memory_capture_checkpoint; DROP TABLE memory_note')
     store.set('relay-queue', [{ id: 'report:old', text: JSON.stringify({ kind: 'worker_report', ticket_id: 't1', state: 'ready' }) }])
     store.set('subscription-results', ['github:7'])
     store.set('prompt-notification', 3)

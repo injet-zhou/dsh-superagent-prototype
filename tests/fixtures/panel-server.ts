@@ -169,7 +169,8 @@ const settingsView = (): ApiResponse<'GET settings'> => ({
   policyVersion: 'abcdef1234567890',
   blocks: { policy: { value: server.settings.policy, revision: server.revisions.policy ?? 0 },
     eval: { value: server.settings.eval, revision: server.revisions.eval ?? 0 },
-    executor: { value: server.settings.executor, revision: server.revisions.executor ?? 0 } },
+    executor: { value: server.settings.executor, revision: server.revisions.executor ?? 0 },
+    memory: { value: server.settings.memory, revision: server.revisions.memory ?? 0 } },
   sources: sourceSettings(),
   environment: { root: '/srv/dsh-superagent/work', variables: [
     { owner: 'executor', enabled: true, variables: [{ key: 'DSH_SUPERAGENT_DIR', description: { zh: '工单的执行目录',

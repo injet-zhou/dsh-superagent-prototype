@@ -17,9 +17,41 @@ import type { SettingsVersion, Store } from './store.ts'
 import { Versions } from './versions.ts'
 import { KV, type Key } from '../kv.ts'
 
-export const SCHEMA_VERSION = 11
+export const SCHEMA_VERSION = 12
 /** The oldest database schema version this build can open and migrate directly. */
 export const OLDEST_SCHEMA = 10
+
+/** Adds repository memory in the Store's migration transaction; FTS is optional and rebuildable. */
+export function migrateTo12(store: Store): void {
+  store.db.exec(`
+    CREATE TABLE memory_note (
+      id TEXT PRIMARY KEY, repository TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('fact','procedure','incident')),
+      title TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('candidate','verified','stale','retracted')),
+      scope_json TEXT NOT NULL, source_fingerprint TEXT NOT NULL UNIQUE, revision INTEGER NOT NULL CHECK(revision > 0),
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL, verified_at TEXT
+    );
+    CREATE INDEX memory_note_status ON memory_note(repository, status, updated_at);
+    CREATE TABLE memory_evidence (
+      id TEXT PRIMARY KEY, note_id TEXT NOT NULL REFERENCES memory_note(id), ticket_id TEXT NOT NULL, session_id TEXT NOT NULL,
+      event_ref TEXT NOT NULL, evidence_kind TEXT NOT NULL, excerpt_redacted TEXT NOT NULL, source_commit TEXT,
+      supports_verification INTEGER NOT NULL CHECK(supports_verification IN (0,1)), captured_at TEXT NOT NULL, claim_fingerprint TEXT,
+      UNIQUE(note_id, session_id, event_ref)
+    );
+    CREATE INDEX memory_evidence_note ON memory_evidence(note_id);
+    CREATE TABLE memory_revision (
+      note_id TEXT NOT NULL REFERENCES memory_note(id), revision INTEGER NOT NULL, action TEXT NOT NULL,
+      before_json TEXT, after_json TEXT NOT NULL, reason TEXT NOT NULL, source_job_id TEXT NOT NULL, at TEXT NOT NULL,
+      PRIMARY KEY(note_id, revision)
+    );
+    CREATE TABLE memory_capture_checkpoint (
+      ticket_id TEXT NOT NULL, session_id TEXT NOT NULL, snapshot_fingerprint TEXT NOT NULL,
+      cursor_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(ticket_id, session_id)
+    );
+  `)
+  // Detect capability inside a savepoint: missing FTS must not roll back the authoritative tables.
+  try { store.atomic(() => { store.db.exec(`CREATE VIRTUAL TABLE memory_note_fts USING fts5(id UNINDEXED, title, body, tokenize='trigram')`) }) }
+  catch { /* MemoryService reports bounded fallback when FTS is unavailable. */ }
+}
 /** Returns an error message explaining why `version` cannot be opened: older schemas need a new state directory. */
 export const tooOld = (version: number): string =>
   `Orchestrator database schema ${version} predates schema ${OLDEST_SCHEMA}, which this version cannot migrate; start with a new state directory`

@@ -156,6 +156,10 @@ Trigger and Thread `meta` belong to the Source. The core does not interpret them
 
 ### Store
 
+Repository memory is an optional application subsystem, composed once per Runtime after Setup resolves repository identity. It has no Engine port. SQLite schema 12 adds notes, source evidence, immutable revisions and capture checkpoints in the existing connection. Schemas 10 and 11 upgrade transactionally; an older binary requires a pre-upgrade backup. FTS5 is optional and uses a bounded substring fallback. The default Runtime keeps its database path.
+
+Workers receive only verified memory through repository-bound read/search tools and a precomputed short index. Router Sessions have no memory access. Settings changes use the repository's independent `memory` revision and do not change `policyVersion`. Memory contents remain untrusted data under Policy and Mandate.
+
 `Store` (`src/app/store.ts`) owns one SQLite database per repository context. Runtime acquires the directory lock before opening it, preventing a second process from migrating or writing the same state.
 
 Its interfaces are grouped by purpose:
@@ -327,6 +331,10 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/outbox.ts` | The Outbox: the Engine's `Outbox` port, the receipts and the `reply` effects that send them |
 | `src/app/notices.ts` | The main Session's notices and relays: `eventNotice`, `reportRelay`, `resultRelay` and `followupRelay` |
 | `src/app/store.ts` | The Store, and `Receipt`, a message of the outbox |
+| `src/app/memory/types.ts` | Strict memory, evidence, path and retrieval schemas and the untrusted-data boundary |
+| `src/app/memory/security.ts` | Secret/PII redaction and source fingerprints |
+| `src/app/memory/store.ts` | Repository binding, evidence-backed writes, revision CAS and bounded FTS5 retrieval |
+| `src/app/memory/service.ts` | Failure isolation, health, read/search facade and precomputed prompt index |
 | `src/app/store-read.ts` | `storeReads`: the Store's read queries for the views, the tools and the Sources' polls, which never write |
 | `src/app/migration.ts` | The schema 11 migration: one step from schema 10 that writes every stored record in its current shape |
 | `src/app/effects.ts` | Effects |
@@ -450,6 +458,9 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/timeline.spec.ts` | A Thread's pages and a Trigger's neighbours by time and then id, with every received Trigger's time in one form |
 | `tests/migration.spec.ts` | The schema 11 migration: every stored record in its current shape, and the refusal of older schemas |
 | `tests/store.spec.ts` | Repositories and their working sets, in SQLite as in memory, the kv area, with every key of `KV` spelled only in `src/kv.ts` and the migration, settings history and queries |
+| `tests/memory-store.spec.ts` | Schema 12 upgrades, rollback/recovery, source evidence, CAS and retained revisions |
+| `tests/memory-retrieval.spec.ts` | FTS5/fallback, Unicode, scopes, bounded prompt index and hostile data |
+| `tests/memory-runtime.spec.ts` | Cross-Ticket reads, worker authorization, versioned settings and three-repository isolation |
 | `tests/prompts.spec.ts` | Prompt validation, assembly and versions |
 | `tests/cards.spec.ts` | The rules the built-in text must state, file by file |
 | `tests/model-surface.spec.ts` | Everything models read: tools, prompts, skills and inputs, checked against the tool schemas, the execution environment and the glossary, within a size budget per role |

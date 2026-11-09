@@ -20,6 +20,7 @@ import { SKILL_PREFIX, type PromptVersion, type Prompts } from './prompts.ts'
 import type { Store } from './store.ts'
 import { KV } from '../kv.ts'
 import type { RegisterTool, Tool } from './tools/tool.ts'
+import type { MemoryService } from './memory/service.ts'
 
 /** Host dependencies used by `Sessions`. */
 export interface SessionsHost {
@@ -32,6 +33,7 @@ export interface SessionsHost {
   readonly health: HealthEntry
   readonly masterId: string
   readonly lifetime: AbortSignal
+  readonly memory?: Pick<MemoryService, 'index'>
   closing(): boolean
   /** Execution environment variables for `ticket`, rendered into its worker's system prompt. */
   environment(ticket: Ticket): Variable[]
@@ -247,7 +249,8 @@ export class Sessions {
       const version = this.promptFor(agent, context.signal !== undefined)
       const current = ticket && host.store.tickets.get(ticket.id)
       const composed = host.prompts.compose(version.config, master ? 'orchestrator' : 'worker', current ? host.environment(current) : undefined)
-      return `[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${current ? mandateInstructions(current.mandate) : ''}`
+      const memory = current && liveTicket(current) ? host.memory?.index() : ''
+      return `[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${memory ? `\n${memory}\n` : ''}${current ? mandateInstructions(current.mandate) : ''}`
     }, ...(master ? { complete: true } : {}) }))
     // A recreated skill scope (e.g. after the skills service restarts) starts empty, so reset `binding.skills` before rebinding.
     const skillScope = agent.ctx.inject(['skills'], scope => {
@@ -359,4 +362,8 @@ export class Sessions {
   }
   /** Releases prompt sections, skills, and tools registered by `Sessions` across all decorated agents. */
   dispose(): void { for (const agent of [...this.bindings.keys()]) this.release(agent) }
+  /** Refresh optional memory tool visibility after a management setting changes. */
+  async redecorate(): Promise<void> {
+    for (const agent of [...this.bindings.keys()]) { this.release(agent); await this.decorate(agent) }
+  }
 }
