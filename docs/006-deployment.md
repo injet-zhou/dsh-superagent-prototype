@@ -197,6 +197,8 @@ scripts/dsh-superagent status
 
 `status` prints process ids, health and setup problems. For a different profile or port, use `--profile` and `--url`, or set `DSH_SUPERAGENT_PROFILE` and `DSH_SUPERAGENT_URL`.
 
+On Linux, Node may appear as `MainThread` in `ps`; the script recognizes that name as well as `node` and `dsh`, and still checks the exact profile and excludes plugin-management commands.
+
 `status`, `start` and `restart` exit with one of four codes:
 
 | Code | Meaning |
