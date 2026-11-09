@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { Context } from '@deepseek-ai/cordis'
+import { SettingsForms } from '@deepseek-ai/dsh-settings'
 import { Config, executable, machineOf, resolveDeployment, resolveFeishuBot, type Machine, type Probe } from '../src/deployment.ts'
 import { gitEnv } from './fixtures/git.ts'
 
@@ -40,6 +42,33 @@ afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 vi.setConfig({ testTimeout: 30_000 })
 
 describe('configuration schema', () => {
+  it('lets DSH settings read, add and remove repositories while preserving other configuration', async () => {
+    const ctx = new Context()
+    ctx.reflect.provide('loader', { await: async () => {} })
+    ctx.reflect.provide('profileContext', { home: dir })
+    const existing = { id: 'existing', name: 'Existing' }
+    const raw: Record<string, unknown> = minimal({ repositories: [existing], promptMaxChars: 50000 })
+    const entry = { id: 'superagent', options: { id: 'superagent', config: raw },
+      fiber: { uid: 1, state: 2, runtime: { Config }, ctx, config: Config(raw) } }
+    ctx.reflect.provide('configEditor', {
+      entries: () => [entry],
+      configuration: () => [{ entry, inherited: minimal(), override: entry.options.config }],
+      edit: async (_entry: unknown, change: (current: Record<string, unknown>, inherited: Record<string, unknown>) => Record<string, unknown>) => {
+        const next = change(entry.options.config, minimal())
+        entry.fiber.config = Config(next)
+        entry.options.config = next
+      },
+    })
+    const settings = new SettingsForms(ctx)
+    try {
+      expect(settings.describe()[0]!.value).toMatchObject({ repositories: [existing] })
+      for (const repositories of [[existing, { id: 'backend', name: 'Backend' }], [existing], []]) {
+        await settings.mutate('superagent', [{ op: 'set', path: ['repositories'], value: repositories }], settings.describe()[0]!.revision)
+        expect(entry.options.config).toEqual({ ...raw, repositories })
+        expect(settings.describe()[0]!.value).toMatchObject({ repositories, promptMaxChars: 50000 })
+      }
+    } finally { await ctx.fiber.dispose() }
+  })
   it('requires only the state directory and reads the editable fields through references', () => {
     expect(() => Config({})).toThrow('stateDir')
     const read = machineOf(Config({ stateDir: join(dir, 'state') }))

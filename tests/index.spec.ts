@@ -1,5 +1,10 @@
-import { expect, it, vi } from 'vitest'
-import { Config, type Machine } from '../src/deployment.ts'
+import { expect, it, onTestFinished, vi } from 'vitest'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { Context, type Fiber } from '@deepseek-ai/cordis'
+import { SettingsForms } from '@deepseek-ai/dsh-settings'
+import { Config, type DeploymentConfig, type Machine } from '../src/deployment.ts'
 import { apply } from '../src/index.ts'
 
 // Stub Runtime to capture the resolved Machine settings and restart callback.
@@ -14,13 +19,13 @@ vi.mock('../src/app/runtime.ts', () => ({ Runtime: class {
 const commit = (reference: unknown, value: unknown) => { (reference as Record<symbol, (value: unknown) => void>)[Symbol.for('cosmokit.volatile.write')]!(value) }
 
 function context() {
-  const handlers = new Map<string, () => void>()
+  const handlers = new Map<string, (paths: readonly (readonly string[])[]) => void>()
   const configure = vi.fn(() => () => {})
   const describe = vi.fn(() => [])
   const ctx = {
     subprocess: { spawn: vi.fn(), resolveExecutable: vi.fn(), spawnTerminal: vi.fn() },
     isolate: vi.fn(() => ({ plugin: async (plugin: { apply: (child: unknown) => Promise<void> }) => plugin.apply({ effect: vi.fn() }) })),
-    on: vi.fn((name: string, handler: () => void) => { handlers.set(name, handler) }),
+    on: vi.fn((name: string, handler: (paths: readonly (readonly string[])[]) => void) => { handlers.set(name, handler) }),
     inject: vi.fn((_services: string[], callback: (child: unknown) => void) => { callback({ effect: (effect: () => unknown) => effect(), settings: { configure } }) }),
     effect: vi.fn(),
     fiber: { restart: vi.fn(async () => {}) },
@@ -39,8 +44,72 @@ it('reads a limit DSH commits a new value of without a restart, and asks DSH to 
   expect(machine.promptMaxChars.get()).toBe(5000)
   commit(config.promptMaxChars, 8000)
   expect(machine.promptMaxChars.get()).toBe(8000)
-  expect(handlers.has('loader/volatile-update')).toBe(false)
+  handlers.get('loader/volatile-update')?.([['promptMaxChars']])
   expect(ctx.fiber.restart).not.toHaveBeenCalled()
+})
+
+it('restarts after repository changes and mounts the saved repository list', async () => {
+  const { ctx, handlers, describe } = context()
+  const config = Config({ stateDir: '/srv/state' })
+  await apply(ctx as never, config)
+  const update = handlers.get('loader/volatile-update')
+  expect(update).toBeDefined()
+  for (const repositories of [[{ id: 'backend', name: 'Backend' }], []]) {
+    commit(config.repositories, repositories)
+    ctx.fiber.restart.mockClear(); describe.mockClear()
+    update!([['repositories'], ['promptMaxChars']])
+    expect(ctx.fiber.restart).toHaveBeenCalledTimes(1)
+    await Promise.resolve()
+    expect(describe).toHaveBeenCalledTimes(1)
+    const before = runtimes.length
+    await apply(ctx as never, config)
+    expect(runtimes[before]!.options.repositories!().map(entry => entry.id))
+      .toEqual(['default', ...repositories.map(entry => entry.id)])
+  }
+})
+
+it('keeps the DSH settings response available when configuration persistence outlasts one timer turn', async () => {
+  const root = new Context()
+  const home = mkdtempSync(join(tmpdir(), 'repository-settings-'))
+  onTestFinished(async () => { await root.fiber.dispose(); rmSync(home, { recursive: true, force: true }) })
+  root.reflect.provide('loader', { await: async () => {} })
+  root.reflect.provide('profileContext', { home })
+  root.reflect.provide('subprocess', context().ctx.subprocess)
+  const entry = { id: 'superagent', options: { id: 'superagent', config: { stateDir: home } as Record<string, unknown> },
+    fiber: undefined as Fiber | undefined }
+  let owner!: Context
+  root.reflect.provide('configEditor', {
+    entries: () => [entry],
+    configuration: () => [{ entry, inherited: { stateDir: home }, override: entry.options.config }],
+    edit: async (_entry: unknown, change: (current: Record<string, unknown>, inherited: Record<string, unknown>) => Record<string, unknown>) => {
+      const next = change(entry.options.config, { stateDir: home })
+      entry.options.config = next
+      const fiber = entry.fiber!
+      // Loader commits volatile references, emits the change, then waits for lifecycle work.
+      Object.assign(fiber, { _config: next })
+      commit(fiber.config.repositories, next.repositories)
+      owner.emit('loader/volatile-update', [['repositories']])
+      await fiber.await()
+      // ConfigEditor still has asynchronous file-lock cleanup before Settings reads its response.
+      await new Promise(resolve => setTimeout(resolve, 10))
+    },
+  })
+  const settings = new SettingsForms(root)
+  entry.fiber = await root.plugin({ name: 'test-repository-settings', Config, apply: async (ctx: Context, config: DeploymentConfig) => {
+    owner = ctx
+    await apply(ctx, config)
+  } }, entry.options.config)
+  const stopped = Promise.withResolvers<void>()
+  const stop = vi.spyOn(runtimes.at(-1)!, 'stop').mockImplementation(() => stopped.promise)
+  const repositories = [{ id: 'backend', name: 'Backend' }]
+  let saved = false
+  const saving = settings.mutate('superagent', [{ op: 'set', path: ['repositories'], value: repositories }], settings.describe()[0]!.revision)
+    .then(() => { saved = true; return settings.describe()[0] })
+  try {
+    await vi.waitFor(() => { expect(stop).toHaveBeenCalled() })
+    expect(saved).toBe(false)
+  } finally { stopped.resolve() }
+  expect((await saving)?.value).toMatchObject({ repositories })
 })
 
 it('asks DSH to read its settings entry again once a restart it started finished', async () => {
