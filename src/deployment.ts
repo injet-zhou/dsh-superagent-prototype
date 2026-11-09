@@ -15,10 +15,10 @@ const absolute = (description: string) => s.string().pattern(/^\//).description(
 const RepositoryConfig: s<{ id?: string; name?: string }, { id: string; name: string }> = s.object({
   id: s.string().pattern(/^[a-z][a-z0-9-]{0,47}$/).required(), name: s.string().default(''),
 })
-/** Plugin configuration of the dsh-superagent entry. Volatile fields apply without a restart because dsh-superagent reads them on each use; changing `stateDir` remounts the plugin. */
+/** Plugin configuration of the dsh-superagent entry. DSH settings can write volatile fields; limits apply live, while repository changes restart the plugin. Changing `stateDir` remounts the plugin. */
 export const Config = s.object({
   stateDir: absolute('Directory for the database, locks, worker shims, the agent\'s git configuration and, by default, the ticket directories.').required(),
-  repositories: s.array(RepositoryConfig).default([]).description('Additional local repositories. Each uses its own settings and state under stateDir/repositories/<id>.'),
+  repositories: s.array(RepositoryConfig).default([]).description('Additional local repositories. Each uses its own settings and state under stateDir/repositories/<id>.').volatile(),
   promptMaxChars: s.number().min(LIMITS.promptMaxChars.min).max(LIMITS.promptMaxChars.max).step(1).default(100000)
     .description('Largest saved prompt configuration, in characters.').volatile(),
   admissionContextMaxPages: s.number().min(LIMITS.admissionContextMaxPages.min).max(LIMITS.admissionContextMaxPages.max).step(1).default(10)

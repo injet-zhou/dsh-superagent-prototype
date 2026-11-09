@@ -1,5 +1,6 @@
 /** Main plugin entry: mounts the Runtime and provides its restart callback for deployment account changes. */
 import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/cordis-plugin-loader'
 import type {} from '@deepseek-ai/dsh-settings'
 import { Runtime } from './app/runtime.ts'
 import { Config, machineOf, type DeploymentConfig } from './deployment.ts'
@@ -15,22 +16,27 @@ export const inject = ['agents', 'sessionController', 'sessionPersistence', 'wor
 export { Config }
 export async function apply(ctx: Context, config: DeploymentConfig): Promise<void> {
   const machine = machineOf(config)
+  const configured = config.repositories.get()
   const ids = new Set(['default'])
-  for (const entry of config.repositories) {
+  for (const entry of configured) {
     if (!/^[a-z][a-z0-9-]{0,47}$/.test(entry.id) || ids.has(entry.id)) throw new Error(`Invalid or duplicate repository id: ${entry.id}`)
     ids.add(entry.id)
   }
   // The management panel provides its own settings UI, so disable DSH's auto-generated settings page.
   ctx.inject(['settings'], child => { child.effect(() => child.settings.configure({ auto: false }, ctx.fiber)) })
-  // Volatile limits update in place without a restart; account changes restart dsh-superagent. DSH's settings service stops
+  // Volatile limits update in place without a restart; account and repository changes restart dsh-superagent. DSH's settings service stops
   // serving this entry while dsh-superagent restarts and rereads it only on a configuration write, so trigger `describe()`
   // after restart to keep open configuration forms editable without a page reload.
   // TODO: drop the read once DSH's settings service rereads an entry whose plugin becomes active again.
   const restart = (): void => {
     ctx.fiber.restart().then(() => { ctx.get('settings')?.describe() }).catch((error: unknown) => { ctx.logger.error('dsh-superagent restart failed: %s', String(error)) })
   }
+  ctx.on('loader/volatile-update', paths => {
+    // Loader reconciliation waits for this restart before Settings reads the saved namespace.
+    if (paths.some(path => path[0] === 'repositories')) restart()
+  })
   const repositories: { id: string; name: string; runtime?: Runtime; error?: string }[] = [
-    { id: 'default', name: 'Default' }, ...config.repositories.map(({ id, name }) => ({ id, name: name || id })),
+    { id: 'default', name: 'Default' }, ...configured.map(({ id, name }) => ({ id, name: name || id })),
   ]
   const watchers = new Set<{ mount: RepositoryMount; disposers: Map<Runtime, SourceDisposer> }>()
   const publish = (runtime: Runtime) => {
@@ -42,7 +48,7 @@ export async function apply(ctx: Context, config: DeploymentConfig): Promise<voi
     watchers.add(watcher)
     return async () => { watchers.delete(watcher); await Promise.all([...watcher.disposers.values()].map(dispose => dispose())) }
   }
-  const multi = config.repositories.length > 0
+  const multi = configured.length > 0
   const managedSession = (id: string): boolean => {
     for (let depth = 0; id && depth < 16; depth++) {
       if (repositories.some(({ runtime }) => runtime && (runtime.masterId === id || !!runtime.store.tickets.get(ticketOfSession(id) ?? '')))) return true
