@@ -130,11 +130,18 @@ export class Commands {
   }
   /** Calls Discord as the configured bot; shared rate limits survive withSignal command clones. */
   async discord<T>(schema: z.ZodType<T>, path: string, body?: unknown): Promise<T> {
+    return this.discordClient().request(schema, path, this.signal, body)
+  }
+  /** Adds one emoji reaction to a Discord message as the configured bot. */
+  async discordReact(channel: string, message: string, emoji: string): Promise<void> {
+    return this.discordClient().react(channel, message, emoji, this.signal)
+  }
+  private discordClient(): DiscordApi {
     const bot = this.deployment.discord
     if (!bot) throw new Error('The Discord Source has no working bot')
     let client = this.discordClients.get(bot.tokenFile)
     if (!client) { client = new DiscordApi(bot.tokenFile); this.discordClients.set(bot.tokenFile, client) }
-    return client.request(schema, path, this.signal, body)
+    return client
   }
   /** Runs `git` on PATH using the agent's isolated git environment and credential helper. */
   async git(args: string[], cwd: string): Promise<string> { return this.run('git', args, cwd) }

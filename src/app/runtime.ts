@@ -85,6 +85,8 @@ export class Runtime extends Service implements SourceHost {
   private readonly runtimeHealth = this.board.claim('runtime', { state: 'starting', detail: '' })
   readonly masterId: string
   private readonly sourceLinks = new TextCache(200_000)
+  /** Source listeners for created Tickets; they run after the creating transaction commits and need not survive a restart. */
+  private readonly ticketCreatedListeners = new Set<(ticket: Ticket) => void>()
   private readonly stopped = new AbortController()
   private readonly disposers: (() => void)[] = []
   private releaseLock?: () => Promise<void>
@@ -165,6 +167,16 @@ export class Runtime extends Service implements SourceHost {
             const request = store.triggers.get(ended.origin.triggerId)?.text ?? ''
             for (const message of pullEndNotices(ended, request, setup.deployment.repository, setup.deployment.github.baseUrl)) outbox.send(message)
           }
+          // A Source may show its own receipt once a Ticket is dispatched; a cosmetic follow-up runs after the commit.
+          if (event.type === 'ticket.created') {
+            store.afterCommit(() => {
+              const ticket = store.tickets.get(event.data.ticketId)
+              if (!ticket) return
+              for (const listener of this.ticketCreatedListeners) {
+                try { listener(ticket) } catch (error) { ctx.logger.warn('dsh-superagent: a Source ticket listener failed: %s', String(error)) }
+              }
+            })
+          }
         } })
       // Update the `evals` health entry on every pass if an evaluation failed as unavailable within the last hour.
       const evals = board.claim('evals', { state: 'ready', detail: 'No unavailable Eval in the last hour' })
@@ -174,7 +186,8 @@ export class Runtime extends Service implements SourceHost {
       this.sourceDeps = { store, engine, outbox, commands, sources, get ready() { return runtime.ready },
         get commandEnvironment() { return setup.sourceEnvironment },
         get deployment() { return setup.deployment }, configured: () => runtime.configured(),
-        get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem }, get discordProblem() { return setup.discordProblem }, receive: trigger => passes.receive(trigger) }
+        get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem }, get discordProblem() { return setup.discordProblem }, receive: trigger => passes.receive(trigger),
+        onTicketCreated: listener => { this.ticketCreatedListeners.add(listener); return () => { this.ticketCreatedListeners.delete(listener) } } }
       this.toolHost = { context: ctx, engine, store, prompts, sessions, settings: this.settings, assessor, resources,
         get github() { return runtime.context({ kind: 'github', health: ['github'] }) },
         requestPass: () => { passes.request() }, sendReplies: () => outbox.sent(),

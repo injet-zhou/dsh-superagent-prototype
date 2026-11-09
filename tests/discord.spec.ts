@@ -3,14 +3,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
-import { Engine, type Candidate, type OutboundMessage, type Trigger } from '../src/core/index.ts'
+import { Engine, type Candidate, type OutboundMessage, type Ticket, type Trigger } from '../src/core/index.ts'
 import { SetupError } from '../src/setup.ts'
 import { overview } from '../src/app/views/overview.ts'
 import { executorLoad } from '../src/app/views/tickets.ts'
 import { resolveDiscordBot } from '../src/deployment.ts'
 import { Commands, CliError } from '../src/infra/commands.ts'
 import { DiscordApi, DiscordMessage } from '../src/infra/discord.ts'
-import { DiscordConfigSchema, discordKind, discordTrigger, discordTriggerId, pollDiscord, readDiscord, runDiscord, sendDiscord, pruneDiscordReceipts } from '../src/sources/discord.ts'
+import { DISCORD_REACTIONS, DiscordConfigSchema, discordKind, discordTrigger, discordTriggerId, pollDiscord, readDiscord, runDiscord,
+  sendDiscord, pruneDiscordReceipts } from '../src/sources/discord.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
 import { HealthBoard } from '../src/infra/health.ts'
 import { SettingsSchema, settingsPolicy } from '../src/policy.ts'
@@ -34,6 +35,9 @@ const message = (id: string, extra: Partial<DiscordMessage> = {}): DiscordMessag
 const deployment = () => testDeployment({ stateDir: directory, discord: { tokenFile, botId: BOT, name: 'Agent' } })
 const commands = () => new Commands(deployment, {}, signal())
 const channel = (id = CHANNEL) => ({ id, type: 0, guild_id: GUILD, name: 'work', last_message_id: null })
+const reactionUrl = (messageId: string, emoji: string): string =>
+  `https://discord.com/api/v10/channels/${CHANNEL}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/@me`
+const reactionCalls = (): string[] => fetcher.mock.calls.filter(([, init]) => init?.method === 'PUT').map(([url]) => String(url))
 
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), 'discord-source-'))
@@ -116,6 +120,18 @@ describe('Discord bot transport', () => {
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
     expect(fetcher).toHaveBeenCalledTimes(1)
   })
+  it('adds one reaction with a bodyless PUT, accepts its empty 204 answer and refuses any other PUT path', async () => {
+    fetcher.mockResolvedValue(response(undefined, 204))
+    await commands().discordReact(CHANNEL, '900000000000000001', DISCORD_REACTIONS.received)
+    expect(fetcher).toHaveBeenCalledWith(reactionUrl('900000000000000001', DISCORD_REACTIONS.received),
+      expect.objectContaining({ method: 'PUT', redirect: 'error' }))
+    expect(fetcher.mock.calls[0]![1]).not.toHaveProperty('body')
+    fetcher.mockResolvedValueOnce(response({}, 403))
+    await expect(commands().discordReact(CHANNEL, '900000000000000001', DISCORD_REACTIONS.received)).rejects.toMatchObject({ code: 403 })
+    await expect(new DiscordApi(tokenFile).request(z.unknown(), `channels/${CHANNEL}/messages`, signal(), undefined, 'PUT'))
+      .rejects.toThrow('Unsupported Discord API path')
+    expect(fetcher).toHaveBeenCalledTimes(2)
+  })
 })
 
 describe('Discord Source', () => {
@@ -149,6 +165,7 @@ describe('Discord Source', () => {
       const beginning = ((BigInt(Date.now() + 60000 - 1420070400000) << 22n))
       const first = message(String(beginning)), second = message(String(beginning + 1n))
       fetcher.mockResolvedValueOnce(response(channel())).mockResolvedValueOnce(response([second, first]))
+        .mockResolvedValueOnce(response(undefined, 204)).mockResolvedValueOnce(response(undefined, 204))
       await pollDiscord(h.ctx, signal())
       expect(h.receive.mock.calls.map(([trigger]) => trigger.id)).toEqual([discordTriggerId(first.id), discordTriggerId(second.id)])
       expect(String(fetcher.mock.calls[1]![0])).toMatch(/limit=100&after=[0-9]+$/)
@@ -156,8 +173,46 @@ describe('Discord Source', () => {
       // A new Commands instance models a restart; only the durable cursor determines the next window.
       fetcher.mockResolvedValueOnce(response(channel())).mockResolvedValueOnce(response([]))
       await pollDiscord({ ...h.ctx, commands: commands() }, signal())
-      expect(String(fetcher.mock.calls[3]![0])).toContain(`after=${second.id}`)
+      expect(String(fetcher.mock.calls[5]![0])).toContain(`after=${second.id}`)
       expect(h.receive).toHaveBeenCalledTimes(2)
+    } finally { h.store.close() }
+  })
+  it('marks a human mention as received before intake, even from a sender the Policy will not admit, while leaving chatter unmarked', async () => {
+    const h = host(), base = 9007199254740993000n
+    try {
+      h.store.set(`discord-cursor:${BOT}:${CHANNEL}`, String(base))
+      // The gate does not admit this sender, but the receipt does not depend on dispatch.
+      const mentioned = message(String(base + 1n), { author: { id: '999', username: 'Guest' } })
+      const chatter = message(String(base + 2n), { content: 'Nice weather', mentions: [] })
+      fetcher.mockImplementation(async (url, init) => {
+        const path = new URL(String(url)).pathname
+        if (init?.method === 'PUT') return new Response(null, { status: 204 })
+        if (path.endsWith(`/channels/${CHANNEL}`)) return response(channel())
+        if (path.endsWith('/messages')) return response([chatter, mentioned])
+        throw new Error(`unexpected Discord request: ${path}`)
+      })
+      await pollDiscord(h.ctx, signal())
+      expect(reactionCalls()).toEqual([reactionUrl(mentioned.id, DISCORD_REACTIONS.received)])
+      expect(h.receive).toHaveBeenCalledTimes(1)
+      expect(h.store.get(`discord-cursor:${BOT}:${CHANNEL}`)).toBe(chatter.id)
+    } finally { h.store.close() }
+  })
+  it('still receives and checkpoints a mention when Discord refuses its receipt reaction', async () => {
+    const h = host(), base = 9007199254740993000n
+    try {
+      h.store.set(`discord-cursor:${BOT}:${CHANNEL}`, String(base))
+      const mentioned = message(String(base + 1n))
+      fetcher.mockImplementation(async (url, init) => {
+        const path = new URL(String(url)).pathname
+        if (init?.method === 'PUT') return response({}, 403)
+        if (path.endsWith(`/channels/${CHANNEL}`)) return response(channel())
+        if (path.endsWith('/messages')) return response([mentioned])
+        throw new Error(`unexpected Discord request: ${path}`)
+      })
+      await pollDiscord(h.ctx, signal())
+      expect(h.receive).toHaveBeenCalledTimes(1)
+      expect(h.store.get(`discord-cursor:${BOT}:${CHANNEL}`)).toBe(mentioned.id)
+      expect(h.board.all.discord).toMatchObject({ state: 'error', detail: expect.stringContaining('could not add the received reaction') })
     } finally { h.store.close() }
   })
   it('catches up more than one API page without skipping messages and retains the last acknowledged cursor on receive failure', async () => {
@@ -218,6 +273,31 @@ describe('Discord Source', () => {
       expect(h.store.tickets.get(ticket.id)?.ended).toBeUndefined()
     } finally { h.store.close() }
   })
+  it('marks a dispatched mention as processing while the Source runs, and unregisters its listener on stop', async () => {
+    const h = host(), base = 9007199254740993000n, controller = new AbortController(), dispose = vi.fn()
+    const listeners: ((ticket: Ticket) => void)[] = []
+    try {
+      h.store.set(`discord-cursor:${BOT}:${CHANNEL}`, String(base))
+      fetcher.mockImplementation(async (url, init) => {
+        const path = new URL(String(url)).pathname
+        if (init?.method === 'PUT') return new Response(null, { status: 204 })
+        if (path.endsWith(`/channels/${CHANNEL}`)) return response(channel())
+        if (path.endsWith('/messages')) return response([message(String(base + 1n))])
+        throw new Error(`unexpected Discord request: ${path}`)
+      })
+      const running = runDiscord({ ...h.ctx, onTicketCreated: listener => { listeners.push(listener); return dispose } }, controller.signal)
+      await vi.waitFor(() => expect(h.receive).toHaveBeenCalledTimes(1))
+      const messageId = String(base + 1n)
+      expect(reactionCalls()).toContain(reactionUrl(messageId, DISCORD_REACTIONS.received))
+      const trigger = h.receive.mock.calls[0]![0]
+      h.engine.decide(trigger.id, { evalId: h.candidates[0]!.evalId, kind: 'accept', title: 'Fix', scope: 'small', reason: 'requested', acknowledgement: 'On it' })
+      listeners[0]!(h.store.tickets.open()[0]!)
+      await vi.waitFor(() => expect(reactionCalls()).toContain(reactionUrl(messageId, DISCORD_REACTIONS.processing)))
+      controller.abort()
+      await running
+      expect(dispose).toHaveBeenCalledTimes(1)
+    } finally { controller.abort(); h.store.close() }
+  })
   it('pauses an unset or failed bot without producing a second Overview source-error', async () => {
     for (const problem of [undefined, new SetupError('discordBotFailed').problem]) {
       const h = host(), controller = new AbortController()
@@ -241,12 +321,13 @@ describe('Discord Source', () => {
       h.store.set(`discord-cursor:${BOT}:${CHANNEL}`, String(base))
       fetcher.mockResolvedValueOnce(response(channel())).mockResolvedValueOnce(response([
         { id: String(base + 2n), channel_id: CHANNEL, author: null }, message(String(base + 1n)),
-      ]))
+      ])).mockResolvedValueOnce(response(undefined, 204))
       await pollDiscord(h.ctx, signal())
       expect(h.receive).toHaveBeenCalledTimes(1)
       expect(h.store.get(`discord-cursor:${BOT}:${CHANNEL}`)).toBe(String(base + 2n))
       expect(h.board.all.discord?.detail).toContain('skipped malformed message')
       fetcher.mockResolvedValueOnce(response(channel())).mockResolvedValueOnce(response([message(String(base + 3n))]))
+        .mockResolvedValueOnce(response(undefined, 204))
       await pollDiscord(h.ctx, signal())
       expect(h.receive).toHaveBeenCalledTimes(2)
       expect(h.board.all.discord?.state).toBe('ready')

@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { z } from 'zod'
-import { key, type OutboundMessage, type Trigger } from '../core/index.ts'
+import { key, type OutboundMessage, type Ticket, type Trigger } from '../core/index.ts'
 import { DiscordBotSchema } from '../deployment.ts'
 import { CliError, type Commands } from '../infra/commands.ts'
 import { DiscordChannel, DiscordMessage, Snowflake } from '../infra/discord.ts'
@@ -24,6 +24,8 @@ export const DiscordConfigSchema = DiscordBotSchema.extend({
 export type DiscordConfig = z.infer<typeof DiscordConfigSchema>
 export const discordTriggerId = (id: string): string => key(SOURCE, id)
 const messageUrl = (channel: string, guild = '@me', message = ''): string => `https://discord.com/channels/${guild}/${channel}${message ? `/${message}` : ''}`
+/** What the bot marks a person's mention with: received at once, and processing once the mention starts a Ticket. */
+export const DISCORD_REACTIONS = { received: '👀', processing: '⏳' } as const
 export function discordText(message: DiscordMessage): string {
   return [message.content, ...message.attachments.map(file => `[Attachment: ${file.filename}] ${file.url}`)].filter(Boolean).join('\n')
 }
@@ -40,6 +42,22 @@ export function discordTrigger(message: DiscordMessage, botId: string, guildId?:
     at: new Date(message.timestamp).toISOString(), text: discordText(message), url: messageUrl(message.channel_id, guildId, message.id),
     channel: { source: SOURCE, thread: `discord:${message.channel_id}`, address: { channelId: message.channel_id, messageId: message.id, ...(guildId ? { guildId } : {}) } },
     meta: { channelId: message.channel_id, messageId: message.id, ...(guildId ? { guildId } : {}), ...(parentId ? { parentId } : {}) },
+  }
+}
+/** Adds one of the bot's reactions to a Trigger's message; a message deleted meanwhile no longer needs one. */
+async function reactToTrigger(ctx: SourceContext, trigger: Trigger, reaction: keyof typeof DISCORD_REACTIONS): Promise<void> {
+  const channel = Snowflake.parse(trigger.meta.channelId), message = Snowflake.parse(trigger.meta.messageId)
+  try {
+    await ctx.commands.discordReact(channel, message, DISCORD_REACTIONS[reaction])
+  } catch (error) {
+    if (!(error instanceof CliError && error.code === 404)) throw error
+  }
+}
+/** Marks the Discord mentions a newly created Ticket was dispatched from as processing; a failed reaction stays cosmetic. */
+export async function reactDiscordTicket(ctx: SourceContext, ticket: Ticket): Promise<void> {
+  for (const id of ticket.origin.triggerIds) {
+    const trigger = ctx.triggers.get(id)
+    if (trigger?.source === SOURCE && trigger.human && trigger.addressed === 'mention') await reactToTrigger(ctx, trigger, 'processing')
   }
 }
 const contextMessage = (message: DiscordMessage): ContextMessage => ({
@@ -183,6 +201,11 @@ export async function pollDiscord(ctx: SourceContext, signal: AbortSignal): Prom
         if (BigInt(message.id) <= BigInt(after)) continue
         if (!message.message) failures.push(`${channel.id}: skipped malformed message ${message.id}`)
         const trigger = message.message ? discordTrigger(message.message, bot.botId, channel.guild_id) : undefined
+        // A person's mention is acknowledged whatever the Policy later decides; the processing mark follows a dispatch.
+        if (trigger?.human && trigger.addressed === 'mention') {
+          try { await reactToTrigger(ctx, trigger, 'received') }
+          catch (error) { failures.push(`${channel.id}: could not add the received reaction: ${error instanceof Error ? error.message : 'Discord reaction failed'}`) }
+        }
         // Keep unmentioned channel chatter out of Intake, including its follow-up and ended-ticket resume paths.
         if (trigger && (current.listen === 'all' || trigger.addressed === 'mention')) {
           await ctx.receive(trigger)
@@ -204,23 +227,31 @@ export async function pollDiscord(ctx: SourceContext, signal: AbortSignal): Prom
 }
 export async function runDiscord(ctx: SourceContext, signal: AbortSignal): Promise<void> {
   await ctx.ready
-  while (!signal.aborted) {
-    const config = ctx.config<DiscordConfig>(SOURCE)
-    if (!config) ctx.report(SOURCE, health('paused', 'sourceOff'))
-    else if (!ctx.configured()) ctx.report(SOURCE, health('paused', 'setupPending'))
-    else if (!ctx.deployment.discord) ctx.report(SOURCE, ctx.problem ? { state: 'paused', detail: ctx.problem.detail } : health('paused', 'discordTokenUnset'))
-    else {
-      try { await pollDiscord(ctx, signal) }
-      catch (error) {
-        if (signal.aborted) return
-        const detail = error instanceof Error ? error.message : 'Discord poll failed'
-        ctx.report(SOURCE, { state: 'error', detail: error instanceof CliError && error.code === 401 ? `${detail}; correct the token file and restart dsh-superagent` : detail })
-        // An invalid token needs a corrected file and restart, not another request for every poll.
-        if (error instanceof CliError && error.code === 401) return
+  const unwatch = ctx.onTicketCreated(ticket => {
+    if (signal.aborted || !ctx.configured() || !ctx.config<DiscordConfig>(SOURCE) || !ctx.deployment.discord) return
+    void reactDiscordTicket(ctx, ticket).catch(error => {
+      if (!signal.aborted) ctx.report(SOURCE, { state: 'error', detail: `Could not add the processing reaction: ${error instanceof Error ? error.message : String(error)}` })
+    })
+  })
+  try {
+    while (!signal.aborted) {
+      const config = ctx.config<DiscordConfig>(SOURCE)
+      if (!config) ctx.report(SOURCE, health('paused', 'sourceOff'))
+      else if (!ctx.configured()) ctx.report(SOURCE, health('paused', 'setupPending'))
+      else if (!ctx.deployment.discord) ctx.report(SOURCE, ctx.problem ? { state: 'paused', detail: ctx.problem.detail } : health('paused', 'discordTokenUnset'))
+      else {
+        try { await pollDiscord(ctx, signal) }
+        catch (error) {
+          if (signal.aborted) return
+          const detail = error instanceof Error ? error.message : 'Discord poll failed'
+          ctx.report(SOURCE, { state: 'error', detail: error instanceof CliError && error.code === 401 ? `${detail}; correct the token file and restart dsh-superagent` : detail })
+          // An invalid token needs a corrected file and restart, not another request for every poll.
+          if (error instanceof CliError && error.code === 401) return
+        }
       }
+      await pause(config?.pollIntervalMs ?? 5000, signal)
     }
-    await pause(config?.pollIntervalMs ?? 5000, signal)
-  }
+  } finally { unwatch() }
 }
 
 export const discordKind: SourceKind<DiscordConfig> = {

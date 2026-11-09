@@ -1,5 +1,5 @@
 /** Scoped runtime context exposed to each Source kind, isolating Sources from direct Store or Engine access. */
-import type { EngineForSources, ReceiveResult, Trigger } from '../core/index.ts'
+import type { EngineForSources, ReceiveResult, Ticket, Trigger } from '../core/index.ts'
 import type { Deployment } from '../deployment.ts'
 import type { Commands } from '../infra/commands.ts'
 import type { SetupProblem } from '../setup.ts'
@@ -26,6 +26,8 @@ export interface SourceContextDeps {
   readonly discordProblem?: SetupProblem | undefined
   /** Hands a Trigger to the Engine and schedules the pass that assesses it. */
   receive(trigger: Trigger): ReceiveResult | Promise<ReceiveResult>
+  /** Subscribes to Tickets the Engine creates; a host without a domain event stream calls no listener. */
+  onTicketCreated?(listener: (ticket: Ticket) => void): () => void
 }
 
 /**
@@ -47,6 +49,7 @@ export function sourceContextOf(deps: SourceContextDeps, kind: { kind: string; h
       return instance?.enabled ? instance.config : undefined
     },
     receive: trigger => deps.receive(trigger),
+    onTicketCreated: listener => deps.onTicketCreated?.(listener) ?? (() => {}),
     atomic: work => store.atomic(work),
     state: {
       get: name => store.get(name),

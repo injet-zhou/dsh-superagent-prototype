@@ -72,6 +72,8 @@ export interface SourceContext {
   config<C extends Record<string, unknown>>(kind: string): C | undefined
   /** Ingests a trigger into the Engine and schedules the next evaluation pass; callers should await completion before advancing read cursors. */
   receive(trigger: Trigger): ReceiveResult | Promise<ReceiveResult>
+  /** Registers a listener for Tickets the Engine creates from any Trigger, called after the transaction commits; returns a disposer. */
+  onTicketCreated(listener: (ticket: Ticket) => void): () => void
   atomic<T>(work: () => T): T
   /** Source-scoped KV records (such as read cursors); setting `undefined` removes an entry. */
   state: { get<V>(key: Key<V>): V | undefined; set<V>(key: Key<V>, value: V | undefined): void; keys<V>(family: Family<V, never>): Key<V>[] }
