@@ -1,6 +1,6 @@
 # dsh-superagent：Repository-scoped Agent Memory 技术设计
 
-> 状态：实施记录见文末；原始 RFC 与验收约束保留。  
+> 状态：Phase 1/2 已交付；Phase 3 的安全适配器、Host Publisher、Wiki 与离线测试已实现，未做真实模型烟测；Phase 4 未实施。详细验证记录见文末，原始 RFC 与验收约束保留。
 > 基线：`injet-zhou/dsh-superagent-prototype`，`main`，commit `86271f435e8130a25ff4bc9ade3b4077143c8532`（2026-11-08）。实际实施前重新核对 HEAD。  
 > 依据：Anthropic《The components of agent memory》（https://www.anthropic.com/research/components-of-agent-memory）所讨论的 Transcripts、Memory Notes、Memory Representations、Injected Context 和 Dreaming；下述 API、Schema、默认参数为**本项目的设计建议**，并非 Anthropic 官方实现。
 
@@ -488,3 +488,31 @@ git diff --check
 - DSH `inspect` 本版仅提供全量原始日志，故读取会 materialize 全量事件，但分析与 checkpoint 是增量的（每批最多 200 事件、文本 100000 UTF-8 字节、单段 2000 字符）。未虚构分页接口。事件内容会有意截断、丢弃 reasoning/system/tool-call 参数，只保留提议使用的脱敏 Evidence 摘录。
 - 模型资源采用持久化 UTC 每日调用次数上限；默认 0，同进程跨仓库最多 1 个 Memory 模型调用，单调用超时 15 秒。底层不响应 AbortSignal 时，迟到结果不发布，且全局占位直到真实调用结束才释放。普通 WorkerSlot 不参与。
 - Phase 2 验证：Capture 10 项定向测试及完整 `pnpm check` 通过（68 文件、1291 测试，typecheck/build 通过）；包括 retry/backoff、后台 job 重启 turn、blocked/failed handoff、dispatcher 重启、checkpoint 故障回滚及不合作 inspect/analyzer 的 shutdown。
+- Phase 3：独立 `DshMemoryAnalyzer` 使用本地已确认的 `ctx.llm.stream`，输入放在 user 数据消息，固定 Host system 文本、空工具列表、无 sessionId、无执行循环。遇到 tool-call、未完整结束、超长输出或 provider 错误均拒绝并只记录固定错误码。只有显式设置 `analyzerModel`、功能开关和正调用预算后才可能调用；不是复用 `danger-full-access` Worker。
+- Publisher 对模型提案做严格 Zod 校验、同仓库来源检查、整批事务 CAS、幂等发布和审计。仅合并完全相同的 claim，矛盾内容保留待审。verified 的 attestation 绑定具体文本/作用域；stale 重新验证需要在最近一次失效修订之后的新 Host attestation，复制旧证据不会刷新其时间。
+- 自动 Capture 的全部来源均按 observation 保存，模型说“测试通过”也不能生成 Host attestation。当前没有通用的 Bash 测试结果认证器或人工核证 Panel；真实自动提取可形成候选，但自动晋升 verified 仍需后续接入可信验证器。Host 导入接口和离线 fixture 可提供明确核证，用于验证跨 Ticket 复用。
+- `memory-consolidate` 按仓库串行；5 个候选触发基于快照版本的批次，或用 scoped `POST memory/consolidate` 手动触发。暂停/关闭不删除队列；配置变化取消在途分析，CAS 冲突重试重新读取快照。没有新增多 Agent、向量库或 WorkerSlot。
+- Wiki 位于当前 Runtime 的 `stateDir/memory/index.md` 和 `wiki/<id>.md`；包括来源/状态/修订，默认索引仅列 verified。每次提交触发可合并的重建，私有文件 0600、目录 0700、临时文件同目录 rename，拒绝现有符号链接。`POST memory/rebuild` 可重建 FTS 和投影；从不从 Markdown 导入 DB。
+- 最小启用 body 见 `examples/memory.settings.json`（保存前替换 revision 为 GET settings 的 blocks.memory.revision）。只开启 retrieval 不调用模型。真实模型没有在本次开发中开启；live provider 兼容性/成本、真实 Coding Worker A/B 未运行，不能据离线结果宣称其收益。
+- 固定离线数据集 `tests/fixtures/memory-evaluation.json` 包含 20 案例：8 正例、4 路径干扰、2 stale、2 retract/版本变化、4 安全例。`pnpm exec vitest run tests/memory-evaluation.spec.ts` 可复现 disabled/enabled 检索对照；enabled precision/recall 各 1.0，disabled 读出为 0，模型调用 0。完成率、重复命令、token/美元成本及真实 Dreaming 成本均未测量。
+- 检索采用有界同步 SQLite 查询，100ms 软截止会丢弃迟到结果并降级；Node 当前同步查询没有可中断的硬截止保证。Prompt render 不做查询。FTS 与 fallback 都只考虑最近至多 200 条符合状态/路径的 verified 笔记；不宣称全库召回。脱敏覆盖常见 Token/PEM/Bearer/JSON 密钥、邮箱与长数字，不是通用秘密或 PII 识别器。
+- Phase 3 阶段检查已通过：70 文件、1306 测试，typecheck/build 成功。最终六条命令在实现冻结后顺序复跑；以下最终记录将以该次实际结果为准。
+
+### 最终验证记录
+
+环境：Node `v24.15.0`、pnpm `11.7.0`、SQLite `3.51.3`，`PRAGMA foreign_keys=1`，FTS5/trigram 实测可用。测试设置 `VITEST_MAX_WORKERS=2`，保留全部测试和断言；需要 loopback/子进程的既有测试使用正常本机权限。
+
+| 命令 | 最终结果 |
+| --- | --- |
+| `pnpm install --frozen-lockfile` | 通过；依赖已就绪，未修改 lockfile |
+| `pnpm typecheck` | 通过 |
+| `pnpm test` | 70 个测试文件、1308 项测试全部通过 |
+| `pnpm build` | 通过；沿用既有 CJS 建议/插件耗时提示，没有构建错误 |
+| `pnpm check` | typecheck、70 文件/1308 测试及 build 全部通过 |
+| `git diff --check` | 修复规格状态行的 Markdown 尾随空格后通过 |
+
+新增 36 项测试分布于六个 `memory-*.spec.ts`，包含要求的五个测试文件及独立离线评估。期间发现并修复了 fresh attestation 与 stale 失效时间的比较、停止子任务所产生的临时取消 turn 覆盖真实 capture anchor，以及 inspect 抛错需持久化 partial_capture 的问题；未跳过或弱化断言。最终运行使用冻结后的实现，较早运行中的失败不算作最终通过证据。
+
+未运行：真实 provider 的生成/权限烟测、真实 Coding Worker 的完成率/命令数/token/费用 A/B；本次未开启真实 provider 和非零实际模型预算。未实施 Memory Panel、通用可信测试结果认证器、通用 PII 检测或 SQLite 查询的硬中断。这些不能用离线 fake、保守字节上界或软截止冒充。
+
+关闭与回滚：把当前仓库 `memory.enabled` 保存为 `false` 可立即停止自动工作、移除 Worker 入口并保留 DB/投影；已有队列不删除。若回滚到 schema 11 的旧二进制，停止服务并恢复升级前完整 SQLite 备份，不能仅 git revert 后让旧版本打开 schema 12。默认仓库路径不变，额外仓库分别备份/恢复，未对实际部署执行迁移或回滚。

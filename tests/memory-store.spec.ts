@@ -34,6 +34,7 @@ it('rolls back failed v12 DDL and can retry after the conflicting table is remov
 it('requires traceable host evidence and keeps CAS revisions through stale and retract', () => {
   const { memory } = memoryFixture()
   expect(() => memory.create(exampleNote, [], 'empty')).toThrow('evidence_required')
+  expect(() => memory.create({ ...exampleNote, title: '\u0000' }, [exampleEvidence], 'invalid-after-redaction')).toThrow()
   expect(() => memory.create(exampleNote, [{ ...exampleEvidence, supportsVerification: false }], 'unproven', 'verified')).toThrow('verification_required')
   const note = memory.create(exampleNote, [exampleEvidence], 'source', 'candidate', 'same-id')
   expect(memory.create(exampleNote, [exampleEvidence], 'source').id).toBe(note.id)

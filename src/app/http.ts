@@ -27,8 +27,10 @@ import { settingsView } from './views/settings.ts'
 import { sourcesStatus, type SetupState } from './views/sources.ts'
 import { decisionList, search, threadDetail, threadList } from './views/threads.ts'
 import { executorLoad, ticketDetail, ticketList } from './views/tickets.ts'
+import type { MemoryService } from './memory/service.ts'
 
 export interface HttpHost {
+  readonly memory?: Pick<MemoryService, 'requestConsolidation' | 'rebuildProjection'>
   readonly store: Store
   /** Feishu message links resolved since startup, used by search to match AppLink URLs. */
   readonly sourceLinks: Pick<TextCache, 'entries'>
@@ -157,6 +159,8 @@ function routes(runtime: HttpHost, catalog: () => ApiResponse<'GET repositories'
   const ticket = (id: string) => { if (!store.tickets.get(id)) throw new RouteError(404, 'Ticket not found'); return id }
   const promptBody = (input: { body: (maxBytes?: number) => Promise<unknown> }) => input.body(4 * runtime.machine.promptMaxChars.get() + 4096)
   return {
+    'POST memory/consolidate': () => runtime.memory?.requestConsolidation() ?? { queued: false },
+    'POST memory/rebuild': () => runtime.memory?.rebuildProjection() ?? { rebuilt: false },
     'GET repositories': catalog,
     'GET state': () => stateView(runtime),
     'GET overview': () => overview(views(runtime), runtime.health, policyVersion(store.settings()),

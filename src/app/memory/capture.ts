@@ -33,10 +33,12 @@ export function withAbort<T>(pending: Promise<T>, signal: AbortSignal): Promise<
 
 /** Shares bounded, cancellable analyzer calls and reserves a durable per-repository daily call budget. */
 export async function analyze(host: CaptureHost, input: MemoryAnalysisInput): Promise<unknown> {
-  if (!host.analyzer) { host.memory.degraded('memory_analyzer_unavailable'); throw new Later('memory_analyzer_unavailable') }
+  const analyzer = host.analyzer
+  if (!analyzer) { host.memory.degraded('memory_analyzer_unavailable'); throw new Later('memory_analyzer_unavailable') }
   if (analyzing) throw new Later('memory_analyzer_busy')
-  const signal = AbortSignal.any([host.lifetime, AbortSignal.timeout(15_000)])
+  const signal = AbortSignal.any([host.lifetime, host.memory.analysisSignal(), AbortSignal.timeout(15_000)])
   const config = host.store.settings().memory, day = new Date().toISOString().slice(0, 10)
+  if (!host.memory.active() || host.paused() || signal.aborted) throw new Later('memory_analysis_paused')
   host.store.atomic(() => {
     const previous = host.store.get(KV.memory.usage)
     const calls = previous?.day === day ? previous.calls : 0
@@ -46,7 +48,7 @@ export async function analyze(host: CaptureHost, input: MemoryAnalysisInput): Pr
     host.store.set(KV.memory.usage, { day, calls: calls + 1 })
   })
   analyzing = true
-  const pending = Promise.resolve().then(() => { signal.throwIfAborted(); return host.analyzer!.propose(input, signal) })
+  const pending = Promise.resolve().then(() => { signal.throwIfAborted(); return analyzer.propose(input, signal) })
   // A non-cooperative adapter retains its process-wide reservation until it actually ends.
   void pending.then(() => { analyzing = false }, () => { analyzing = false })
   const result = await withAbort(pending, signal)
@@ -82,24 +84,28 @@ export class MemoryCapture {
   }
   private async run(batch: CaptureBatch, job: string): Promise<void> {
     const { host } = this
+    let previous: Cursor | undefined
+    let inspected = false
     try {
       if (batch.sessionId !== `worker-${batch.ticketId}` || !host.store.tickets.get(batch.ticketId)?.assignments.some(item => item.id === batch.assignmentId)) {
         throw new Error('memory_capture_scope_mismatch')
       }
-      const previous = this.cursor(batch)
+      previous = this.cursor(batch)
       if (previous.seq >= batch.endSeq) return
       // whenIdle() itself does not flush DSH persistence. The durable effect retries a failed flush/inspection.
-      const signal = AbortSignal.any([host.lifetime, AbortSignal.timeout(15_000)])
+      const signal = AbortSignal.any([host.lifetime, host.memory.analysisSignal(), AbortSignal.timeout(15_000)])
       await withAbort(host.context.sessionPersistence.flush(), signal)
       const { events } = await withAbort(host.context.sessionController.inspect(batch.sessionId as SessionId, signal), signal)
       signal.throwIfAborted()
+      inspected = true
+      const cursor = previous
       const bySeq = new Map(events.map(event => [Number(event.seq), event]))
-      const end = bySeq.get(batch.endSeq), anchor = bySeq.get(previous.seq)
+      const end = bySeq.get(batch.endSeq), anchor = bySeq.get(cursor.seq)
       const retained = events.length === bySeq.size && end && end.type === 'turn/end' && fingerprint(end) === batch.endHash
-        && (previous.seq < 0 || anchor && fingerprint(anchor) === previous.hash)
-      const range = events.filter(event => Number(event.seq) > previous.seq && Number(event.seq) <= batch.endSeq)
-      if (!retained || range.length !== batch.endSeq - previous.seq || range.some((event, index) => Number(event.seq) !== previous.seq + 1 + index)) {
-        host.store.atomic(() => { this.checkpoint(batch, { ...previous, partial: true }) })
+        && (cursor.seq < 0 || anchor && fingerprint(anchor) === cursor.hash)
+      const range = events.filter(event => Number(event.seq) > cursor.seq && Number(event.seq) <= batch.endSeq)
+      if (!retained || range.length !== batch.endSeq - cursor.seq || range.some((event, index) => Number(event.seq) !== cursor.seq + 1 + index)) {
+        host.store.atomic(() => { this.checkpoint(batch, { ...cursor, partial: true }) })
         host.memory.degraded('partial_capture')
         throw new Error('partial_capture')
       }
@@ -123,7 +129,7 @@ export class MemoryCapture {
       const proposals = z.array(CaptureProposal).max(20).parse(raw)
       if (!host.memory.captureEnabled() || host.paused() || host.lifetime.aborted) throw new Later('memory_capture_paused')
       host.store.atomic(() => {
-        if (JSON.stringify(this.cursor(batch)) !== JSON.stringify(previous)) throw new Error('memory_capture_cursor_conflict')
+        if (JSON.stringify(this.cursor(batch)) !== JSON.stringify(cursor)) throw new Error('memory_capture_cursor_conflict')
         for (const proposal of proposals) {
           const sources = proposal.evidenceRefs.map(ref => textEvents.find(event => event.ref === ref))
           if (sources.some(event => !event)) throw new Error('memory_capture_unknown_evidence')
@@ -139,7 +145,13 @@ export class MemoryCapture {
       host.memory.refresh()
     } catch (error) {
       if (error instanceof Later) throw error
-      const code = error instanceof Error && error.message === 'partial_capture' ? 'partial_capture' : 'memory_capture_failed'
+      let code = error instanceof Error && error.message === 'partial_capture' ? 'partial_capture' : 'memory_capture_failed'
+      // A failed inspection is an unobserved range, never a completed empty batch. Intentional shutdown/disable keeps it queued.
+      if (!inspected && previous && !host.lifetime.aborted && host.memory.captureEnabled() && !host.paused()) {
+        const cursor = previous
+        try { host.store.atomic(() => { this.checkpoint(batch, { ...cursor, partial: true }) }); code = 'partial_capture' }
+        catch { code = 'memory_capture_failed' }
+      }
       host.memory.degraded(code)
       // Effects persists this fixed code, never provider output or transcript secrets.
       throw new Error(code)

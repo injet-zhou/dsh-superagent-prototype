@@ -1,0 +1,11 @@
+{
+  "revision": 0,
+  "value": {
+    "enabled": true,
+    "retrieval": true,
+    "autoCapture": false,
+    "dreaming": false,
+    "dailyCallBudget": 0,
+    "analyzerModel": null
+  }
+}

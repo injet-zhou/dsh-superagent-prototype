@@ -11,6 +11,7 @@ import { exampleNote, memoryFixture } from './fixtures/memory.ts'
 import { startRuntime, feishu } from './fixtures/host.ts'
 import { waitUntil, deferred } from './fixtures/async.ts'
 import { fingerprint } from '../src/app/memory/security.ts'
+import { cancelled } from '../src/executor/background.ts'
 
 function turn(session: Session, number: number, text = 'Migration regression command passed on this checkout') {
   session.append('turn/start', { turn: number })
@@ -84,6 +85,25 @@ it('records partial_capture without advancing when history disappears or an anch
   expect(f.board.all.memory?.detail).toBe('partial_capture')
   expect(f.effects.pending('memory-capture')).toBe(true)
   expect(f.memory.list('candidate')).toHaveLength(1)
+  f.inspect.mockImplementation(async () => ({ events: f.session.snapshotEvents() }))
+  f.store.db.exec('UPDATE effect SET due=0'); await f.effects.idle('memory-capture')
+  expect(f.cursor()).toMatchObject({ seq: Number(second.seq), partial: false })
+  expect(f.memory.list('candidate')).toHaveLength(2)
+})
+
+it('keeps raw DSH anchors through a real surface replacement and Session restore', async () => {
+  const f = captureFixture(), first = turn(f.session, 1)
+  f.capture.enqueue('ticketA', 'assignmentA', first); await f.effects.idle('memory-capture')
+  const original = f.session.snapshotEvents().find(event => event.type === 'user/message')!
+  f.session.append('user/message', { id: MessageId('summary'), role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'Compacted summary' }] },
+    { surfaceOp: { op: 'replace', startSeq: original.seq, endSeq: original.seq }, sourceEventSeqs: [original.seq] })
+  const restored = Session.create(f.session.id, f.session.snapshotEvents(), f.session.header)
+  const end = turn(restored, 2)
+  f.inspect.mockResolvedValue({ events: restored.snapshotEvents() })
+  f.capture.enqueue('ticketA', 'assignmentA', end); await f.effects.idle('memory-capture')
+  expect(f.cursor()).toMatchObject({ seq: Number(end.seq), partial: false })
+  expect(restored.snapshotEvents()[Number(first.seq)]).toEqual(first)
+  expect(f.memory.list('candidate')).toHaveLength(2)
 })
 
 it('bounds incremental batches, redacts before analysis, and prevents fabricated verification/evidence', async () => {
@@ -155,6 +175,19 @@ it('stops a non-cooperative transcript inspection on shutdown without losing its
   expect(f.effects.pending('memory-capture')).toBe(true)
   expect(f.cursor()).toBeNull()
   pending.resolve({ events: [] })
+})
+
+it('persists partial_capture for failed inspection, keeps the cursor unchanged and never logs provider text', async () => {
+  const f = captureFixture()
+  f.inspect.mockRejectedValueOnce(new Error('token=private-inspect-error'))
+  f.capture.enqueue('ticketA', 'assignmentA', turn(f.session, 1))
+  await f.effects.idle('memory-capture')
+  expect(f.cursor()).toMatchObject({ seq: -1, partial: true })
+  expect(f.memory.list('candidate')).toEqual([])
+  expect(f.effects.pending('memory-capture')).toBe(true)
+  expect(f.board.all.memory?.detail).toBe('partial_capture')
+  expect(String(f.store.db.prepare("SELECT error FROM effect WHERE kind='memory-capture'").get()?.error)).toBe('Error: partial_capture')
+  expect(JSON.stringify(f.board.all)).not.toContain('private-inspect-error')
 })
 
 it('retains an interrupted model job on shutdown and never commits its late result', async () => {
@@ -239,4 +272,29 @@ it('does not capture retry backoff or interrupted background turns and captures 
   h.ctx.emit('agent/status', { agent: h.ctx.agents.get(SessionId(second.sessionId))!, status: 'idle' })
   await waitUntil(() => h.runtime.memory.publisher().list('candidate').length === 2)
   expect(h.runtime.store.tickets.get(second.ticket.id)?.assignments).toHaveLength(2)
+})
+
+it('keeps a handoff anchor when draining children wakes and cancels a synthetic turn', async () => {
+  const h = await startRuntime(store => store.saveSettings({ ...store.settings(), memory: { enabled: true, autoCapture: true, dailyCallBudget: 5 } }), {},
+    { memoryAnalyzer: { propose: async input => proposal(input) } })
+  onTestFinished(() => h.stop())
+  const { ticket, sessionId } = await h.acceptedTicket(feishu('1', '处理交接'))
+  h.runtime.engine.bindThread(ticket.id, { source: 'github', id: '99' }, true)
+  const session = Session.create(SessionId(sessionId)), first = turn(session, 1), job = h.jobs.run(sessionId, 'review job')
+  h.controller.inspect.mockResolvedValue({ events: session.snapshotEvents() })
+  await h.runTool(sessionId, 'orchestrator_report', { state: 'ready', summary: 'Ready' })
+  h.ctx.emit('session/event', session, first)
+  h.agents.get(sessionId)!.status = 'idle'
+  const agent = h.ctx.agents.get(SessionId(sessionId))!
+  h.ctx.emit('agent/status', { agent, status: 'idle' })
+  await waitUntil(() => h.runtime.executor.activeCount() === 0)
+  cancelled.add(agent)
+  const synthetic = turn(session, 2, 'Child shutdown notice')
+  h.ctx.emit('session/event', session, synthetic)
+  h.ctx.emit('agent/status', { agent, status: 'idle' })
+  h.controller.inspect.mockResolvedValue({ events: session.snapshotEvents() })
+  h.jobs.end(job)
+  await waitUntil(() => h.runtime.memory.publisher().list('candidate').length === 1)
+  const cursor = JSON.parse(String(h.runtime.store.db.prepare('SELECT cursor_json FROM memory_capture_checkpoint WHERE ticket_id=?').get(ticket.id)?.cursor_json)) as { seq: number }
+  expect(cursor.seq).toBe(Number(first.seq))
 })

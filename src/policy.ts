@@ -99,6 +99,7 @@ export const SourceInstanceSchema = z.object({ enabled: z.boolean().default(true
 export const MemoryConfigSchema = z.object({
   enabled: z.boolean().default(false), retrieval: z.boolean().default(true), autoCapture: z.boolean().default(false),
   dreaming: z.boolean().default(false), dailyCallBudget: z.number().int().min(0).max(100).default(0),
+  analyzerModel: RoleModelSchema.nullable().default(null),
 }).strict()
 export type MemoryConfig = z.infer<typeof MemoryConfigSchema>
 export const SettingsSchema = z.object({

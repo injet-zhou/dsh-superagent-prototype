@@ -9,11 +9,16 @@ import { Store } from '../src/app/store.ts'
 import { testMachine } from './fixtures/deployment.ts'
 import { credentialHelper, workerGitConfig } from '../src/infra/environment.ts'
 import { vi } from 'vitest'
+import { KV } from '../src/kv.ts'
 
 it('leaves default Workers and Router unchanged, then enables repository memory through a revisioned setting', async () => {
-  const h = await startRuntime()
+  const h = await startRuntime(store => {
+    store.db.exec('DROP TABLE memory_note_fts; DROP TABLE memory_revision; DROP TABLE memory_evidence; DROP TABLE memory_capture_checkpoint; DROP TABLE memory_note')
+    store.set(KV.store.schema, 11)
+  })
   onTestFinished(() => h.stop())
   const a = await h.acceptedTicket(feishu('1', '修复迁移'))
+  expect(h.runtime.store.get(KV.store.schema)).toBe(12)
   expect(h.tools.get(a.sessionId)?.has('orchestrator_memory_search')).toBe(false)
   const oldVersion = policyVersion(h.runtime.store.settings())
   const saved = await h.api('PUT', 'settings/memory', { revision: 0, value: { enabled: true } })
@@ -24,7 +29,13 @@ it('leaves default Workers and Router unchanged, then enables repository memory 
   h.runtime.memory.refresh()
   const b = await h.acceptedTicket(feishu('2', '修复其他迁移'))
   expect((await h.runTool(b.sessionId, 'orchestrator_memory_search', { query: 'SQLite' })).items).toHaveLength(1)
+  const search = vi.spyOn(h.runtime.memory.publisher(), 'search').mockImplementationOnce(() => { throw new Error('secret=private-error') })
+  expect(await h.runTool(b.sessionId, 'orchestrator_memory_search', { query: 'SQLite' })).toMatchObject({ items: [], degraded: 'memory_retrieval_unavailable' })
+  expect(h.runtime.store.tickets.get(b.ticket.id)?.ended).toBeUndefined()
+  expect(h.runtime.health.runtime?.state).toBe('ready')
+  search.mockRestore()
   expect(h.tools.get(h.runtime.masterId)?.has('orchestrator_memory_search')).toBe(false)
+  await expect(h.runTool(a.sessionId, 'orchestrator_memory_search', { query: 'SQLite', repositoryId: 'other' })).rejects.toThrow()
   await expect(h.runTool(h.runtime.masterId, 'orchestrator_read', { resource: 'memory/shared' })).rejects.toThrow('authorized current worker')
   for (const resource of ['memory/../shared', 'memory/other/shared', 'memory//etc/passwd']) {
     await expect(h.runTool(b.sessionId, 'orchestrator_read', { resource })).rejects.toThrow('Invalid memory resource')
@@ -48,10 +59,13 @@ it('keeps default, backend and frontend memory, scoped settings and health isola
     h.answers[`${cli} api repos/acme/${id} --jq {name: .full_name, push: .permissions.push}`] = `{"name":"acme/${id}","push":true}`
     h.answers['git config -z --show-origin --get-all credential.https://github.com.helper'] = `file:${workerGitConfig(stateDir)}\0${credentialHelper(cli)}\0`
     const seed = new Store(join(stateDir, 'orchestrator.sqlite'))
-    seed.saveSettings({ ...h.runtime.store.settings(), sources: { github: { enabled: true, config: { repository: `acme/${id}`, cli } } } }); seed.close()
+    seed.saveSettings({ ...h.runtime.store.settings(), sources: { github: { enabled: true, config: { repository: `acme/${id}`, cli } } } })
+    seed.db.exec('DROP TABLE memory_note_fts; DROP TABLE memory_revision; DROP TABLE memory_evidence; DROP TABLE memory_capture_checkpoint; DROP TABLE memory_note')
+    seed.set(KV.store.schema, 11); seed.close()
     const runtime = new Runtime(h.ctx.isolate('orchestrator'), testMachine({ stateDir, repositoryId: id, scopedEnvironment: true }), vi.fn(), { http: false })
     entries.push({ id, name: id, runtime }); await runtime.ready
     expect(runtime.configured()).toBe(true)
+    expect(runtime.store.get(KV.store.schema)).toBe(12)
   }
   for (const { id, runtime } of entries) {
     const path = id === 'default' ? 'settings/memory' : `/orchestrator/repositories/${id}/api/settings/memory`

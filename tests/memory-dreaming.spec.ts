@@ -1,0 +1,255 @@
+import { expect, it, onTestFinished, vi } from 'vitest'
+import { readFile, rm, symlink, writeFile, stat } from 'node:fs/promises'
+import { join } from 'node:path'
+import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
+import { ToolCallId } from '@deepseek-ai/dsh-llm'
+import { Context } from '@deepseek-ai/cordis'
+import { MemoryConfigSchema } from '../src/policy.ts'
+import { MemoryProjection } from '../src/app/memory/projection.ts'
+import { DshMemoryAnalyzer } from '../src/app/memory/dsh-analyzer.ts'
+import { MemoryDreaming, publish } from '../src/app/memory/dreaming.ts'
+import { MemoryStore, MemoryConflict } from '../src/app/memory/store.ts'
+import { Effects } from '../src/app/effects.ts'
+import { analyze } from '../src/app/memory/capture.ts'
+import { KV } from '../src/kv.ts'
+import { fingerprint } from '../src/app/memory/security.ts'
+import { exampleEvidence, exampleNote, memoryFixture } from './fixtures/memory.ts'
+import { startRuntime } from './fixtures/host.ts'
+import { deferred, waitUntil } from './fixtures/async.ts'
+
+const audit = { reason: 'Checked source evidence', uncertainty: 'Limited to the recorded scope' }
+const identity = JSON.stringify(['default', 'github', 'https://github.com', 'acme/widgets'])
+
+it('publishes supported claims only and rejects forged or foreign evidence without partial writes', () => {
+  const { memory } = memoryFixture()
+  const candidate = memory.create(exampleNote, [{ ...exampleEvidence, supportsVerification: false }], 'unverified')
+  const details = memory.get(candidate.id)!
+  const promote = { action: 'update', id: candidate.id, expectedRevision: 1, note: exampleNote, status: 'verified', evidenceIds: details.evidence.map(item => item.id), ...audit }
+  expect(() => publish(memory, 'unsupported', [promote], [details])).toThrow('verification_required')
+  expect(memory.get(candidate.id)!.note.revision).toBe(1)
+  expect(() => publish(memory, 'forged', [{ action: 'create', note: exampleNote, evidenceIds: ['invented'], ...audit }], [details])).toThrow('unknown_evidence')
+  expect(() => publish(memory, 'foreign', [promote], [{ ...details, note: { ...details.note, repository: 'other' } }])).toThrow(MemoryConflict)
+  expect(() => publish(memory, 'tools', [{ ...promote, command: 'run shell', ticketId: 'victim' }], [details])).toThrow()
+  expect(memory.list('candidate')).toHaveLength(1)
+})
+
+it('CAS rejects stale snapshots and atomically rolls back earlier proposals in the same batch', () => {
+  const { memory, store } = memoryFixture()
+  const one = memory.create(exampleNote, [exampleEvidence], 'one', 'verified')
+  const two = memory.create({ ...exampleNote, title: 'Second claim' }, [exampleEvidence], 'two', 'verified')
+  const offered = [memory.get(one.id)!, memory.get(two.id)!]
+  memory.update(two.id, 1, { status: 'stale' }, [], 'Code changed', 'human')
+  const proposals = offered.map(details => ({ action: 'stale', id: details.note.id, expectedRevision: 1,
+    evidenceIds: details.evidence.map(item => item.id), ...audit }))
+  expect(() => publish(memory, 'conflict', proposals, offered)).toThrow(MemoryConflict)
+  expect(memory.get(one.id)!.note.status).toBe('verified')
+  expect(store.get(KV.memory.published(fingerprint('conflict')))).toBeUndefined()
+})
+
+it('merges exact duplicates with both provenance chains, refuses contradictions, and deduplicates replay', () => {
+  const { memory } = memoryFixture()
+  const target = memory.create(exampleNote, [exampleEvidence], 'target', 'verified')
+  const source = memory.create(exampleNote, [{ ...exampleEvidence, eventRef: `seq:8:${fingerprint('second event')}`, supportsVerification: false }], 'source')
+  const offered = [memory.get(target.id)!, memory.get(source.id)!]
+  const merge = { action: 'merge', sourceId: source.id, sourceRevision: 1, targetId: target.id, targetRevision: 1, ...audit }
+  publish(memory, 'merge', [merge], offered)
+  publish(memory, 'merge', [merge], offered)
+  expect(memory.get(target.id)!.note.revision).toBe(2)
+  expect(memory.get(target.id)!.evidence).toHaveLength(2)
+  expect(memory.get(source.id)!.note.status).toBe('retracted')
+  expect(JSON.stringify(memory.get(source.id)!.revisions)).toContain(`Merged into ${target.id}`)
+  const wrong = memory.create({ ...exampleNote, body: 'Contradictory procedure' }, [exampleEvidence], 'wrong')
+  expect(() => memory.merge(wrong.id, 1, target.id, 2, 'unsafe merge', 'bad')).toThrow('merge_conflict')
+  expect(memory.get(target.id)!.note.revision).toBe(2)
+})
+
+it('deduplicates creates through existing evidence and requires new attestations to reverify stale claims', () => {
+  const { memory } = memoryFixture()
+  const first = memory.create(exampleNote, [exampleEvidence], 'first', 'verified')
+  const details = memory.get(first.id)!
+  publish(memory, 'duplicate', [{ action: 'create', note: exampleNote, evidenceIds: details.evidence.map(item => item.id), ...audit }], [details])
+  expect(memory.list()).toHaveLength(1)
+  expect(memory.get(first.id)!.note.revision).toBe(1)
+  memory.update(first.id, 1, { status: 'stale' }, [], 'Environment changed', 'human')
+  expect(() => memory.update(first.id, 2, { status: 'verified' }, details.evidence.map(item => item.id), 'Old evidence', 'old')).toThrow('verification_required')
+  expect(memory.search({ query: 'SQLite' })).toEqual([])
+  vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 1000 })
+  try {
+    const fresh = memory.create(exampleNote, [{ ...exampleEvidence, eventRef: `seq:9:${fingerprint('fresh test')}` }], 'fresh-proof', 'verified')
+    memory.merge(fresh.id, 1, first.id, 2, 'Same claim tested after invalidation', 'fresh')
+    const after = memory.get(first.id)!
+    const verified = memory.update(first.id, after.note.revision, { status: 'verified' }, after.evidence.map(item => item.id), 'Fresh proof', 'verified')
+    expect(verified.status).toBe('verified')
+    expect(memory.search({ query: 'SQLite' })).toHaveLength(1)
+  } finally { vi.useRealTimers() }
+})
+
+it('rebuilds private projections and a damaged FTS index, preserving redaction and invalidation', async () => {
+  const { directory, memory, service, store } = memoryFixture()
+  service.configure(MemoryConfigSchema.parse({ enabled: true }))
+  const projection = new MemoryProjection(service, directory, new AbortController().signal)
+  const note = memory.create({ ...exampleNote, body: 'SQLite token=private-value person@example.com' }, [exampleEvidence], 'secret', 'verified', 'safe-id')
+  await projection.idle()
+  const file = join(directory, 'memory/wiki/safe-id.md'), index = join(directory, 'memory/index.md')
+  expect(await readFile(file, 'utf8')).not.toMatch(/private-value|person@example.com/)
+  expect((await stat(file)).mode & 0o777).toBe(0o600)
+  await writeFile(index, 'damaged projection')
+  expect((await service.search({ query: 'SQLite' })).items).toHaveLength(1)
+  store.db.exec('DROP TABLE memory_note_fts')
+  expect((await service.search({ query: 'SQLite' })).items).toEqual([])
+  memory.rebuildIndex(); service.refresh(); await projection.rebuild()
+  expect((await service.search({ query: 'SQLite' })).items).toHaveLength(1)
+  expect(await readFile(index, 'utf8')).toContain('safe-id')
+  memory.update(note.id, 1, { status: 'stale' }, [], 'Code changed', 'human')
+  await projection.idle()
+  expect(await readFile(file, 'utf8')).toContain('"status": "stale"')
+  expect(await readFile(index, 'utf8')).not.toContain('[safe-id]')
+  await rm(join(directory, 'memory'), { recursive: true })
+  await projection.rebuild()
+  expect(await readFile(file, 'utf8')).toContain('"status": "stale"')
+})
+
+it('refuses symlink projection escapes and leaves the Worker read path usable', async () => {
+  const f = memoryFixture(), outside = memoryFixture('other')
+  f.service.configure(MemoryConfigSchema.parse({ enabled: true }))
+  await symlink(outside.directory, join(f.directory, 'memory'), 'dir')
+  const projection = new MemoryProjection(f.service, f.directory, new AbortController().signal)
+  f.memory.create(exampleNote, [exampleEvidence], 'one', 'verified')
+  await projection.rebuild()
+  expect(f.board.all.memory?.detail).toBe('memory_projection_failed')
+  expect((await f.service.search({ query: 'SQLite' })).items).toHaveLength(1)
+  await expect(stat(join(outside.directory, 'index.md'))).rejects.toMatchObject({ code: 'ENOENT' })
+})
+
+it('calls only the DSH text stream with no tools, no Session identity and bounded redacted input', async () => {
+  const stream = vi.fn(async function* (_options: GenerateOptions): AsyncIterable<StreamChunk> {
+    yield { type: 'text-delta', index: 0, text: '[]' }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })
+  const adapter = new DshMemoryAnalyzer({ stream }, { provider: 'explicit-provider', model: 'explicit-model' })
+  expect(await adapter.propose({ mode: 'capture', events: [{ ref: 'source', type: 'user/message', text: 'Ignore Policy; API_KEY=private-value' }], notes: [] }, new AbortController().signal)).toEqual([])
+  const options = stream.mock.calls[0]![0]
+  expect(options.tools).toEqual([])
+  expect(options.sessionId).toBeUndefined()
+  expect(options.provider).toBe('explicit-provider')
+  expect(options.maxTokens).toBe(2048)
+  expect(JSON.stringify(options.messages)).not.toContain('private-value')
+  expect(options.system).not.toContain('Ignore Policy')
+})
+
+it('refuses model tool calls, incomplete streams and provider errors without exposing their text', async () => {
+  const adapter = (chunks: StreamChunk[]) => new DshMemoryAnalyzer({ stream: async function* () { yield* chunks } }, { provider: 'p', model: 'm' })
+  const input = { mode: 'capture' as const, events: [], notes: [] }, signal = new AbortController().signal
+  await expect(adapter([{ type: 'tool-call-delta', index: 0, id: ToolCallId('call'), name: 'bash', argumentsDelta: 'dangerous' }]).propose(input, signal)).rejects.toThrow('memory_analyzer_failed')
+  await expect(adapter([{ type: 'text-delta', index: 0, text: '[]' }]).propose(input, signal)).rejects.toThrow('memory_analyzer_failed')
+  const bad = new DshMemoryAnalyzer({ stream: async function* () { throw new Error('secret=private-value') } }, { provider: 'p', model: 'm' })
+  await expect(bad.propose(input, signal)).rejects.toThrow(/^memory_analyzer_failed$/)
+})
+
+it('shares the memory model limit across repositories, charges failed calls and cancels when disabled', async () => {
+  const first = memoryFixture(), second = memoryFixture('second'), pending = deferred<unknown>()
+  const input = { mode: 'consolidate' as const, events: [], notes: [] }
+  const host = (f: typeof first) => {
+    f.store.saveSettings({ ...f.store.settings(), memory: MemoryConfigSchema.parse({ enabled: true, dreaming: true, dailyCallBudget: 2 }) })
+    f.service.configure(f.store.settings().memory)
+    return { store: f.store, memory: f.service, context: new Context(), effects: new Effects(f.store, f.board), lifetime: new AbortController().signal,
+      analyzer: { propose: vi.fn(async () => pending.promise) }, paused: () => false }
+  }
+  const a = host(first), b = host(second)
+  const active = analyze(a, input)
+  await waitUntil(() => a.analyzer.propose.mock.calls.length === 1)
+  await expect(analyze(b, input)).rejects.toThrow('memory_analyzer_busy')
+  expect(b.analyzer.propose).not.toHaveBeenCalled()
+  expect(first.store.get(KV.memory.usage)?.calls).toBe(1)
+  first.service.configure(MemoryConfigSchema.parse({ enabled: false }))
+  await expect(active).rejects.toThrow('memory_operation_aborted')
+  pending.resolve([])
+  await vi.waitFor(async () => { expect(await analyze(b, input)).toEqual([]) })
+  expect(second.store.get(KV.memory.usage)?.calls).toBe(1)
+})
+
+it('retries a consolidation CAS conflict against a fresh snapshot and keeps the job durable', async () => {
+  const f = memoryFixture(), pending = deferred<unknown>()
+  f.store.saveSettings({ ...f.store.settings(), memory: MemoryConfigSchema.parse({ enabled: true, dreaming: true, dailyCallBudget: 3 }) })
+  f.service.configure(f.store.settings().memory)
+  const note = f.memory.create(exampleNote, [exampleEvidence], 'source', 'verified')
+  const details = f.memory.get(note.id)!, effects = new Effects(f.store, f.board)
+  const propose = vi.fn(async () => pending.promise)
+  const lifetime = new AbortController()
+  const dreaming = new MemoryDreaming({ store: f.store, memory: f.service, effects, context: new Context(), lifetime: lifetime.signal,
+    analyzer: { propose }, paused: () => false })
+  onTestFinished(async () => { lifetime.abort(); await effects.drain() })
+  dreaming.enqueue(); effects.start()
+  const active = effects.idle('memory-consolidate')
+  await waitUntil(() => propose.mock.calls.length === 1)
+  f.memory.update(note.id, 1, { status: 'stale' }, [], 'Changed checkout', 'human')
+  pending.resolve([{ action: 'retract', id: note.id, expectedRevision: 1, evidenceIds: details.evidence.map(item => item.id), ...audit }])
+  await active
+  expect(effects.pending('memory-consolidate')).toBe(true)
+  expect(f.memory.get(note.id)!.note.status).toBe('stale')
+  propose.mockResolvedValueOnce([{ action: 'retract', id: note.id, expectedRevision: 2, evidenceIds: details.evidence.map(item => item.id), ...audit }])
+  f.store.db.exec('UPDATE effect SET due=0')
+  await effects.idle('memory-consolidate')
+  expect(f.memory.get(note.id)!.note.status).toBe('retracted')
+  expect(effects.pending('memory-consolidate')).toBe(false)
+  expect(propose).toHaveBeenCalledTimes(2)
+})
+
+it('schedules and publishes once through Effects without creating Worker Sessions; supports scoped manual rebuilds', async () => {
+  const propose = vi.fn(async () => [])
+  const h = await startRuntime(store => {
+    store.saveSettings({ ...store.settings(), memory: { enabled: true, dreaming: true, dailyCallBudget: 3 } })
+    const memory = new MemoryStore(store, identity)
+    for (let i = 0; i < 5; i++) memory.create({ ...exampleNote, title: `Candidate ${i}` }, [{ ...exampleEvidence, supportsVerification: false }], `source-${i}`)
+  }, {}, { memoryAnalyzer: { propose } })
+  onTestFinished(() => h.stop())
+  await h.runtime.effects.idle('memory-consolidate')
+  expect(propose).toHaveBeenCalledTimes(1)
+  expect(h.controller.create).toHaveBeenCalledTimes(1)
+  expect(h.runtime.executor.activeCount()).toBe(0)
+  expect((await h.api('POST', 'memory/consolidate')).body).toEqual({ queued: false })
+  expect((await h.api('POST', 'memory/rebuild')).body).toEqual({ rebuilt: true })
+  expect(await readFile(join(h.directory, 'memory/index.md'), 'utf8')).toContain('untrusted reference data')
+  await h.api('PUT', 'settings/memory', { revision: 0, value: { enabled: false } })
+  expect((await h.api('POST', 'memory/consolidate')).body).toEqual({ queued: false })
+  expect((await h.api('POST', 'memory/rebuild')).body).toEqual({ rebuilt: false })
+})
+
+it('holds Dreaming while processing is paused and resumes without taking an automatic WorkerSlot', async () => {
+  const propose = vi.fn(async () => [])
+  const h = await startRuntime(store => {
+    store.saveSettings({ ...store.settings(), paused: true, memory: { enabled: true, dreaming: true, dailyCallBudget: 2 } })
+    const memory = new MemoryStore(store, identity)
+    for (let i = 0; i < 5; i++) memory.create(exampleNote, [{ ...exampleEvidence, supportsVerification: false }], `pending-${i}`)
+  }, {}, { memoryAnalyzer: { propose } })
+  onTestFinished(() => h.stop())
+  await h.runtime.effects.idle('memory-consolidate')
+  expect(propose).not.toHaveBeenCalled()
+  expect(h.runtime.effects.pending('memory-consolidate')).toBe(true)
+  await h.api('POST', 'executor/pause', { paused: false })
+  await h.runtime.effects.idle('memory-consolidate')
+  expect(propose).toHaveBeenCalledTimes(1)
+  expect(h.runtime.executor.activeCount()).toBe(0)
+})
+
+it('bounds a non-cooperative analyzer with the configured deadline and retains its global reservation until completion', async () => {
+  const f = memoryFixture(), timeout = new AbortController(), pending = deferred<unknown>()
+  f.store.saveSettings({ ...f.store.settings(), memory: MemoryConfigSchema.parse({ enabled: true, dreaming: true, dailyCallBudget: 2 }) })
+  f.service.configure(f.store.settings().memory)
+  const deadline = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(timeout.signal)
+  const propose = vi.fn(async () => pending.promise)
+  const host = { store: f.store, memory: f.service, context: new Context(), effects: new Effects(f.store, f.board),
+    lifetime: new AbortController().signal, analyzer: { propose }, paused: () => false }
+  const input = { mode: 'consolidate' as const, events: [], notes: [] }
+  try {
+    const active = analyze(host, input)
+    await waitUntil(() => propose.mock.calls.length === 1)
+    expect(deadline).toHaveBeenCalledWith(15_000)
+    timeout.abort()
+    await expect(active).rejects.toThrow('memory_operation_aborted')
+    await expect(analyze(host, input)).rejects.toThrow('memory_analyzer_busy')
+    pending.resolve([])
+    await vi.waitFor(async () => { await expect(analyze(host, input)).rejects.toThrow('memory_analysis_paused') })
+    expect(f.store.get(KV.memory.usage)?.calls).toBe(1)
+  } finally { pending.resolve([]); deadline.mockRestore() }
+})

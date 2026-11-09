@@ -514,7 +514,9 @@ export class DshExecutor implements Executor {
     this.disposers.push(ctx.on('session/event', (session, event) => {
       const ticketId = ticketOfSession(session.id)
       if (event.type === 'turn/end' && ticketId !== undefined && this.host.onTurnSettled && this.host.store.tickets.get(ticketId)) {
-        this.turnEnds.set(session.id, event)
+        const agent = ctx.agents.get(session.id)
+        // Draining children may wake and cancel a synthetic turn; preserve the real turn's capture anchor.
+        if (!agent || !cancelled.has(agent)) this.turnEnds.set(session.id, event)
       }
       if (event.type !== 'user/message' || ticketId === undefined || !this.host.store.tickets.get(ticketId) || event.data.source.kind !== 'dsh-superagent' || this.host.closing()) return
       const message = event.data

@@ -171,7 +171,7 @@ Its interfaces are grouped by purpose:
 - **Outbox receipts:** `replyStatus` and `receipts`, written only by Outbox. Receipt operations are `get`, `waiting`, `behind`, `add`, `settle` and `withdraw`. `behind` checks whether an earlier message for the same Ticket and conversation is waiting with fewer than three failures. A withdrawn message settles with `channelGone` or `channelIgnored`. Read queries expose failed and dropped replies through `failingReplies`, `droppedReplies` and `droppedSince`.
 - **Typed key-value records:** `get`, `set`, `delete` and `keys`, using entries from `KV`.
 
-`afterCommit` runs an action only after the transaction commits, never after rollback. Runtime reads records in their stored shape; the schema 11 migration converts older supported records at startup.
+`afterCommit` runs an action only after the transaction commits, never after rollback. Runtime reads records in their stored shape; the schema 10→11 step converts legacy records, then schema 12 adds memory without rewriting schema 11 data.
 
 ### Effects
 
@@ -337,8 +337,11 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/memory/service.ts` | Failure isolation, health, read/search facade and precomputed prompt index |
 | `src/app/memory/analyzer.ts` | Restricted JSON proposal contract, without tool execution or publishing access |
 | `src/app/memory/capture.ts` | Settled-turn capture effects, raw-log continuity checks, atomic cursors, redaction and call budgets |
+| `src/app/memory/dsh-analyzer.ts` | Tool-free direct LLM stream adapter with explicit model, bounded input/output and no Session |
+| `src/app/memory/dreaming.ts` | Strict proposal publisher, evidence provenance, atomic CAS batches and durable consolidation scheduling |
+| `src/app/memory/projection.ts` | Private atomic Markdown projections, symlink refusal and rebuild coalescing |
 | `src/app/store-read.ts` | `storeReads`: the Store's read queries for the views, the tools and the Sources' polls, which never write |
-| `src/app/migration.ts` | The schema 11 migration: one step from schema 10 that writes every stored record in its current shape |
+| `src/app/migration.ts` | Transactional upgrades from supported schemas 10/11 to 12, retaining the legacy shape migration and adding memory |
 | `src/app/effects.ts` | Effects |
 | `src/app/versions.ts` | `Versions`: a record kept as numbered snapshots with a pointer to the current one, for the settings and the prompts |
 | `src/app/cache.ts` | `TextCache`: texts kept in memory within a size, the least recently used dropped first |
@@ -464,6 +467,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/memory-retrieval.spec.ts` | FTS5/fallback, Unicode, scopes, bounded prompt index and hostile data |
 | `tests/memory-runtime.spec.ts` | Cross-Ticket reads, worker authorization, versioned settings and three-repository isolation |
 | `tests/memory-capture.spec.ts` | Capture idempotence, cursor atomicity, retention gaps, budgets and Worker lifecycle |
+| `tests/memory-dreaming.spec.ts` | Publisher CAS/merge/retract, model capability isolation, global budgets and projection recovery |
+| `tests/memory-evaluation.spec.ts` | Fixed 20-case offline A/B retrieval fixture, without live model quality/cost claims |
 | `tests/prompts.spec.ts` | Prompt validation, assembly and versions |
 | `tests/cards.spec.ts` | The rules the built-in text must state, file by file |
 | `tests/model-surface.spec.ts` | Everything models read: tools, prompts, skills and inputs, checked against the tool schemas, the execution environment and the glossary, within a size budget per role |
@@ -496,6 +501,10 @@ One SQLite file per repository context, opened only by its Store: `<stateDir>/or
 | `effect` | The effect queue: per kind and key, the payload, its order, failed attempts with the last error, and when it is due | Effects; the schema 11 migration queues what earlier versions kept for the main Session |
 | `outbox` | The receipt of each message for a Channel, by id, with the Ticket it is for and its `status`, `pending`, `sent` or `dropped`, kept so an id is never queued twice; for a dropped message, when and why, as the generated column `dropped`, its time, and a reason code. A message that waits has a `reply` effect, which holds its attempts | The Outbox |
 | `kv` | Every other record, by key | The part that names it |
+| `memory_note` | Repository-bound claims with scope, status and revision | MemoryStore |
+| `memory_evidence` | Auditable event references, redacted excerpts and exact-claim Host attestations | MemoryStore |
+| `memory_revision` | Immutable before/after audit with reason and source job fingerprint | MemoryStore |
+| `memory_capture_checkpoint` | Atomically committed capture cursor and explicit partial-history state | MemoryCapture |
 
 A generated column is computed from its row's JSON and is empty outside its set, and each has an index over its set, so a pass reads only active work. A database that predates a column gets it when the Store opens it.
 
@@ -510,6 +519,7 @@ A generated column is computed from its row's JSON and is empty outside its set,
 | Session prompt history | `session-prompts:<session id>` |
 | Source state | Read positions such as `github-cursor:<number>`, PR CI fingerprints and seen Feishu-topic messages; keys begin with the kind or `thread-` plus a Thread key |
 | Display names | `source-labels:<source id>` |
+| Memory | Immutable repository identity, UTC daily call reservations and published-job replay markers |
 
 Dismissal is stored on its Decision. Input text is rendered from the Ticket when read, so neither needs a separate key-value record.
 
@@ -517,7 +527,7 @@ Read caches use bounded in-memory `TextCache` instances and are lost on restart.
 
 Nothing deletes old records yet, so these grow without bound: the `trigger`, `disposition` and `decision` rows; ended Tickets and their Threads; the outbox's receipts; and in `kv`, every saved settings revision and prompt version, the prompt revisions each Session worked under, and the Sources' records per Thread and per Issue or pull request.
 
-`SCHEMA_VERSION` only increases. A database of a newer version refuses to start; `src/app/migration.ts` upgrades a database of the pre-release schema 10 once, at start, and refuses an older one.
+`SCHEMA_VERSION` only increases. A newer database refuses to start; `src/app/migration.ts` upgrades schemas 10 and 11 to 12 once at startup, and refuses an older one.
 
 ## Model-facing interfaces
 

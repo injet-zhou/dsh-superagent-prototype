@@ -1,5 +1,6 @@
 /** Sanitization is applied before analysis and again before persistence; raw errors never enter health. */
 import { createHash } from 'node:crypto'
+import { NoteInput } from './types.ts'
 
 export const fingerprint = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 export function redact(text: string): string {
@@ -14,3 +15,10 @@ export function redact(text: string): string {
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '')
 }
 export const safeText = (text: string, limit: number): string => redact(text).slice(0, limit)
+/** Validate again after redaction so sanitization cannot produce invalid persisted records. */
+export function cleanNote(input: unknown): NoteInput {
+  const parsed = NoteInput.parse(input)
+  if (parsed.scope.paths.some(path => safeText(path, 300) !== path)) throw new Error('memory_sensitive_path')
+  return NoteInput.parse({ ...parsed, title: safeText(parsed.title, 160), body: safeText(parsed.body, 8000),
+    scope: { ...parsed.scope, ...parsed.scope.version ? { version: safeText(parsed.scope.version, 150) } : {} } })
+}

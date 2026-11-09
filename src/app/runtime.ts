@@ -50,6 +50,9 @@ import type { Settings as SettingsValue } from '../policy.ts'
 import { MemoryService } from './memory/service.ts'
 import { MemoryCapture } from './memory/capture.ts'
 import type { MemoryAnalyzer } from './memory/analyzer.ts'
+import { DshMemoryAnalyzer } from './memory/dsh-analyzer.ts'
+import { MemoryDreaming } from './memory/dreaming.ts'
+import { MemoryProjection } from './memory/projection.ts'
 
 // Source plugins interact with dsh-superagent exclusively through the `SourceHost` service interface.
 declare module '@deepseek-ai/cordis' { interface Context { orchestrator: SourceHost } }
@@ -77,6 +80,7 @@ export class Runtime extends Service implements SourceHost {
   readonly prompts: Prompts
   readonly effects: Effects
   readonly memory: MemoryService
+  private readonly memoryProjection: MemoryProjection
   readonly sources: SourceRegistry
   readonly commands: Commands
   readonly sessions: Sessions
@@ -144,11 +148,21 @@ export class Runtime extends Service implements SourceHost {
         closing: () => this.closing(), environment, ...machine.scopedEnvironment ? { executionEnvironment } : {},
         tools: (agent, ticket) => ticket ? executorTools(this.toolHost, ticket) : mainTools(this.toolHost, agent) })
       const policyChanged: EngineForSettings['policyChanged'] = (from, to, effects) => { this.engine.policyChanged(from, to, effects) }
-      const capture = new MemoryCapture({ context: ctx, store, effects, memory, lifetime: this.lifetime,
-        analyzer: options.memoryAnalyzer, paused: () => this.paused() })
+      const memoryHost = { context: ctx, store, effects, memory, lifetime: this.lifetime,
+        get analyzer(): MemoryAnalyzer | undefined {
+          const model = store.settings().memory.analyzerModel
+          return options.memoryAnalyzer ?? (model ? new DshMemoryAnalyzer(ctx.llm, model) : undefined)
+        }, paused: () => this.paused() }
+      const capture = new MemoryCapture(memoryHost)
+      const dreaming = new MemoryDreaming(memoryHost)
+      const projection = this.memoryProjection = new MemoryProjection(memory, machine.stateDir, this.lifetime)
+      memory.maintenanceWith({ consolidate: () => dreaming.enqueue(), rebuild: async () => {
+        memory.publisher().rebuildIndex(); memory.refresh(); await projection.rebuild()
+      } })
       this.settings = new Settings({ store, sources, engine: { policyChanged }, health: board, context: ctx, lifetime: this.lifetime, sessions,
         sourceHost: this, setup, requestPass: () => { this.passes.request() },
         settingsChanged: settings => {
+          memory.analyzerAvailable(!!options.memoryAnalyzer || !!settings.memory.analyzerModel)
           if (memory.configure(settings.memory)) void sessions.redecorate().catch(() => { memory.degraded('memory_tools_unavailable') })
         },
         ...options.validateSettings ? { validateSettings: options.validateSettings } : {} })
@@ -281,7 +295,7 @@ export class Runtime extends Service implements SourceHost {
   private httpHost(): HttpHost {
     const runtime = this
     const { store, sources, prompts, sessions, settings, engine, executor, machine, masterId, sourceLinks, setup, passes } = this
-    return { store, sources, prompts, sessions, settings, engine, executor, machine, masterId, sourceLinks,
+    return { store, sources, prompts, sessions, settings, engine, executor, memory: this.memory, machine, masterId, sourceLinks,
       get ready() { return runtime.ready }, get health() { return { ...runtime.health, ...runtime.options.aggregateHealth?.() } },
       get repositoryHealth() { return runtime.health },
       globalLoad: this.options.globalLoad,
@@ -302,6 +316,7 @@ export class Runtime extends Service implements SourceHost {
       await Promise.allSettled([passes, this.effects.drain(), ...agents.map(agent => agent.whenIdle())])
       // The workers' jobs and subagents stop too: their ends would start worker turns without the tool limits released below.
       await this.executor.shutdown()
+      await this.memoryProjection.idle()
       this.executor.dispose()
       this.sessions.dispose()
       for (const dispose of this.disposers.reverse()) dispose()

@@ -88,6 +88,7 @@ const TEXT = {
   'health.worker': ['执行器事件处理', 'Executor event handling'],
   'health.memory': ['仓库记忆', 'Repository memory'],
   'health.memory-capture': ['记忆提取', 'Memory capture'],
+  'health.memory-consolidate': ['记忆整理', 'Memory consolidation'],
   'health.evals': ['未完成的评估', 'Unavailable Evals'],
   none: ['暂无。', 'None.'],
   openSession: ['打开 Session', 'Open Session'],

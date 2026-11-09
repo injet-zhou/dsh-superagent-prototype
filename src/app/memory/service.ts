@@ -2,6 +2,7 @@
 import type { MemoryConfig } from '../../policy.ts'
 import type { HealthEntry } from '../../infra/health.ts'
 import type { Store } from '../store.ts'
+import { KV } from '../../kv.ts'
 import { MEMORY_BOUNDARY, MemoryQuery, type MemoryQuery as Query } from './types.ts'
 import { MemoryStore } from './store.ts'
 
@@ -13,6 +14,11 @@ export class MemoryService {
   private problem?: string
   private analyzer = false
   private summary = ''
+  private remainingCalls = 0
+  private readonly listeners = new Set<() => void>()
+  private projectionProblem?: string
+  private analysisController = new AbortController()
+  private maintenance?: { consolidate(): boolean; rebuild(): Promise<void> }
   constructor(private readonly store: Store, private readonly health: HealthEntry) {
     this.config = store.settings().memory
     this.report()
@@ -20,16 +26,33 @@ export class MemoryService {
   configure(config: MemoryConfig): boolean {
     if (JSON.stringify(config) === JSON.stringify(this.config)) return false
     const enabled = this.enabled()
+    this.analysisController.abort(); this.analysisController = new AbortController()
     this.config = config; this.refresh()
     return enabled !== this.enabled()
   }
   analyzerAvailable(available: boolean): void { this.analyzer = available; this.report() }
+  analysisSignal(): AbortSignal { return this.analysisController.signal }
+  maintenanceWith(maintenance: { consolidate(): boolean; rebuild(): Promise<void> }): void { this.maintenance = maintenance }
+  requestConsolidation(): { queued: boolean } {
+    if (!this.dreamingEnabled() || !this.maintenance) return { queued: false }
+    try { return { queued: this.maintenance.consolidate() } }
+    catch { this.degraded('memory_maintenance_unavailable'); return { queued: false } }
+  }
+  async rebuildProjection(): Promise<{ rebuilt: boolean }> {
+    if (!this.active() || !this.maintenance) return { rebuilt: false }
+    try { await this.maintenance.rebuild(); return { rebuilt: !this.projectionProblem } }
+    catch { this.degraded('memory_rebuild_failed'); return { rebuilt: false } }
+  }
+  subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
+  projectionResult(failed: boolean): void { this.projectionProblem = failed ? 'memory_projection_failed' : undefined; this.report() }
   bind(repository: string): void {
-    try { this.database = new MemoryStore(this.store, repository); this.refresh() }
+    try { this.database = new MemoryStore(this.store, repository, () => { this.refresh() }); this.refresh() }
     catch { this.problem = 'memory_repository_mismatch'; this.report() }
   }
-  enabled(): boolean { return this.config.enabled && this.config.retrieval && !!this.database && this.problem !== 'memory_repository_mismatch' }
-  captureEnabled(): boolean { return this.config.enabled && this.config.autoCapture && !!this.database && this.problem !== 'memory_repository_mismatch' }
+  active(): boolean { return this.config.enabled && !!this.database && this.problem !== 'memory_repository_mismatch' }
+  enabled(): boolean { return this.active() && this.config.retrieval }
+  captureEnabled(): boolean { return this.active() && this.config.autoCapture }
+  dreamingEnabled(): boolean { return this.active() && this.config.dreaming }
   /** No database, file or model access on this synchronous prompt path. */
   index(): string { return this.enabled() ? this.snapshot : '' }
   /** Rebuild the short snapshot outside prompt rendering. Titles remain JSON data, never instructions. */
@@ -39,7 +62,9 @@ export class MemoryService {
       const notes = this.database.list('verified', 20)
       const candidates = this.database.list('candidate', 200).length
       const partial = Number(this.store.db.prepare("SELECT count(*) AS n FROM memory_capture_checkpoint WHERE json_extract(cursor_json,'$.partial')=1").get()?.n ?? 0)
-      this.summary = `; ${candidates}${candidates === 200 ? '+' : ''} candidates awaiting review`
+      const usage = this.store.get(KV.memory.usage)
+      this.remainingCalls = Math.max(0, this.config.dailyCallBudget - (usage?.day === new Date().toISOString().slice(0, 10) ? usage.calls : 0))
+      this.summary = `; ${candidates}${candidates === 200 ? '+' : ''} candidates awaiting review; ${this.remainingCalls} model calls remaining today`
       const lines = notes.map(note => JSON.stringify({ id: note.id, title: note.title, read: `memory/${note.id}` }))
       // UTF-8 bytes form a conservative token upper bound; no unverified tokenizer estimate is presented as an exact count.
       const prefix = `${MEMORY_BOUNDARY}\nSearch with orchestrator_memory_search; read with orchestrator_read memory/<id>.\n`
@@ -49,6 +74,9 @@ export class MemoryService {
       this.problem = partial ? 'partial_capture' : undefined
     } catch { this.problem = 'memory_index_unavailable'; this.snapshot = '' }
     this.report()
+    if (this.active()) for (const listener of this.listeners) {
+      try { listener() } catch { this.degraded('memory_maintenance_unavailable') }
+    }
   }
   /** Host-only import/publisher access; never provided to model tools. */
   publisher(): MemoryStore {
@@ -62,7 +90,7 @@ export class MemoryService {
       const start = performance.now()
       const items = this.publisher().search(parsed).map(note => ({ id: note.id, title: note.title, snippet: note.body.slice(0, 300),
         kind: note.kind, status: note.status, revision: note.revision, scope: note.scope, verifiedAt: note.verifiedAt,
-        evidenceCount: this.publisher().get(note.id)!.evidence.length, read: `memory/${note.id}` }))
+        evidenceCount: this.publisher().evidenceCount(note.id), read: `memory/${note.id}` }))
       if (signal?.aborted || performance.now() - start > 100) throw new Error('timeout')
       return { boundary: MEMORY_BOUNDARY, items }
     } catch { this.degraded('memory_retrieval_unavailable'); return { boundary: MEMORY_BOUNDARY, items: [], degraded: 'memory_retrieval_unavailable' } }
@@ -77,7 +105,9 @@ export class MemoryService {
   }
   degraded(code: string): void { this.problem = code; this.report() }
   private report(): void {
-    const problem = this.problem ?? (this.config.enabled && (this.config.autoCapture || this.config.dreaming) && !this.analyzer ? 'memory_analyzer_unavailable' : undefined)
+    const automatic = this.config.enabled && (this.config.autoCapture || this.config.dreaming)
+    const problem = this.problem ?? this.projectionProblem ?? (automatic && !this.analyzer ? 'memory_analyzer_unavailable'
+      : automatic && !this.remainingCalls ? 'memory_budget_exhausted' : undefined)
     this.health.set({ state: !this.config.enabled ? 'paused' : problem ? 'error' : 'ready',
       detail: !this.config.enabled ? 'Memory disabled; automatic model budget defaults to 0' : problem
         ?? ((this.database?.fts ? 'Memory ready; FTS5' : 'Memory ready; bounded substring fallback') + this.summary), at: new Date().toISOString() })

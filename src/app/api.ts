@@ -18,6 +18,8 @@ interface Paged { offset?: number; limit?: number }
 type Delivery = 'injected' | 'pending'
 
 export interface Api {
+  'POST memory/consolidate': { response: { queued: boolean } }
+  'POST memory/rebuild': { response: { rebuilt: boolean } }
   'GET repositories': { response: { id: string; name: string; repository: string; configured: boolean;
     state?: 'starting' | 'ready' | 'paused' | 'error'; health?: Record<string, import('../sources/host.ts').Health>; error?: string;
     load?: { running: number; queued: number; maxWorkers: number }; attention?: number;
