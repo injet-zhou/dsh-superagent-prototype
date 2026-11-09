@@ -27,7 +27,7 @@ export interface SourceContextDeps {
   /** Hands a Trigger to the Engine and schedules the pass that assesses it. */
   receive(trigger: Trigger): ReceiveResult | Promise<ReceiveResult>
   /** Subscribes to Tickets the Engine creates; a host without a domain event stream calls no listener. */
-  onTicketCreated?(listener: (ticket: Ticket) => void): () => void
+  onTicketCreated?(listener: (ticket: Ticket) => void | Promise<void>): () => void
 }
 
 /**

@@ -10,7 +10,7 @@ import { executorLoad } from '../src/app/views/tickets.ts'
 import { resolveDiscordBot } from '../src/deployment.ts'
 import { Commands, CliError } from '../src/infra/commands.ts'
 import { DiscordApi, DiscordMessage } from '../src/infra/discord.ts'
-import { DISCORD_REACTIONS, DiscordConfigSchema, discordKind, discordTrigger, discordTriggerId, pollDiscord, readDiscord, runDiscord,
+import { DISCORD_REACTIONS, DiscordConfigSchema, discordKind, discordTrigger, discordTriggerId, pollDiscord, reactDiscordTicket, readDiscord, runDiscord,
   sendDiscord, pruneDiscordReceipts } from '../src/sources/discord.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
 import { HealthBoard } from '../src/infra/health.ts'
@@ -128,7 +128,10 @@ describe('Discord bot transport', () => {
     expect(fetcher.mock.calls[0]![1]).not.toHaveProperty('body')
     fetcher.mockResolvedValueOnce(response({}, 403))
     await expect(commands().discordReact(CHANNEL, '900000000000000001', DISCORD_REACTIONS.received)).rejects.toMatchObject({ code: 403 })
+    await expect(commands().discordReact(CHANNEL, '900000000000000001', '..')).rejects.toThrow('Invalid Discord reaction emoji')
     await expect(new DiscordApi(tokenFile).request(z.unknown(), `channels/${CHANNEL}/messages`, signal(), undefined, 'PUT'))
+      .rejects.toThrow('Unsupported Discord API path')
+    await expect(new DiscordApi(tokenFile).request(z.void(), `channels/${CHANNEL}/messages/1/reactions/../@me`, signal(), undefined, 'PUT'))
       .rejects.toThrow('Unsupported Discord API path')
     expect(fetcher).toHaveBeenCalledTimes(2)
   })
@@ -221,8 +224,9 @@ describe('Discord Source', () => {
       const base = BigInt('9007199254740993000')
       h.store.set(`discord-cursor:${BOT}:${CHANNEL}`, String(base))
       const all = Array.from({ length: 205 }, (_, i) => message(String(base + BigInt(i + 1))))
-      fetcher.mockImplementation(async url => {
+      fetcher.mockImplementation(async (url, init) => {
         const parsed = new URL(String(url))
+        if (init?.method === 'PUT') return new Response(null, { status: 204 })
         if (!parsed.pathname.endsWith('/messages')) return response(channel())
         const after = BigInt(parsed.searchParams.get('after')!)
         return response(all.filter(item => BigInt(item.id) > after).slice(0, 100).reverse())
@@ -232,7 +236,7 @@ describe('Discord Source', () => {
       expect(h.receive.mock.calls.map(([trigger]) => trigger.meta.messageId)).toEqual(all.map(item => item.id))
       expect(h.store.get(`discord-cursor:${BOT}:${CHANNEL}`)).toBe(all.at(-1)!.id)
       const failed = message(String(base + 206n))
-      fetcher.mockResolvedValueOnce(response(channel())).mockResolvedValueOnce(response([failed]))
+      fetcher.mockResolvedValueOnce(response(channel())).mockResolvedValueOnce(response([failed])).mockResolvedValueOnce(response(undefined, 204))
       await pollDiscord({ ...h.ctx, receive: async () => { throw new Error('database unavailable') } }, signal())
       expect(h.store.get(`discord-cursor:${BOT}:${CHANNEL}`)).toBe(all.at(-1)!.id)
       expect(h.board.all.discord).toMatchObject({ state: 'error', detail: expect.stringContaining('database unavailable') })
@@ -275,7 +279,7 @@ describe('Discord Source', () => {
   })
   it('marks a dispatched mention as processing while the Source runs, and unregisters its listener on stop', async () => {
     const h = host(), base = 9007199254740993000n, controller = new AbortController(), dispose = vi.fn()
-    const listeners: ((ticket: Ticket) => void)[] = []
+    const listeners: ((ticket: Ticket) => void | Promise<void>)[] = []
     try {
       h.store.set(`discord-cursor:${BOT}:${CHANNEL}`, String(base))
       fetcher.mockImplementation(async (url, init) => {
@@ -297,6 +301,22 @@ describe('Discord Source', () => {
       await running
       expect(dispose).toHaveBeenCalledTimes(1)
     } finally { controller.abort(); h.store.close() }
+  })
+  it('marks only human Discord mentions in a dispatched Ticket origin as processing', async () => {
+    const h = host(), messageId = '900000000000000001'
+    try {
+      const mention = discordTrigger(message(messageId), BOT, GUILD)!
+      // Neither unmentioned chatter nor another bot's mention is a receipt from a person, and a Trigger of another Source is not Discord's.
+      const unmentioned = discordTrigger(message('900000000000000002', { content: 'Fix it', mentions: [] }), BOT, GUILD)!
+      const botMention = discordTrigger(message('900000000000000003', { author: { id: '800000000000000099', username: 'Other bot', bot: true } }), BOT, GUILD)!
+      const feishu: Trigger = { id: 'feishu:om_1', source: 'feishu', threads: [{ source: 'feishu', id: 'oc_1' }],
+        actor: { source: 'feishu', id: 'ou_1' }, human: true, at: new Date().toISOString(), text: 'Fix it', meta: {} }
+      for (const trigger of [mention, unmentioned, botMention, feishu]) h.store.triggers.save(trigger)
+      fetcher.mockResolvedValue(response(undefined, 204))
+      const ticket = { origin: { triggerId: mention.id, triggerIds: [mention.id, unmentioned.id, botMention.id, feishu.id] } } as Ticket
+      await reactDiscordTicket(h.ctx, ticket)
+      expect(reactionCalls()).toEqual([reactionUrl(messageId, DISCORD_REACTIONS.processing)])
+    } finally { h.store.close() }
   })
   it('pauses an unset or failed bot without producing a second Overview source-error', async () => {
     for (const problem of [undefined, new SetupError('discordBotFailed').problem]) {
@@ -357,13 +377,14 @@ describe('Discord Source', () => {
     try {
       vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2100-01-01T00:00:00Z'))
       fetcher.mockResolvedValueOnce(response({ ...channel(), last_message_id: String(base) }))
-        .mockResolvedValueOnce(response([message(String(base + 1n))]))
+        .mockResolvedValueOnce(response([message(String(base + 1n))])).mockResolvedValueOnce(response(undefined, 204))
       await pollDiscord(h.ctx, signal())
       expect(String(fetcher.mock.calls[1]![0])).toContain(`after=${base}`)
       expect(h.receive).toHaveBeenCalledTimes(1)
       h.store.delete(`discord-cursor:${BOT}:${CHANNEL}`)
       fetcher.mockClear().mockResolvedValueOnce(response({ ...channel(), last_message_id: undefined }))
         .mockResolvedValueOnce(response([{ id: String(base + 2n) }])).mockResolvedValueOnce(response([message(String(base + 3n))]))
+        .mockResolvedValueOnce(response(undefined, 204))
       await pollDiscord(h.ctx, signal())
       expect(String(fetcher.mock.calls[1]![0])).toContain('messages?limit=1')
       expect(String(fetcher.mock.calls[2]![0])).toContain(`after=${base + 2n}`)

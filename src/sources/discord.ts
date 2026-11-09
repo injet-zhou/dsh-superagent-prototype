@@ -45,20 +45,24 @@ export function discordTrigger(message: DiscordMessage, botId: string, guildId?:
   }
 }
 /** Adds one of the bot's reactions to a Trigger's message; a message deleted meanwhile no longer needs one. */
-async function reactToTrigger(ctx: SourceContext, trigger: Trigger, reaction: keyof typeof DISCORD_REACTIONS): Promise<void> {
+async function reactToTrigger(commands: Commands, trigger: Trigger, reaction: keyof typeof DISCORD_REACTIONS): Promise<void> {
   const channel = Snowflake.parse(trigger.meta.channelId), message = Snowflake.parse(trigger.meta.messageId)
   try {
-    await ctx.commands.discordReact(channel, message, DISCORD_REACTIONS[reaction])
+    await commands.discordReact(channel, message, DISCORD_REACTIONS[reaction])
   } catch (error) {
     if (!(error instanceof CliError && error.code === 404)) throw error
   }
 }
-/** Marks the Discord mentions a newly created Ticket was dispatched from as processing; a failed reaction stays cosmetic. */
+/** Marks every Discord mention a newly created Ticket was dispatched from as processing; failures stay cosmetic and do not skip later mentions. */
 export async function reactDiscordTicket(ctx: SourceContext, ticket: Ticket): Promise<void> {
+  const failures: string[] = []
   for (const id of ticket.origin.triggerIds) {
     const trigger = ctx.triggers.get(id)
-    if (trigger?.source === SOURCE && trigger.human && trigger.addressed === 'mention') await reactToTrigger(ctx, trigger, 'processing')
+    if (!trigger || trigger.source !== SOURCE || !trigger.human || trigger.addressed !== 'mention') continue
+    try { await reactToTrigger(ctx.commands, trigger, 'processing') }
+    catch (error) { failures.push(error instanceof Error ? error.message : String(error)) }
   }
+  if (failures.length) throw new Error(failures.join('; '))
 }
 const contextMessage = (message: DiscordMessage): ContextMessage => ({
   id: message.id, from: message.author.id, at: message.timestamp, text: discordText(message),
@@ -203,7 +207,7 @@ export async function pollDiscord(ctx: SourceContext, signal: AbortSignal): Prom
         const trigger = message.message ? discordTrigger(message.message, bot.botId, channel.guild_id) : undefined
         // A person's mention is acknowledged whatever the Policy later decides; the processing mark follows a dispatch.
         if (trigger?.human && trigger.addressed === 'mention') {
-          try { await reactToTrigger(ctx, trigger, 'received') }
+          try { await reactToTrigger(commands, trigger, 'received') }
           catch (error) { failures.push(`${channel.id}: could not add the received reaction: ${error instanceof Error ? error.message : 'Discord reaction failed'}`) }
         }
         // Keep unmentioned channel chatter out of Intake, including its follow-up and ended-ticket resume paths.

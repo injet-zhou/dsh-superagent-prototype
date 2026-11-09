@@ -22,7 +22,7 @@ class TokenPermissionsError extends Error {}
 
 /** Only the bot identity, the channel/message endpoints this Source reads, and the bot's own reactions are exposed. */
 const CHANNEL_PATH = /^users\/@me$|^channels\/[0-9]{1,20}(?:\/messages(?:\/[0-9]{1,20})?)?(?:\?(?:limit|before|after)=[0-9]+(?:&(?:limit|before|after)=[0-9]+)*)?$/
-const REACTION_PATH = /^channels\/[0-9]{1,20}\/messages\/[0-9]{1,20}\/reactions\/[A-Za-z0-9%._~!*'()-]+\/@me$/
+const REACTION_PATH = /^channels\/[0-9]{1,20}\/messages\/[0-9]{1,20}\/reactions\/(?!\.\.?\/)[A-Za-z0-9%._~!*'()-]+\/@me$/
 
 /** One shared queue across command clones; conservatively pauses all routes when any bucket is exhausted. */
 export class DiscordApi {
@@ -48,6 +48,8 @@ export class DiscordApi {
    * @throws CliError with the HTTP status when Discord refuses the message or the bot's permissions.
    */
   async react(channel: string, message: string, emoji: string, signal: AbortSignal): Promise<void> {
+    // A dot-only segment would normalize the reaction URL back onto the message endpoint.
+    if (!emoji || /^\.{1,2}$/.test(emoji)) throw new Error('Invalid Discord reaction emoji')
     const path = `channels/${Snowflake.parse(channel)}/messages/${Snowflake.parse(message)}/reactions/${encodeURIComponent(emoji)}/@me`
     await this.request(z.void(), path, signal, undefined, 'PUT')
   }

@@ -86,7 +86,7 @@ export class Runtime extends Service implements SourceHost {
   readonly masterId: string
   private readonly sourceLinks = new TextCache(200_000)
   /** Source listeners for created Tickets; they run after the creating transaction commits and need not survive a restart. */
-  private readonly ticketCreatedListeners = new Set<(ticket: Ticket) => void>()
+  private readonly ticketCreatedListeners = new Set<(ticket: Ticket) => void | Promise<void>>()
   private readonly stopped = new AbortController()
   private readonly disposers: (() => void)[] = []
   private releaseLock?: () => Promise<void>
@@ -172,8 +172,9 @@ export class Runtime extends Service implements SourceHost {
             store.afterCommit(() => {
               const ticket = store.tickets.get(event.data.ticketId)
               if (!ticket) return
+              const failed = (error: unknown) => { ctx.logger.warn('dsh-superagent: a Source ticket listener failed: %s', String(error)) }
               for (const listener of this.ticketCreatedListeners) {
-                try { listener(ticket) } catch (error) { ctx.logger.warn('dsh-superagent: a Source ticket listener failed: %s', String(error)) }
+                try { void Promise.resolve(listener(ticket)).catch(failed) } catch (error) { failed(error) }
               }
             })
           }
