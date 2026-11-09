@@ -20,7 +20,7 @@ import { Commands } from '../infra/commands.ts'
 import type { Deployment, Machine } from '../deployment.ts'
 import { environmentOf, ticketEnvironment, type Variable } from './execution-environment.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
-import { DshExecutor, sourceTrigger, triggerMessage, workerSessionId, type WorkerSlots } from '../executor/dsh.ts'
+import { DshExecutor, sourceTrigger, triggerMessage, workerSessionId, type WorkerSlots, type ExecutorHost } from '../executor/dsh.ts'
 import { ticketCard } from './cards.ts'
 import { MasterAssessor } from './assessment.ts'
 import { KV } from '../kv.ts'
@@ -48,11 +48,15 @@ import { mainTools, type MainToolsHost } from './tools/main.ts'
 import { executorTools, type ExecutorToolsHost } from './tools/executor.ts'
 import type { Settings as SettingsValue } from '../policy.ts'
 import { MemoryService } from './memory/service.ts'
+import { MemoryCapture } from './memory/capture.ts'
+import type { MemoryAnalyzer } from './memory/analyzer.ts'
 
 // Source plugins interact with dsh-superagent exclusively through the `SourceHost` service interface.
 declare module '@deepseek-ai/cordis' { interface Context { orchestrator: SourceHost } }
 const now = (): string => new Date().toISOString()
 export interface RuntimeOptions {
+  /** Explicit host injection for offline analysis; production never borrows a Worker Session. */
+  memoryAnalyzer?: MemoryAnalyzer
   repositories?: () => readonly { id: string; name: string; runtime?: Runtime; error?: string }[]
   watchRepositories?: (mount: RepositoryMount) => SourceDisposer
   globalLoad?: () => { running: number; maxWorkers: number }
@@ -140,11 +144,17 @@ export class Runtime extends Service implements SourceHost {
         closing: () => this.closing(), environment, ...machine.scopedEnvironment ? { executionEnvironment } : {},
         tools: (agent, ticket) => ticket ? executorTools(this.toolHost, ticket) : mainTools(this.toolHost, agent) })
       const policyChanged: EngineForSettings['policyChanged'] = (from, to, effects) => { this.engine.policyChanged(from, to, effects) }
+      const capture = new MemoryCapture({ context: ctx, store, effects, memory, lifetime: this.lifetime,
+        analyzer: options.memoryAnalyzer, paused: () => this.paused() })
       this.settings = new Settings({ store, sources, engine: { policyChanged }, health: board, context: ctx, lifetime: this.lifetime, sessions,
         sourceHost: this, setup, requestPass: () => { this.passes.request() },
-        settingsChanged: settings => { memory.configure(settings.memory); void sessions.redecorate().catch(() => { memory.degraded('memory_tools_unavailable') }) },
+        settingsChanged: settings => {
+          if (memory.configure(settings.memory)) void sessions.redecorate().catch(() => { memory.degraded('memory_tools_unavailable') })
+        },
         ...options.validateSettings ? { validateSettings: options.validateSettings } : {} })
       this.executor = new DshExecutor({ context: ctx, get engine() { return runtime.engine }, store, effects, health: board.claim('worker'), machine,
+        get onTurnSettled(): ExecutorHost['onTurnSettled'] { return memory.captureEnabled() ? (ticketId, assignmentId, event) => { capture.enqueue(ticketId, assignmentId, event) } : undefined },
+        onMemoryError: () => { memory.degraded('memory_settlement_failed') },
         lifetime: this.lifetime, sessions, closing: () => this.closing(), paused: () => this.paused(), environment, sourceLink: link,
         repliedTo: trigger => repliedTo({ store, sources }, trigger), ...options.slots ? { slots: options.slots } : {},
         ...machine.scopedEnvironment ? { executionEnvironment: () => setup.executionEnvironment } : {} })

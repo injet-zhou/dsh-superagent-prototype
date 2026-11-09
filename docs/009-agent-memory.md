@@ -483,3 +483,8 @@ git diff --check
 - Schema 12 支持空库、v11 与原有受支持 v10，旧 Ticket 和默认数据库位置不变。初始开关关闭；实际最小配置采用 `dailyCallBudget: 0`（按调用次数限制，非伪装成精确 token 计数），不继承 Worker 模型。Memory settings 独立 revision，仅管理入口可改。
 - Phase 1：repository identity 固定绑定、来源证据、candidate/verified/stale/retracted、CAS 修订、FTS/fallback、安全 read/search、同步短索引已实现。导入/fixture 接口仅在 Host 的 `MemoryStore` 上，Worker 无写入工具。verified 需要 Host attestation，模型文字不是验证证据。
 - 索引采用 600 UTF-8 字节的保守 token 上界，未引入未经核实的 tokenizer。Prompt 回调不查 Memory DB/文件或模型；关闭后不注入 Memory 文本和工具。
+- Phase 1 最终验证：`pnpm check` 全通过，67 文件、1281 测试；提交 `43579e7`。全量验证使用 `VITEST_MAX_WORKERS=2` 限制环境并发，未减少测试或断言。默认大并发曾暴露既有 Feishu stderr/stdout health 顺序偶发差异，未修改 Source 行为或弱化该断言；完整重跑通过。
+- Phase 2：真实稳定收尾钩子、独立 turn 键、持久 Capture Effect、连续 seq + 事件摘要校验、事务 checkpoint、partial_capture、增量有界分析、双重脱敏、shutdown/暂停/预算与错误隔离已实现。`MemoryAnalyzer` 为显式 Host 注入接口，当前生产不自动创建 Analyzer；不能把离线 fake 测试写成真实模型抽取已完成。
+- DSH `inspect` 本版仅提供全量原始日志，故读取会 materialize 全量事件，但分析与 checkpoint 是增量的（每批最多 200 事件、文本 100000 UTF-8 字节、单段 2000 字符）。未虚构分页接口。事件内容会有意截断、丢弃 reasoning/system/tool-call 参数，只保留提议使用的脱敏 Evidence 摘录。
+- 模型资源采用持久化 UTC 每日调用次数上限；默认 0，同进程跨仓库最多 1 个 Memory 模型调用，单调用超时 15 秒。底层不响应 AbortSignal 时，迟到结果不发布，且全局占位直到真实调用结束才释放。普通 WorkerSlot 不参与。
+- Phase 2 验证：Capture 10 项定向测试及完整 `pnpm check` 通过（68 文件、1291 测试，typecheck/build 通过）；包括 retry/backoff、后台 job 重启 turn、blocked/failed handoff、dispatcher 重启、checkpoint 故障回滚及不合作 inspect/analyzer 的 shutdown。

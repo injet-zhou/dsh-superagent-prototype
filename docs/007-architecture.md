@@ -335,6 +335,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/memory/security.ts` | Secret/PII redaction and source fingerprints |
 | `src/app/memory/store.ts` | Repository binding, evidence-backed writes, revision CAS and bounded FTS5 retrieval |
 | `src/app/memory/service.ts` | Failure isolation, health, read/search facade and precomputed prompt index |
+| `src/app/memory/analyzer.ts` | Restricted JSON proposal contract, without tool execution or publishing access |
+| `src/app/memory/capture.ts` | Settled-turn capture effects, raw-log continuity checks, atomic cursors, redaction and call budgets |
 | `src/app/store-read.ts` | `storeReads`: the Store's read queries for the views, the tools and the Sources' polls, which never write |
 | `src/app/migration.ts` | The schema 11 migration: one step from schema 10 that writes every stored record in its current shape |
 | `src/app/effects.ts` | Effects |
@@ -461,6 +463,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/memory-store.spec.ts` | Schema 12 upgrades, rollback/recovery, source evidence, CAS and retained revisions |
 | `tests/memory-retrieval.spec.ts` | FTS5/fallback, Unicode, scopes, bounded prompt index and hostile data |
 | `tests/memory-runtime.spec.ts` | Cross-Ticket reads, worker authorization, versioned settings and three-repository isolation |
+| `tests/memory-capture.spec.ts` | Capture idempotence, cursor atomicity, retention gaps, budgets and Worker lifecycle |
 | `tests/prompts.spec.ts` | Prompt validation, assembly and versions |
 | `tests/cards.spec.ts` | The rules the built-in text must state, file by file |
 | `tests/model-surface.spec.ts` | Everything models read: tools, prompts, skills and inputs, checked against the tool schemas, the execution environment and the glossary, within a size budget per role |

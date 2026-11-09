@@ -20,7 +20,8 @@ export function family<V, A extends unknown[] = [string]>(prefix: string, format
 
 export const KV = {
   /** Memory: immutable repository binding; private memory is never inherited by another context. */
-  memory: { repository: record<string>('memory-repository') },
+  memory: { repository: record<string>('memory-repository'),
+    usage: record<{ day: string; calls: number }>('memory-usage') },
   /** Store: current database schema version. */
   store: { schema: record<number>('schema') },
   /** Settings: current revision, per-block revision, and saved settings snapshots (including the current one). */

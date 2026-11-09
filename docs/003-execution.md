@@ -154,6 +154,10 @@ A retry or a restart gives the new Assignment again the messages delivered to th
 
 Optional repository memory runs outside WorkerSlots. Closing or reporting a Ticket does not itself prove that its background work ended. Memory never authorizes work, changes a Ticket outcome or makes a failed retrieval fail the Worker. Its feature switch defaults off and retains saved data when disabled.
 
+When `memory.autoCapture` is enabled, the Executor enqueues `memory-capture` only after a stable turn end. Ordinary quiet turns enqueue with the `turnEnded` transaction. Handoffs release their slot as before and wait separately for subagents and review jobs; a retry, newly running Session or background timeout is not a capture boundary. Direct stops use best-effort capture after background shutdown. Shutdown starts no new captures. Each batch names the assignment and the raw DSH `turn/end` sequence plus its fingerprint, so queue upsert cannot replace another turn.
+
+Capture flushes and inspects DSH history outside the Worker, validates contiguous source events and the preceding checkpoint, then analyzes redacted text in bounded batches. Missing history persists `partial_capture` and retains the retryable effect. Notes, source evidence and checkpoint changes commit together. Automatic notes remain candidates; passing-test claims in a transcript are not Host attestations. Disabled/paused queues stay in SQLite. Analyzer failures are stored as fixed memory error codes; a failed call still consumes its reserved daily call budget.
+
 What dsh-superagent does after a decision, such as relaying a candidate, a follow-up or a report to the main Session, launching an Assignment or delivering an Input, is stored first and done afterwards.
 
 A relay or a delivery that fails, such as when its Session cannot be reached, is retried after 2 seconds, then after a delay that doubles up to a minute; a launch that fails fails its Ticket, unless the failure was a passing one, as above.

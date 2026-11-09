@@ -86,6 +86,8 @@ const TEXT = {
   'health.notice': ['给主 Session 的通知', 'Notices to the main Session'],
   'health.reply': ['发往渠道的消息', 'Messages to Channels'],
   'health.worker': ['执行器事件处理', 'Executor event handling'],
+  'health.memory': ['仓库记忆', 'Repository memory'],
+  'health.memory-capture': ['记忆提取', 'Memory capture'],
   'health.evals': ['未完成的评估', 'Unavailable Evals'],
   none: ['暂无。', 'None.'],
   openSession: ['打开 Session', 'Open Session'],

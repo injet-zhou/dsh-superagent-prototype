@@ -7,8 +7,11 @@ export class Later extends Error {}
 export const FAILURES_BEFORE_ERROR = 3
 import type { HealthBoard, HealthEntry } from '../infra/health.ts'
 import type { Store } from './store.ts'
+import type { CaptureBatch } from './memory/capture.ts'
 
 export interface EffectPayloads {
+  /** One stable settled-turn boundary; each boundary has its own key. */
+  'memory-capture': CaptureBatch
   /** Build an Eval's candidate card and relay it to the main Session; the key is the Eval ID. */
   assessment: { triggerId: string }
   /** Launch a pending Assignment; the key is the Assignment ID. */

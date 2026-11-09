@@ -57,7 +57,7 @@ export class MemoryStore {
       .all(...params, query, limit).map(row => this.note(row))
   }
   /** Trusted fixture/import entrypoint. Workers and analyzers have no access to this method. */
-  create(input: NoteInput, evidenceInput: EvidenceInput[], source: string, status: 'candidate' | 'verified' = 'candidate', id = fingerprint([this.repository, source]).slice(0, 40)): MemoryNote {
+  create(input: NoteInput, evidenceInput: EvidenceInput[], source: string, status: 'candidate' | 'verified' = 'candidate', id = fingerprint([this.repository, source]).slice(0, 40), audit?: { reason: string; job: string }): MemoryNote {
     const parsed = NoteInput.parse(input), evidence = evidenceInput.map(item => EvidenceInput.parse(item))
     if (parsed.scope.paths.some(path => safeText(path, 300) !== path)) throw new Error('memory_sensitive_path')
     MemoryId.parse(id)
@@ -76,7 +76,7 @@ export class MemoryStore {
       this.store.db.prepare('INSERT INTO memory_note VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
         .run(id, this.repository, note.kind, note.title, note.body, status, JSON.stringify(note.scope), hash, 1, at, at, note.verifiedAt ?? null)
       for (const item of evidence) this.addEvidence(note.id, item, at, fingerprint(clean))
-      this.audit(note, undefined, 'create', 'Evidence-backed host import', source)
+      this.audit(note, undefined, 'create', audit?.reason ?? 'Evidence-backed host import', audit?.job ?? source)
       this.index(note)
       return note
     })

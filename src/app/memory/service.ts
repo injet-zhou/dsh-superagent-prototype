@@ -11,16 +11,25 @@ export class MemoryService {
   private snapshot = ''
   private config: MemoryConfig
   private problem?: string
+  private analyzer = false
+  private summary = ''
   constructor(private readonly store: Store, private readonly health: HealthEntry) {
     this.config = store.settings().memory
     this.report()
   }
-  configure(config: MemoryConfig): void { this.config = config; this.refresh() }
+  configure(config: MemoryConfig): boolean {
+    if (JSON.stringify(config) === JSON.stringify(this.config)) return false
+    const enabled = this.enabled()
+    this.config = config; this.refresh()
+    return enabled !== this.enabled()
+  }
+  analyzerAvailable(available: boolean): void { this.analyzer = available; this.report() }
   bind(repository: string): void {
     try { this.database = new MemoryStore(this.store, repository); this.refresh() }
     catch { this.problem = 'memory_repository_mismatch'; this.report() }
   }
   enabled(): boolean { return this.config.enabled && this.config.retrieval && !!this.database && this.problem !== 'memory_repository_mismatch' }
+  captureEnabled(): boolean { return this.config.enabled && this.config.autoCapture && !!this.database && this.problem !== 'memory_repository_mismatch' }
   /** No database, file or model access on this synchronous prompt path. */
   index(): string { return this.enabled() ? this.snapshot : '' }
   /** Rebuild the short snapshot outside prompt rendering. Titles remain JSON data, never instructions. */
@@ -28,13 +37,16 @@ export class MemoryService {
     if (!this.database || this.problem === 'memory_repository_mismatch') { this.report(); return }
     try {
       const notes = this.database.list('verified', 20)
+      const candidates = this.database.list('candidate', 200).length
+      const partial = Number(this.store.db.prepare("SELECT count(*) AS n FROM memory_capture_checkpoint WHERE json_extract(cursor_json,'$.partial')=1").get()?.n ?? 0)
+      this.summary = `; ${candidates}${candidates === 200 ? '+' : ''} candidates awaiting review`
       const lines = notes.map(note => JSON.stringify({ id: note.id, title: note.title, read: `memory/${note.id}` }))
       // UTF-8 bytes form a conservative token upper bound; no unverified tokenizer estimate is presented as an exact count.
       const prefix = `${MEMORY_BOUNDARY}\nSearch with orchestrator_memory_search; read with orchestrator_read memory/<id>.\n`
       let body = prefix
       for (const line of lines) { if (Buffer.byteLength(body + line + '\n') > 600) break; body += line + '\n' }
       this.snapshot = body
-      this.problem = undefined
+      this.problem = partial ? 'partial_capture' : undefined
     } catch { this.problem = 'memory_index_unavailable'; this.snapshot = '' }
     this.report()
   }
@@ -65,8 +77,9 @@ export class MemoryService {
   }
   degraded(code: string): void { this.problem = code; this.report() }
   private report(): void {
-    this.health.set({ state: !this.config.enabled ? 'paused' : this.problem ? 'error' : 'ready',
-      detail: !this.config.enabled ? 'Memory disabled; automatic model budget defaults to 0' : this.problem
-        ?? (this.database?.fts ? 'Memory ready; FTS5' : 'Memory ready; bounded substring fallback'), at: new Date().toISOString() })
+    const problem = this.problem ?? (this.config.enabled && (this.config.autoCapture || this.config.dreaming) && !this.analyzer ? 'memory_analyzer_unavailable' : undefined)
+    this.health.set({ state: !this.config.enabled ? 'paused' : problem ? 'error' : 'ready',
+      detail: !this.config.enabled ? 'Memory disabled; automatic model budget defaults to 0' : problem
+        ?? ((this.database?.fts ? 'Memory ready; FTS5' : 'Memory ready; bounded substring fallback') + this.summary), at: new Date().toISOString() })
   }
 }
