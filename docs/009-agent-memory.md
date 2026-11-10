@@ -1,6 +1,6 @@
 # dsh-superagent：Repository-scoped Agent Memory 技术设计
 
-> 状态：Phase 1–4 均已实现；真实受限模型 Capture/Dreaming、持久发布与 Wiki 烟测已通过。详细验证记录见文末，原始 RFC 与验收约束保留。
+> 状态：Phase 1–4 均已实现；真实受限模型 Capture/Dreaming、持久发布与 Wiki 烟测已通过。第二轮审阅增加全库检索、原始证据回溯、历史对照、限定的自动执行认证及主题文章/重要性。以文末最新记录为当前能力，之前的阶段记录保留其当时限制；原始 RFC 与验收约束保留。
 > 基线：`injet-zhou/dsh-superagent-prototype`，`main`，commit `86271f435e8130a25ff4bc9ade3b4077143c8532`（2026-11-08）。实际实施前重新核对 HEAD。
 > 依据：Anthropic《The components of agent memory》（https://www.anthropic.com/research/components-of-agent-memory）所讨论的 Transcripts、Memory Notes、Memory Representations、Injected Context 和 Dreaming；下述 API、Schema、默认参数为**本项目的设计建议**，并非 Anthropic 官方实现。
 
@@ -578,3 +578,41 @@ DSH 0.2.2-rc.1 的真实 Session 烟测发现 `sessionController.inspect` 已删
 第二轮审阅：Dreaming 每批为新/变化的笔记检索已审阅历史，按精确文本、路径交集与主题词构建独立 `relatedNotes` 对照集合，不把对照项再次标记为本批工作。Host Evidence Resolver 按已有 Evidence 的 Ticket、Session、执行目录、seq 和摘要读取原始日志及相邻上下文；模型不能选择任意 Session/路径或执行命令。输入包含脱敏的原始消息、工具调用命令和工具结果，完整 JSON 保持在 100000 字节内；原始日志缺失、摘要改变、目录不符及包截断均明确标记，结果状态与出版进度同事务审计。候选/verified 和新 Host attestation 的原有约束不变。跨轮重复/矛盾、误导性摘要纠错、跨仓库拒绝和有界包回归通过；全量 `pnpm check` 通过（73 文件、1350 测试）。
 
 第二轮审阅：受限自动 Host Attestation 已接入受权 Worker 的原生工具管线。只接受简单、无 shell 组合/敏感参数/跨仓库路径的测试 runner 调用，以及 DSH 当场提供的 foreground 结构化 exitCode=0、无取消/超时/信号结果；不解析输出中的“成功”文字，不重跑模型提出的命令。前后以固定只读 git rev-parse 探测 HEAD，200ms 超时；测试退出后的核对/出版在后台进行，不等待模型，不占额外 WorkerSlot，观察失败不改变原工具结果。具体事实限定为该次命令、时间、相对目录、环境观测摘要和前后 HEAD，不证明未提交工作树内容或通用修复正确性。收据、verified Note、Evidence 与修订同事务写入，按 Session/call ID 幂等；模型无法生成收据或扩大认证 claim。预算 0 时这条确定性路径仍可复用，Capture 模型队列保持原预算语义。后台 jobs、其他 shell/runner、无法核实的环境保留 candidate/人工确认路径，未伪装为自动认证。真实 ToolRuntime + Node 测试、伪成功文本、非零结果、跨路径、关闭和写入回滚回归通过；全量 `pnpm check` 通过（74 文件、1353 测试）。
+
+
+### 第二轮审阅：主题知识与重要性
+
+原 `wiki/<note-id>.md` 证据投影保留；新增 `MemoryKnowledge`、`topics/<topic-id>.md`、主题目录及 Worker 资源 `memory/topic/index` / `memory/topic/<topic-id>`。Analyzer 可以提出归纳的架构说明、操作指南、标记为 inference 的因果解释、跨 Note 关系与主题导航。每段必须固定引用已提供、当前同仓库 verified Note 的修订及 Evidence IDs。Host 验证来源和链接、topic revision/CAS，整批事务出版并保留不可变 topic history；模型不能直接写文件。Note 修改、stale/retract 后，读取和重建均撤下受影响的旧段落与关系，等待下一次来源核验。来源缺失不以摘要冒充原始记录。
+
+文章定义是从 Notes 归纳的派生状态，保存在现有 SQLite KV；Markdown 可由 DB 中的定义、Notes 与证据无模型重建。若丢弃文章定义，需要 Analyzer 从 Notes 重新归纳，不宣称可以仅从零散 Notes 确定性复原相同文章。跨 Ticket 文章生成、关联、源修订失效、CAS 冲突、恶意来源/路径及整批回滚均有集成回归。
+
+`prioritize` 提案维护 `core` / `routine` / `incidental`；重要性具有独立 revision/CAS 与历史，不修改 Note claim revision、更新时间或验证时间。只有绑定当前 Note 修订的分类有效。短索引从所有 verified 记忆中先选核心知识，再选常用经验；偶发记录不注入但仍可检索。未分类 fact/procedure 默认 routine，incident 默认 incidental；自动执行收据明确为 incidental。快照仍至多 600 UTF-8 字节，Prompt render 不查 DB/文件或模型。已有 Dreaming 已审状态自动升级至 epoch 2，允许现存笔记获得首次知识组织，保持 Schema 12 和原 DB 路径不变。
+
+所有待审主笔记均检索历史对照，不再只查询本批前五条；对照集合及原始证据包仍有明确字节上限。跨轮重复/矛盾回归将目标 B 放到第七条以后，验证它仍能见到已审 A 并合并/保守失效。安全资源回归验证 Router、已结束 Worker、路径穿越和其他仓库来源不能读取或发布主题。自动认证另覆盖测试期间 HEAD 变化：工具正常返回，但不出版收据。
+
+
+### 第二轮真实 DSH/模型验证
+
+本机 DSH `0.2.2-rc.1` 的工具入口已改为 batch API（`calls` / `results`），Bash 要求 `description`；生产观察器依赖的逐调用 `tools/execute` / `tools/result` token 与 canonical foreground 结果仍可用。独立 profile 的真实烟测已验证，开发依赖 `0.2.1-alpha.2` 的 ToolRuntime 回归也保留。DSH 原始事件通过真实持久化、压缩、恢复检查，稳定 seq/摘要保留；Evidence Resolver 实际提供了非空原始证据包，不只摘要。
+
+最终真实烟测见 `docs/memory-live-validation-round2.json`：OpenCode Go / DeepSeek V4.1 Flash，显式 low，Capture 和 Dreaming 共 2 次调用（均 tools=0、均未创建 Agent），共 4680 个 provider-reported tokens；4 次应用调用预算用了 2 次，队列排空，FTS5=true。实际生成 1 个带精确来源引用的主题页，并核对脱敏、Wiki 重建与 disabled/enabled 复用。另一个仅用于执行固定测试的普通 fixture Agent 采用 workspace-write，无模型调用；真实原生 Bash 的 exitCode=0 产生 1 条自动 verified 收据且标记 incidental。不能将这个普通测试 Agent 算作 Dreaming Agent，不能声称所有 Agent 均未创建。
+
+调试中曾因工具 batch/参数差异失败 3 次，Dreaming 提案过长超过 15 秒失败 3 次；本轮 7 个独立烟测库总计使用 11 次应用调用，超时流的完整 token 用量不可得。通过约束每批最多两项精简提案、主题最多两个短段落后，最终 Capture 4.1 秒、Dreaming 8.8 秒，原有 15 秒截止、2048 output token 上限、Host 严格校验均保留。一次通过不保证 provider 延迟，失败继续按预算记账和持久重试；没有以重试成功掩盖先前失败。
+
+真实烟测只生成单源主题；跨 Ticket 多源文章、关联、跨轮重复/矛盾由 deterministic integration tests 验证，不冒充已观测到的真实模型效果。尚未测量真实 Coding Ticket 完成率、重复命令节省、美元成本或通用语义召回。自动认证限定已列出的简单 foreground 测试 runner，不覆盖后台 job 或一般修复正确性；脱敏仍是常见模式防护，不宣称通用秘密/PII 检测。
+
+
+### 第二轮最终验收
+
+实施分支为独立工作树 `fix/memory-review-round2`，起点为 PR #5 的 `db2a098`，已含 main `1df6320`。原主工作区继续 main，用户未跟踪 `AGENTS.md` 保留。阶段验证分别为全库检索 1343 项、原始证据与历史对照 1350 项、自动认证 1353 项；主题/重要性阶段及最终额外安全回归冻结后，按以下顺序实际执行，全部退出码 0。
+
+| 命令 | 本轮最终结果 |
+| --- | --- |
+| `pnpm install --frozen-lockfile` | 通过；lockfile 未变 |
+| `pnpm typecheck` | 通过 |
+| `pnpm test` | 75 个文件、1357 项测试全部通过 |
+| `pnpm build` | 通过 |
+| `pnpm check` | typecheck、75 文件/1357 测试、build 全部通过 |
+| `git diff --check` | 通过；另检查完整 `origin/main` 差异通过 |
+
+采用正常本机 loopback/子进程权限和 `VITEST_MAX_WORKERS=2`；没有跳过测试或弱化原断言。新增测试曾因分页返回值的类型收窄不足导致 typecheck 失败，修正后从依赖安装开始完整重跑以上六条命令。复用原 Schema 12 KV 进行主题、重要性、执行收据和审阅 epoch 记录，不新增表、不要求手工迁移；原空库/v10/v11/v12、多仓库和迁移回滚回归继续通过。默认 disabled、模型预算 0、Engine 授权和 Ticket 语义均保持不变。

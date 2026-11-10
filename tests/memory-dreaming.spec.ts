@@ -395,6 +395,9 @@ it.each(['duplicate', 'contradiction'])('compares a new %s with unchanged histor
     analyzer: { propose }, paused: () => false })
   onTestFinished(async () => { lifetime.abort(); await effects.drain() })
   effects.start(); dreaming.enqueue(); await effects.idle('memory-consolidate')
+  // The later candidate must still receive history comparison beyond the first five primaries.
+  for (let index = 0; index < 6; index++) f.memory.create({ ...exampleNote, title: `Unrelated observation ${index}`, body: `Independent fixture ${index}`,
+    scope: { paths: [`unrelated-${index}.txt`] } }, [{ ...exampleEvidence, supportsVerification: false }], `filler-${index}`, 'candidate', `filler-${index}`)
   f.memory.create(mode === 'duplicate' ? exampleNote : { ...exampleNote, body: 'The old migration workflow fails with the new API.' },
     [{ ...exampleEvidence, ticketId: 'ticketB', sessionId: 'worker-ticketB', supportsVerification: false }], 'ticketB', 'candidate', 'new-b')
   dreaming.enqueue(); await effects.idle('memory-consolidate')

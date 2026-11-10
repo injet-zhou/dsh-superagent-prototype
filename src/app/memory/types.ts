@@ -32,9 +32,24 @@ export const MemoryQuery = z.object({ query: z.string().trim().min(1).max(200), 
 export type NoteInput = z.infer<typeof NoteInput>
 export type EvidenceInput = z.infer<typeof EvidenceInput>
 export type MemoryQuery = z.input<typeof MemoryQuery>
+export const MemoryImportance = z.enum(['core', 'routine', 'incidental'])
+export interface MemoryImportanceRecord {
+  repository: string; revision: number; noteRevision: number; level: z.infer<typeof MemoryImportance>; reason: string; at: string; job: string
+}
+const TopicSource = z.object({ noteId: MemoryId, revision: z.number().int().positive(), evidenceIds: z.array(MemoryId).min(1).max(10) }).strict()
+export const MemoryTopicInput = z.object({ id: z.string().regex(/^topic-[a-zA-Z0-9_-]{1,64}$/), title: z.string().trim().min(1).max(160),
+  sections: z.array(z.object({ heading: z.string().trim().min(1).max(120), kind: z.enum(['reference', 'guide', 'inference']),
+    text: z.string().trim().min(1).max(3000), sources: z.array(TopicSource).min(1).max(8) }).strict()).min(1).max(6),
+  relations: z.array(z.object({ from: MemoryId, to: MemoryId, kind: z.enum(['supports', 'depends-on', 'contradicts']),
+    explanation: z.string().trim().min(1).max(500) }).strict()).max(20), relatedTopics: z.array(MemoryId).max(10),
+}).strict()
+export interface MemoryTopic extends z.infer<typeof MemoryTopicInput> {
+  repository: string; revision: number; updatedAt: string; reason: string; job: string
+}
 export interface MemoryNote extends NoteInput {
   id: string; repository: string; status: z.infer<typeof MemoryStatus>; revision: number
   createdAt: string; updatedAt: string; verifiedAt?: string
+  importance?: MemoryImportanceRecord
 }
 export interface MemoryEvidence extends EvidenceInput { id: string; noteId: string; capturedAt: string; claimFingerprint?: string }
 export interface MemoryExecutionReceipt {

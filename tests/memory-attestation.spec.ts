@@ -23,18 +23,30 @@ function fixture() {
     actor: { source: 'github', id: 'alice' }, basis: { via: 'listed' } }, assignments: [], origin: { triggerId: 't', triggerIds: ['t'] },
     channels: [], inputs: [], undelivered: [], createdAt: '', updatedAt: '', execution: { name: 'fixture', directory: f.directory, assignment: 'a' } })
   let code = 0
+  let afterTest = () => {}
   tools.register({ name: 'bash', description: 'Actual controlled fixture test', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
     output: { schema: { type: 'object', additionalProperties: true }, render: () => [{ type: 'text', text: 'Test passed. API_KEY=must-not-be-attested-from-text' }] },
     execute: async () => {
       execFileSync(process.execPath, ['--test', 'check.test.cjs'], { cwd: f.directory })
+      afterTest()
       return { kind: 'foreground', cwd: f.directory, exitCode: code, signal: null, timedOut: false, aborted: false }
     } })
   const attestor = new MemoryAttestor({ store: f.store, memory: f.service, lifetime: lifetime.signal, paused: () => false })
   const release = attestor.bind(context, 'worker-ticketA')
   onTestFinished(async () => { lifetime.abort(); release(); await attestor.idle() })
   const run = (id = 'test-call', command = 'node --test check.test.cjs') => tools.execute({ name: 'bash', callId: ToolCallId(id), arguments: { command }, signal: lifetime.signal })
-  return { ...f, attestor, run, setCode: (next: number) => { code = next } }
+  return { ...f, attestor, run, setCode: (next: number) => { code = next }, afterTest: (action: () => void) => { afterTest = action } }
 }
+
+it('declines attestation when HEAD changes during a successful test invocation', async () => {
+  const f = fixture()
+  f.afterTest(() => {
+    execFileSync('git', ['-C', f.directory, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--allow-empty', '--quiet', '-m', 'changed during test'])
+  })
+  expect((await f.run()).isError).toBe(false); await f.attestor.idle()
+  expect(f.memory.list('verified')).toEqual([])
+  expect(f.store.keys(KV.memory.execution)).toEqual([])
+})
 
 it('automatically publishes only the bounded Host-observed execution fact and reuses it without a model or human review', async () => {
   const f = fixture()

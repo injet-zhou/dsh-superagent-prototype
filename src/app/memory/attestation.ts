@@ -10,6 +10,7 @@ import { fingerprint, safeText } from './security.ts'
 import type { MemoryExecutionReceipt } from './types.ts'
 import type { MemoryEvidence } from './types.ts'
 import type { Store } from '../store.ts'
+import { MemoryKnowledge } from './knowledge.ts'
 
 export function executionReceipt(store: Store, repository: string, evidence: MemoryEvidence): MemoryExecutionReceipt | undefined {
   const match = /^execution:([a-f0-9]{64}):([a-f0-9]{64})$/.exec(evidence.eventRef)
@@ -81,9 +82,10 @@ export class MemoryAttestor {
             + 'This certifies one invocation. Uncommitted worktree contents and the general correctness of a fix were not certified.'
           host.store.atomic(() => {
             host.store.set(KV.memory.execution(id), receipt)
-            memory.create({ kind: 'fact', title: 'Recorded test invocation', body, scope: { paths: cwd === '.' ? [] : [cwd], version: after } },
+            const note = memory.create({ kind: 'fact', title: 'Recorded test invocation', body, scope: { paths: cwd === '.' ? [] : [cwd], version: after } },
               [{ ticketId, sessionId, eventRef: `execution:${id}:${fingerprint(receipt)}`, kind: 'test', supportsVerification: true,
                 sourceCommit: after, excerpt: body }], `execution:${id}`, 'verified', undefined, { reason: 'Deterministic Host execution receipt; no model attestation', job: id })
+            new MemoryKnowledge(memory).prioritize(note.id, note.revision, 0, 'incidental', 'One historical test invocation; retrieve on demand', id)
           })
         } catch { if (eligible()) host.memory.degraded('memory_attestation_unavailable') }
         finally { release(before.lease) }

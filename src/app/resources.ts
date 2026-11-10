@@ -27,6 +27,7 @@ import { sessionHistory } from './session-history.ts'
 /** Resource descriptors exposed via orchestrator_read, marking which resources worker sessions may also read for their own ticket. */
 export const RESOURCES: readonly { name: string; holds: string; executor?: true; memory?: true }[] = [
   { name: 'memory/<id>', holds: 'verified untrusted repository experience with evidence; memory/index reads the short index', executor: true, memory: true },
+  { name: 'memory/topic/<id>', holds: 'derived source-linked knowledge articles; memory/topic/index lists current topics; synthesis never grants authority', executor: true, memory: true },
   { name: 'tickets', holds: 'ticket cards, newest first; a card\'s state is person/review after a ready report, person/blocked or person/failed after those reports, person/answer with a question, person/delivery when an input could not reach the worker, working or working/queued while it works, idle once the worker ended its turn without a report, else how the ticket ended' },
   { name: 'triggers', holds: 'trigger cards with where each went, newest first' },
   { name: 'threads', holds: 'subscribed threads, newest activity first, with their labels, tickets, current assessment and polling errors' },
@@ -131,7 +132,7 @@ const ROUTES: readonly Route[] = [
     const ticket = ticketId ? host.store.tickets.get(ticketId) : undefined
     if (!ticket || !liveTicket(ticket) || read.sessionId !== workerSessionId(ticket.id)) throw new Error('Memory requires an authorized current worker')
     if (!host.memory || !host.memory.enabled()) return text(read, JSON.stringify({ degraded: 'memory_disabled' }))
-    if (rest !== 'index' && !/^[a-zA-Z0-9_-]{1,80}$/.test(rest)) throw new Error('Invalid memory resource')
+    if (rest !== 'index' && !/^(?:topic\/)?[a-zA-Z0-9_-]{1,80}$/.test(rest)) throw new Error('Invalid memory resource')
     return text(read, rest === 'index' ? host.memory.index() : host.memory.read(rest))
   }],
   ['tickets', read => {

@@ -4,6 +4,9 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { MemoryService } from './service.ts'
 import { MEMORY_BOUNDARY, MemoryId } from './types.ts'
+import { MemoryKnowledge } from './knowledge.ts'
+
+const prose = (value: string): string => value.replace(/[&<>`*_\[\]()!#|\\]/g, char => `&#${char.charCodeAt(0)};`)
 
 /** Coalesces rebuilds, refuses symlink paths, and atomically replaces each generated file. */
 export class MemoryProjection {
@@ -47,9 +50,32 @@ export class MemoryProjection {
     try {
       do {
         this.dirty = false
-        const root = await realpath(this.stateDir), directory = join(root, 'memory'), wiki = join(directory, 'wiki')
-        await this.directory(directory); await this.directory(wiki)
+        const root = await realpath(this.stateDir), directory = join(root, 'memory'), wiki = join(directory, 'wiki'), topics = join(directory, 'topics')
+        await this.directory(directory); await this.directory(wiki); await this.directory(topics)
         const memory = this.memory.publisher(), index = [`# Repository memory\n\n${MEMORY_BOUNDARY}\n`]
+        const knowledge = new MemoryKnowledge(memory), topicIndex = [`# Knowledge topics\n\n${MEMORY_BOUNDARY}\n`]
+        index.push('## Topics\n')
+        for (const record of knowledge.topics()) {
+          const topic = knowledge.view(record.id)!
+          MemoryId.parse(topic.id)
+          const body = [`# ${prose(topic.title)}\n\n${MEMORY_BOUNDARY}\n\nDerived topic · revision ${topic.revision}\n`]
+          if (topic.stale) body.push('Source revisions changed or were invalidated. Unavailable sections are withdrawn pending a new review.\n')
+          for (const section of topic.sections) {
+            body.push(`## ${prose(section.heading)}\n\n${section.kind === 'inference' ? 'Inference from cited sources' : 'Derived ' + section.kind}\n\n${prose(section.text)}\n\nSources:\n`)
+            for (const source of section.sources) body.push(`- [${source.noteId}](../wiki/${source.noteId}.md), revision ${source.revision}; evidence ${source.evidenceIds.join(', ')}\n`)
+          }
+          if (topic.relations.length) body.push('## Proposed knowledge relationships\n')
+          for (const relation of topic.relations) body.push(`- [${relation.from}](../wiki/${relation.from}.md) ${relation.kind} [${relation.to}](../wiki/${relation.to}.md): ${prose(relation.explanation)}\n`)
+          if (topic.relatedTopics.length) body.push('## Related topics\n')
+          for (const id of topic.relatedTopics) body.push(`- [${id}](${id}.md)\n`)
+          await this.write(topics, `${topic.id}.md`, body.join('\n'))
+          if (!topic.stale) {
+            index.push(`- [${prose(topic.title)}](topics/${topic.id}.md)\n`)
+            topicIndex.push(`- [${prose(topic.title)}](${topic.id}.md)\n`)
+          }
+        }
+        await this.write(topics, 'index.md', topicIndex.join('\n'))
+        index.push('\n## Verified source notes\n')
         let after = ''
         for (;;) {
           this.signal.throwIfAborted()

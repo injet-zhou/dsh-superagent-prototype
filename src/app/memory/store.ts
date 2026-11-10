@@ -39,9 +39,21 @@ export class MemoryStore {
     }
   }
   private note(row: Record<string, SQLInputValue>): MemoryNote {
+    const importance = this.store.get(KV.memory.importance(String(row.id)))
     return { ...NoteInput.parse({ kind: row.kind, title: row.title, body: row.body, scope: JSON.parse(String(row.scope_json)) }),
       id: String(row.id), repository: String(row.repository), status: MemoryStatus.parse(row.status), revision: Number(row.revision),
-      createdAt: String(row.created_at), updatedAt: String(row.updated_at), ...row.verified_at ? { verifiedAt: String(row.verified_at) } : {} }
+      createdAt: String(row.created_at), updatedAt: String(row.updated_at), ...row.verified_at ? { verifiedAt: String(row.verified_at) } : {},
+      ...importance?.repository === this.repository ? { importance } : {} }
+  }
+  /** Metadata changes notify cached readers without changing a claim's attestation or revision. */
+  notify(): void { this.store.afterCommit(this.changed) }
+  important(): MemoryNote[] {
+    return this.store.db.prepare(`SELECT n.* FROM memory_note n LEFT JOIN kv i ON i.key=?||n.id
+      WHERE n.repository=? AND n.status='verified' ORDER BY
+      CASE WHEN json_extract(i.value,'$.noteRevision')=n.revision AND json_extract(i.value,'$.repository')=n.repository THEN CASE json_extract(i.value,'$.level')
+        WHEN 'core' THEN 3 WHEN 'routine' THEN 2 ELSE 1 END ELSE CASE n.kind WHEN 'incident' THEN 1 ELSE 2 END END DESC,
+      CASE n.kind WHEN 'fact' THEN 3 WHEN 'procedure' THEN 2 ELSE 1 END DESC,n.updated_at DESC,n.id LIMIT 20`)
+      .all(KV.memory.importance.prefix, this.repository).map(row => this.note(row))
   }
   list(status: MemoryNote['status'] = 'verified', limit = 200): MemoryNote[] {
     return this.store.db.prepare('SELECT * FROM memory_note WHERE repository=? AND status=? ORDER BY updated_at DESC,id LIMIT ?')
@@ -85,7 +97,7 @@ export class MemoryStore {
   /** Durable review rotation: unseen notes precede changed notes, ordered by their last successful review. */
   reviewable(status: MemoryNote['status'], limit: number): MemoryNote[] {
     return this.store.db.prepare(`SELECT n.* FROM memory_note n LEFT JOIN kv r ON r.key=?||n.id
-      WHERE n.repository=? AND n.status=? AND (r.value IS NULL OR json_extract(r.value,'$.revision')<>n.revision)
+      WHERE n.repository=? AND n.status=? AND (r.value IS NULL OR json_extract(r.value,'$.revision')<>n.revision OR COALESCE(json_extract(r.value,'$.epoch'),0)<2)
       ORDER BY COALESCE(json_extract(r.value,'$.sequence'),0),n.id LIMIT ?`)
       .all(KV.memory.reviewed.prefix, this.repository, status, Math.min(limit, 200)).map(row => this.note(row))
   }

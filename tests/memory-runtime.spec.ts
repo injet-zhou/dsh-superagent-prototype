@@ -14,6 +14,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { deferred } from './fixtures/async.ts'
 import { installScopedEnvironment } from '../src/infra/scoped-environment.ts'
+import { MemoryKnowledge } from '../src/app/memory/knowledge.ts'
 
 it('leaves default Workers and Router unchanged, then enables repository memory through a revisioned setting', async () => {
   const h = await startRuntime(store => {
@@ -31,8 +32,15 @@ it('leaves default Workers and Router unchanged, then enables repository memory 
   expect((await h.api('PUT', 'settings/memory', { revision: 0, value: { enabled: false } })).status).toBe(409)
   h.runtime.memory.publisher().create(exampleNote, [{ ...exampleEvidence, ticketId: a.ticket.id, sessionId: a.sessionId }], 'ticket-a', 'verified', 'shared')
   h.runtime.memory.refresh()
+  const source = h.runtime.memory.publisher().get('shared')!
+  new MemoryKnowledge(h.runtime.memory.publisher()).publish({ id: 'topic-shared', title: 'Repository migration guide', sections: [
+    { heading: 'Migration', kind: 'guide', text: 'Follow the source-backed migration procedure.', sources: [
+      { noteId: source.note.id, revision: source.note.revision, evidenceIds: source.evidence.map(item => item.id) },
+    ] },
+  ], relations: [], relatedTopics: [] }, 0, [source], 'Reviewed source', 'topic-fixture')
   const b = await h.acceptedTicket(feishu('2', '修复其他迁移'))
   expect((await h.runTool(b.sessionId, 'orchestrator_memory_search', { query: 'SQLite' })).items).toHaveLength(1)
+  expect(JSON.parse(String((await h.runTool(b.sessionId, 'orchestrator_read', { resource: 'memory/topic/topic-shared' })).text))).toMatchObject({ topic: { id: 'topic-shared' }, boundary: expect.any(String) })
   h.runtime.store.db.exec('DROP TABLE memory_note_fts')
   expect(await h.runTool(b.sessionId, 'orchestrator_memory_search', { query: 'SQLite' })).toMatchObject({ items: [], degraded: 'memory_retrieval_unavailable' })
   expect(h.runtime.store.tickets.get(b.ticket.id)?.ended).toBeUndefined()
@@ -41,10 +49,12 @@ it('leaves default Workers and Router unchanged, then enables repository memory 
   expect(h.tools.get(h.runtime.masterId)?.has('orchestrator_memory_search')).toBe(false)
   await expect(h.runTool(a.sessionId, 'orchestrator_memory_search', { query: 'SQLite', repositoryId: 'other' })).rejects.toThrow()
   await expect(h.runTool(h.runtime.masterId, 'orchestrator_read', { resource: 'memory/shared' })).rejects.toThrow('authorized current worker')
-  for (const resource of ['memory/../shared', 'memory/other/shared', 'memory//etc/passwd']) {
+  await expect(h.runTool(h.runtime.masterId, 'orchestrator_read', { resource: 'memory/topic/topic-shared' })).rejects.toThrow('authorized current worker')
+  for (const resource of ['memory/../shared', 'memory/other/shared', 'memory//etc/passwd', 'memory/topic/../../shared', 'memory/topic/other/topic-shared']) {
     await expect(h.runTool(b.sessionId, 'orchestrator_read', { resource })).rejects.toThrow('Invalid memory resource')
   }
   h.runtime.engine.stopTicket(b.ticket.id)
+  await expect(h.runTool(b.sessionId, 'orchestrator_read', { resource: 'memory/topic/topic-shared' })).rejects.toThrow('authorized current worker')
   await expect(h.runTool(b.sessionId, 'orchestrator_memory_search', { query: 'SQLite' })).rejects.toThrow('authorized current worker')
   expect((await h.api('PUT', 'settings/memory', { revision: 1, value: { enabled: false } })).status).toBe(200)
   expect(h.runtime.memory.publisher().get('shared')).toBeDefined()

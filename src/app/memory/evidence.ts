@@ -4,21 +4,22 @@ import type { CaptureHost } from './capture.ts'
 import { withAbort } from './capture.ts'
 import type { MemoryAnalysisInput } from './analyzer.ts'
 import { serializeAnalysisInput } from './analyzer.ts'
-import { fingerprint, safeText } from './security.ts'
+import { fingerprint, redact, safeText } from './security.ts'
 import { sessionHistory } from '../session-history.ts'
 import { executionReceipt } from './attestation.ts'
 
-function textOf(event: SessionEvent): string {
+const bounded = (text: string, limit: number) => { const clean = redact(text); return { text: clean.slice(0, limit), truncated: clean.length > limit } }
+function textOf(event: SessionEvent) {
   if (event.type === 'tool/call') {
     let command = ''
     if (event.data.name === 'bash' || event.data.name === 'pwsh') {
       try { const args: unknown = JSON.parse(event.data.arguments); if (args && typeof args === 'object' && 'command' in args && typeof args.command === 'string') command = args.command } catch {}
     }
-    return safeText(`Tool: ${event.data.name}${command ? `; command: ${command}` : ''}`, 2000)
+    return bounded(`Tool: ${event.data.name}${command ? `; command: ${command}` : ''}`, 2000)
   }
   const blocks = event.type === 'user/message' ? event.data.content
     : event.type === 'assistant/message' || event.type === 'tool/result' ? event.data.message.content : []
-  return safeText(blocks.filter(block => block.type === 'text').map(block => block.text).join('\n'), 8000)
+  return bounded(blocks.filter(block => block.type === 'text').map(block => block.text).join('\n'), 8000)
 }
 
 /** Only existing same-repository evidence is resolvable; missing/changed history stays explicit, never verified. */
@@ -53,12 +54,18 @@ export async function resolveEvidence(host: Pick<CaptureHost, 'store' | 'context
       const index = raw.findIndex(event => Number(event.seq) === Number(anchor[1]))
       if (index < 0) { check.status = 'missing'; continue }
       if (fingerprint(raw[index]) !== anchor[2]) { check.status = 'changed'; continue }
-      const window = raw.slice(Math.max(0, index - 3), index + 4)
+      let start = index, end = index
+      while (start > 0 && raw[start]!.type !== 'turn/start') start--
+      if (raw[start]?.type !== 'turn/start') { start = Math.max(0, index - 3); end = Math.min(raw.length - 1, index + 3) }
+      else while (end + 1 < raw.length && raw[end]!.type !== 'turn/end' && raw[end + 1]!.type !== 'turn/start') end++
+      const window = raw.slice(start, end + 1)
       if (window.some((event, index) => index > 0 && Number(event.seq) !== Number(window[index - 1]!.seq) + 1)) { check.status = 'missing'; continue }
-      check.status = 'available'
-      for (const event of window) {
-        const text = textOf(event)
+      check.status = window.length > 100 ? 'truncated' : 'available'
+      const selected = window.length <= 100 ? window : [...new Set([...window.slice(0, 40), raw[index]!, ...window.slice(-59)])].sort((a, b) => Number(a.seq) - Number(b.seq))
+      for (const event of selected) {
+        const { text, truncated } = textOf(event)
         if (!text) continue
+        if (truncated) check.status = 'truncated'
         const entry = { ref: `seq:${event.seq}:${fingerprint(event)}`, type: event.type, text, sessionId: evidence.sessionId, evidenceId: evidence.id }
         if (Buffer.byteLength(serializeAnalysisInput({ ...input, events: [...events, entry], sourceChecks })) > 90_000) { check.status = 'truncated'; break }
         events.push(entry)

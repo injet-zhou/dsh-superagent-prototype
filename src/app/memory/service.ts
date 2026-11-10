@@ -6,6 +6,7 @@ import { KV } from '../../kv.ts'
 import { MEMORY_BOUNDARY, MemoryQuery, MemoryReview, type MemoryBrowse, type MemoryHealth, type MemoryQuery as Query } from './types.ts'
 import { MemoryStore } from './store.ts'
 import { readMatches, searchPlan } from './retrieval.ts'
+import { importanceOf, MemoryKnowledge } from './knowledge.ts'
 
 /** Owns one repository's optional memory, cached index and observable degradation. No Engine dependency. */
 export class MemoryService {
@@ -61,17 +62,17 @@ export class MemoryService {
   refresh(): void {
     if (!this.database || this.problem === 'memory_repository_mismatch') { this.report(); return }
     try {
-      const notes = this.database.list('verified', 20)
+      const notes = this.database.important().filter(note => importanceOf(note) !== 'incidental')
       const candidates = this.database.list('candidate', 200).length
       const partial = Number(this.store.db.prepare("SELECT count(*) AS n FROM memory_capture_checkpoint WHERE json_extract(cursor_json,'$.partial')=1").get()?.n ?? 0)
       const usage = this.store.get(KV.memory.usage)
       this.remainingCalls = Math.max(0, this.config.dailyCallBudget - (usage?.day === new Date().toISOString().slice(0, 10) ? usage.calls : 0))
       this.summary = `; ${candidates}${candidates === 200 ? '+' : ''} candidates awaiting review; ${this.remainingCalls} model calls remaining today`
-      const lines = notes.map(note => JSON.stringify({ id: note.id, title: note.title, read: `memory/${note.id}` }))
+      const lines = notes.map(note => JSON.stringify({ title: note.title.slice(0, 48), read: `memory/${note.id}` }))
       // UTF-8 bytes form a conservative token upper bound; no unverified tokenizer estimate is presented as an exact count.
-      const prefix = `${MEMORY_BOUNDARY}\nSearch with orchestrator_memory_search; read with orchestrator_read memory/<id>.\n`
+      const prefix = `${MEMORY_BOUNDARY}\nSearch with orchestrator_memory_search; read memory/<id> or memory/topic/index with orchestrator_read.\n`
       let body = prefix
-      for (const line of lines) { if (Buffer.byteLength(body + line + '\n') > 600) break; body += line + '\n' }
+      for (const line of lines) { if (Buffer.byteLength(body + line + '\n') > 600) continue; body += line + '\n' }
       this.snapshot = body
       const unresolved = this.store.get(KV.memory.evidenceAudit)?.checks.some(check => !['available', 'host-attested'].includes(check.status))
       this.problem = partial ? 'partial_capture' : unresolved ? 'memory_evidence_unavailable' : undefined
@@ -127,6 +128,13 @@ export class MemoryService {
   read(id: string): string {
     if (!this.enabled()) return JSON.stringify({ boundary: MEMORY_BOUNDARY, degraded: this.problem ?? 'memory_disabled' })
     try {
+      if (id.startsWith('topic/')) {
+        const knowledge = new MemoryKnowledge(this.publisher()), key = id.slice(6)
+        if (key === 'index') return JSON.stringify({ boundary: MEMORY_BOUNDARY, topics: knowledge.topics().map(topic => knowledge.view(topic.id)!)
+          .filter(topic => !topic.stale).map(topic => ({ id: topic.id, title: topic.title, revision: topic.revision, read: `memory/topic/${topic.id}` })) })
+        const topic = knowledge.view(key)
+        return JSON.stringify({ boundary: MEMORY_BOUNDARY, ...topic ? { topic } : { missing: true } })
+      }
       const details = this.publisher().get(id)
       if (!details || details.note.status !== 'verified') return JSON.stringify({ boundary: MEMORY_BOUNDARY, missing: true })
       return JSON.stringify({ boundary: MEMORY_BOUNDARY, ...details })

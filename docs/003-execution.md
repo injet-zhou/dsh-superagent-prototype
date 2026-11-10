@@ -211,3 +211,5 @@ An Eval in progress does not expire during a pause; its deadline moves later by 
 ### Invalid configuration
 
 A stored Source configuration that its kind rejects disables that Source instance.
+
+Memory consolidation now supplies both pending notes and related reviewed history, plus Host-resolved raw source turns and explicit integrity/truncation statuses. Tool-free analysis may also propose source-linked topic articles or salience changes; these publish with strict source/revision validation. Foreground test execution receipts are a separate deterministic Host observation path: they attest one bounded invocation, with no model call or broad solution certification.

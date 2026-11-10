@@ -10,6 +10,7 @@ import { cleanNote, fingerprint, safeText } from './security.ts'
 import type { MemoryDetails } from './types.ts'
 import { readMatches } from './retrieval.ts'
 import { resolveEvidence } from './evidence.ts'
+import { MemoryKnowledge } from './knowledge.ts'
 
 /** All proposals publish together, against only current same-repository source evidence. */
 export function publish(memory: MemoryStore, job: string, raw: unknown, offered: readonly MemoryDetails[]): void {
@@ -30,9 +31,15 @@ export function publish(memory: MemoryStore, job: string, raw: unknown, offered:
       if (!item) throw new Error('memory_unknown_evidence')
       return item
     })
+    const knowledge = new MemoryKnowledge(memory)
+    const proposedTopics = new Set(proposals.flatMap(proposal => proposal.action === 'topic' ? [proposal.topic.id] : []))
     for (const proposal of proposals) {
       const reason = `${safeText(proposal.reason, 220)}; uncertainty: ${safeText(proposal.uncertainty, 220)}`
-      if (proposal.action === 'merge') {
+      if (proposal.action === 'topic') knowledge.publish(proposal.topic, proposal.expectedRevision, offered, reason, job, proposedTopics)
+      else if (proposal.action === 'prioritize') {
+        current(proposal.id, proposal.expectedRevision)
+        knowledge.prioritize(proposal.id, proposal.expectedRevision, proposal.expectedImportanceRevision, proposal.level, reason, job)
+      } else if (proposal.action === 'merge') {
         current(proposal.sourceId, proposal.sourceRevision); current(proposal.targetId, proposal.targetRevision)
         memory.merge(proposal.sourceId, proposal.sourceRevision, proposal.targetId, proposal.targetRevision, reason, job)
       } else if (proposal.action === 'create') {
@@ -88,7 +95,7 @@ export class MemoryDreaming {
     const snapshot = this.input()
     if (!snapshot.notes.length) return false
     // A new key version permits an initial review of pages published before durable rotation existed.
-    const batchId = fingerprint(['memory-review-v1', snapshot.notes.map(item => [item.note.id, item.note.revision])])
+    const batchId = fingerprint(['memory-review-v2', snapshot.notes.map(item => [item.note.id, item.note.revision, item.note.importance?.revision])])
     if (this.host.store.get(KV.memory.published(fingerprint(batchId)))) return false
     this.host.effects.enqueue('memory-consolidate', batchId, { batchId }); return true
   }
@@ -116,7 +123,7 @@ export class MemoryDreaming {
       }
       const relatedNotes: MemoryDetails[] = [], memory = host.memory.publisher(), seen = new Set(input.notes.map(item => item.note.id))
       const signal = AbortSignal.any([host.lifetime, host.memory.analysisSignal(), AbortSignal.timeout(5000)])
-      for (const primary of input.notes.slice(0, 5)) {
+      for (const primary of input.notes) {
         for (const match of await readMatches(host.store.db, memory.relatedPlan(primary.note), signal)) {
           if (seen.has(match.id)) continue
           const found = memory.get(match.id)
@@ -124,18 +131,23 @@ export class MemoryDreaming {
           const details = { ...found, evidence: found.evidence.slice(0, 5).map(item => ({ ...item, excerpt: safeText(item.excerpt, 500) })), revisions: [] }
           if (Buffer.byteLength(serializeAnalysisInput({ ...input, relatedNotes: [...relatedNotes, details] })) > 50_000) continue
           relatedNotes.push(details); seen.add(match.id)
-          if (relatedNotes.length >= 10) break
         }
-        if (relatedNotes.length >= 10) break
       }
-      input = await resolveEvidence(host, { ...input, relatedNotes }, signal)
+      const offeredIds = new Set([...input.notes, ...relatedNotes].map(item => item.note.id))
+      const topics = new MemoryKnowledge(memory).topics().filter(topic => topic.sections.some(section => section.sources.some(source => offeredIds.has(source.noteId))))
+      const selected: typeof topics = []
+      for (const topic of topics) {
+        if (selected.length >= 5) break
+        if (Buffer.byteLength(serializeAnalysisInput({ ...input, relatedNotes, topics: [...selected, topic] })) <= 60_000) selected.push(topic)
+      }
+      input = await resolveEvidence(host, { ...input, relatedNotes, topics: selected }, signal)
       const proposals = await analyze(host, input)
       if (!host.memory.dreamingEnabled() || host.paused() || host.lifetime.aborted) throw new Later('memory_consolidation_paused')
       host.store.atomic(() => {
         publish(host.memory.publisher(), batchId, proposals, [...input.notes, ...input.relatedNotes ?? []])
         host.store.set(KV.memory.evidenceAudit, { at: new Date().toISOString(), job: fingerprint(batchId), checks: [...input.sourceChecks ?? []] })
         const sequence = (host.store.get(KV.memory.reviewSequence) ?? 0) + 1
-        for (const { note } of input.notes) host.store.set(KV.memory.reviewed(note.id), { revision: note.revision, sequence })
+        for (const { note } of input.notes) host.store.set(KV.memory.reviewed(note.id), { revision: note.revision, sequence, epoch: 2 })
         host.store.set(KV.memory.reviewSequence, sequence)
         host.store.set(KV.memory.lastConsolidatedAt, new Date().toISOString())
       })

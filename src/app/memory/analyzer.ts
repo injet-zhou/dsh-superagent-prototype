@@ -1,6 +1,6 @@
 /** Capability-limited analysis contract. An analyzer proposes JSON; it has no publisher, tools or Engine. */
 import { z } from 'zod'
-import { MemoryId, NoteInput, type MemoryDetails } from './types.ts'
+import { MemoryId, MemoryImportance, MemoryTopicInput, NoteInput, type MemoryDetails, type MemoryTopic } from './types.ts'
 import { redact } from './security.ts'
 
 export const MEMORY_INPUT_BYTES = 100_000
@@ -14,6 +14,9 @@ export const CaptureProposal = z.object({ action: z.literal('create'), note: Not
 const audit = { reason: z.string().min(1).max(500), uncertainty: z.string().max(500) }
 const evidenceIds = z.array(MemoryId).min(1).max(20)
 export const MemoryProposal = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('prioritize'), id: MemoryId, expectedRevision: z.number().int().positive(), expectedImportanceRevision: z.number().int().min(0),
+    level: MemoryImportance, ...audit }).strict(),
+  z.object({ action: z.literal('topic'), expectedRevision: z.number().int().min(0), topic: MemoryTopicInput, ...audit }).strict(),
   z.object({ action: z.literal('create'), note: NoteInput, evidenceIds, ...audit }).strict(),
   z.object({ action: z.literal('update'), id: MemoryId, expectedRevision: z.number().int().positive(),
     note: NoteInput, status: z.enum(['candidate', 'verified', 'stale']), evidenceIds, ...audit }).strict(),
@@ -27,6 +30,7 @@ export interface MemoryAnalysisInput {
   notes: readonly MemoryDetails[]
   relatedNotes?: readonly MemoryDetails[]
   sourceChecks?: readonly { evidenceId: string; status: 'available' | 'changed' | 'missing' | 'unavailable' | 'host-attested' | 'truncated' }[]
+  topics?: readonly MemoryTopic[]
 }
 export interface MemoryAnalyzer {
   propose(input: Readonly<MemoryAnalysisInput>, signal: AbortSignal): Promise<unknown>
