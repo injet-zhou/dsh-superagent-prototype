@@ -2,6 +2,7 @@ import { expect, it, onTestFinished, vi } from 'vitest'
 import { startRuntime, feishu } from './fixtures/host.ts'
 import { exampleEvidence, exampleNote } from './fixtures/memory.ts'
 import type { MemoryPage } from '../src/app/memory/types.ts'
+import type { ApiResponse } from '../src/app/api.ts'
 
 it('lets a person review evidence, confirm a candidate, invalidate and retract it with revision checks', async () => {
   const h = await startRuntime(store => { store.saveSettings({ ...store.settings(), memory: { enabled: true } }) })
@@ -47,6 +48,17 @@ it('browses bounded pages and retained records while disabled without allowing f
   expect((await h.api('POST', 'memory/page-0/review', { action: 'confirm', revision: 1, reason: 'Execute this', confirmed: true, command: 'rm -rf /' })).status).toBe(400)
   expect(memory.get('page-0')!.note.status).toBe('candidate')
   expect(h.runtime.health.runtime?.state).toBe('ready')
+})
+
+it('keeps Memory option and budget changes in the existing revision history without changing Policy', async () => {
+  const h = await startRuntime()
+  onTestFinished(() => h.stop())
+  const saved = await h.api('PUT', 'settings/memory', { revision: 0, value: { enabled: true, dailyCallBudget: 5 } })
+  expect(saved.body.policy_changed).toBe(false)
+  const history = await h.api('GET', 'policy/history')
+  expect((history.body.items as ApiResponse<'GET policy/history'>['items'])[0]).toMatchObject({ block: 'memory', policyChanged: false, changes: expect.arrayContaining([
+    { code: 'memoryEnabled', from: false, to: true }, { code: 'memoryBudget', from: 0, to: 5 },
+  ]) })
 })
 
 it('rolls back human proof and note publication together and requires fresh confirmation after invalidation', async () => {

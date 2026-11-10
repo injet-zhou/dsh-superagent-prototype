@@ -1,5 +1,9 @@
 # 005 Panel
 
+The repository's **Memory** tab shows candidate, verified, stale and retracted notes, bounded search, source Session links and immutable review history. It reports the UTC daily model-call allowance and capture/consolidation backlog, and offers consolidation and index/wiki rebuilds. Settings → Memory configures its explicit model, feature switches and daily call limit; it does not inherit the Worker model.
+
+Confirming a candidate requires a reason and an explicit declaration that the operator checked its original sources and scope. The Host records fresh human evidence before publishing verified memory. Stale notes need a new confirmation. Expire, retract and confirm all carry the displayed revision; a conflict refreshes the note and requires another review. Notes are rendered as text, never executable HTML, and every page follows the selected repository's API scope.
+
 Open **Superagent** in the DeepSeek Harness Web sidebar to supervise the agent. The panel prioritizes work that needs a person, then system health and history. This document builds on [000 Philosophy](000-philosophy.md) through [004 Prompts](004-prompts.md).
 
 ## Repository selection

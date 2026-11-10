@@ -45,6 +45,7 @@ export interface MemoryPage {
 }
 export interface MemoryHealth {
   enabled: boolean; fts: boolean; dailyCallBudget: number; usedCalls: number; remainingCalls: number
+  retrieval: boolean; autoCapture: boolean; dreaming: boolean; analyzerAvailable: boolean
   capturePending: number; consolidationPending: number; partialCaptures: number
   lastCaptureAt: string | null; lastConsolidationAt: string | null; problem?: string
 }

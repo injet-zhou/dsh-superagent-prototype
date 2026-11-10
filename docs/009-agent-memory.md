@@ -1,6 +1,6 @@
 # dsh-superagent：Repository-scoped Agent Memory 技术设计
 
-> 状态：Phase 1/2 已交付；Phase 3 的安全适配器、Host Publisher、Wiki 与离线测试已实现，未做真实模型烟测；Phase 4 未实施。详细验证记录见文末，原始 RFC 与验收约束保留。
+> 状态：Phase 1/2 已交付；Phase 3 的安全适配器、Host Publisher、Wiki 与离线测试已实现，真实 provider 验证进行中；Phase 4 管理面板已实现。详细验证记录见文末，原始 RFC 与验收约束保留。
 > 基线：`injet-zhou/dsh-superagent-prototype`，`main`，commit `86271f435e8130a25ff4bc9ade3b4077143c8532`（2026-11-08）。实际实施前重新核对 HEAD。  
 > 依据：Anthropic《The components of agent memory》（https://www.anthropic.com/research/components-of-agent-memory）所讨论的 Transcripts、Memory Notes、Memory Representations、Injected Context 和 Dreaming；下述 API、Schema、默认参数为**本项目的设计建议**，并非 Anthropic 官方实现。
 
@@ -535,3 +535,5 @@ git diff --check
 实现位于独立 `feat/repository-memory` 工作树，已整合 main 的仓库配置保存修复和 Discord 消息反应功能。整合前基线 1318 项测试、整合后 1327 项测试全部通过。
 
 管理 API 以当前 Repository Runtime 为边界，支持有界分页、状态/文本筛选、证据与历史查看，以及携带 revision 和理由的过期/撤销。人工确认必须明确声明已核对来源；它在同一事务新增绑定当前笔记内容的 human attestation 和不可变审阅修订，再发布 verified。其 `review:<note>:<revision>:<fingerprint>` 来源引用指向本次实际管理审阅，不伪装为 DSH transcript 事件。模型提案不能创建该认证证据。stale 后必须重新确认，原认证不能复用；同一毫秒发生的人工操作通过修订顺序区分。此入口沿用现有管理 API 的本机操作者信任边界，不宣称提供同 OS 用户的恶意代码隔离。
+
+管理阶段全量验证：71 文件、1330 测试，typecheck/build 全通过。面板阶段增加 Memory 页面、独立设置分组、中英文、模型/预算、来源 Session、文本安全显示、修订历史、显式人工核验、失效/撤销、整理/重建、健康和多仓库作用域；设置历史同时显示 Memory 字段变化。全量验证 72 文件、1336 测试，typecheck/build 全通过。没有放宽或跳过原有用例；新增 Memory 标签页后，更新了中文/英文导航的准确期望。

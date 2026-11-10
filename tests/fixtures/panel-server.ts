@@ -88,7 +88,6 @@ export const MACHINE = { stateDir: '/srv/dsh-superagent', promptMaxChars: 100000
 type Settings = ReturnType<typeof SettingsSchema.parse>
 export interface PanelServer {
   memory: Record<string, MemoryDetails>
-  memoryConflict?: boolean
   consolidated: number; rebuilt: number
   extraKinds?: SourceKind[]
   joined?: Record<string, string>; joining?: Record<string, string>
@@ -308,6 +307,8 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
       return { ...fields, snippet: body.slice(0, 300), evidenceCount: evidence.length }
     })
     return { items, total: items.length, next_offset: null, counts, health: { enabled: server.settings.memory.enabled, fts: true,
+      retrieval: server.settings.memory.retrieval, autoCapture: server.settings.memory.autoCapture, dreaming: server.settings.memory.dreaming,
+      analyzerAvailable: !!server.settings.memory.analyzerModel,
       dailyCallBudget: server.settings.memory.dailyCallBudget, usedCalls: 0, remainingCalls: server.settings.memory.dailyCallBudget,
       capturePending: 0, consolidationPending: 0, partialCaptures: 0, lastCaptureAt: null, lastConsolidationAt: null } }
   } },
@@ -315,7 +316,7 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
   'POST memory/:id/review': { body: true, answer: ({ params, body }) => {
     const details = server.memory[params.id]
     if (!details) return refuse(404, 'Memory note not found')
-    if (server.memoryConflict || body.revision !== details.note.revision) return refuse(409, 'memory_revision_conflict')
+    if (body.revision !== details.note.revision) return refuse(409, 'memory_revision_conflict')
     details.note = { ...details.note, status: body.action === 'confirm' ? 'verified' : body.action === 'retract' ? 'retracted' : 'stale',
       revision: details.note.revision + 1 }
     return details

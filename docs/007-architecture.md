@@ -409,6 +409,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/client/overview.tsx` | The overview |
 | `src/client/repositories.tsx` | Multi-repository overview, host configuration form writes for adding/removing repositories, and independent global/repository settings |
 | `src/client/source.tsx`, `trigger.tsx`, `eval.tsx`, `execution.tsx` | One file per stage: its status, and its settings where it has some |
+| `src/client/memory.tsx` | Repository memory settings, maintenance health, note browsing, source evidence and revision-safe operator reviews |
 | `src/client/thread.tsx`, `ticket.tsx` | The record pages: a Thread with its timeline, and a Ticket with its authorization, Inputs and Assignments |
 | `src/client/settings.tsx` | The Settings tab: the group navigation and the group on screen |
 | `src/client/settings-kit.tsx` | The building blocks of settings blocks: the settings the stage groups share, `useBlockDraft`, the fields, among them a Source kind's, and the history of saves |
@@ -467,6 +468,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/memory-retrieval.spec.ts` | FTS5/fallback, Unicode, scopes, bounded prompt index and hostile data |
 | `tests/memory-runtime.spec.ts` | Cross-Ticket reads, worker authorization, versioned settings and three-repository isolation |
 | `tests/memory-management.spec.ts` | Scoped browsing, explicit human confirmation, revision conflicts, invalidation and atomic audit rollback |
+| `tests/panel-memory.spec.tsx` | Memory settings, source review, safe text rendering, CAS conflicts, manual maintenance and repository selection |
 | `tests/memory-capture.spec.ts` | Capture idempotence, cursor atomicity, retention gaps, budgets and Worker lifecycle |
 | `tests/memory-dreaming.spec.ts` | Publisher CAS/merge/retract, model capability isolation, global budgets and projection recovery |
 | `tests/memory-evaluation.spec.ts` | Fixed 20-case offline A/B retrieval fixture, without live model quality/cost claims |
