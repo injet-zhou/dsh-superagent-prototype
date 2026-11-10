@@ -551,6 +551,8 @@ const TEXT = {
   'memoryError.memory_budget_exhausted': ['今日模型调用额度已用完，UTC 日期变化后恢复。', 'The daily call limit has been reached. It resets on the next UTC day.'],
   'memoryError.memory_analyzer_unavailable': ['尚未配置可用的记忆分析模型。', 'No memory analysis model is configured.'],
   'memoryError.partial_capture': ['部分会话历史不可用，采集尚未完成。', 'Some Session history is unavailable; capture is incomplete.'],
+  'memoryError.memory_evidence_unavailable': ['部分原始来源缺失或已变化，请核对来源。', 'Some original sources are missing or changed. Review the evidence.'],
+  'memoryError.memory_attestation_unavailable': ['自动执行核证暂时不可用，Worker 可以继续工作。', 'Automatic execution attestation is unavailable; Workers can continue.'],
   'memoryError.memory_capture_failed': ['记忆提取失败，任务会保留并重试。', 'Memory capture failed and will retry.'],
   'memoryError.memory_consolidation_failed': ['记忆整理失败，任务会保留并重试。', 'Consolidation failed and will retry.'],
   'memoryError.memory_projection_failed': ['Wiki 投影写入失败，可重建索引。', 'The wiki projection could not be written. Rebuild the index to retry.'],

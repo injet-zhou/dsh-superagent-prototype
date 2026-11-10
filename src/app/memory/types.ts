@@ -12,7 +12,7 @@ export const NoteInput = z.object({
   body: z.string().trim().min(1).max(8000), scope: MemoryScope,
 }).strict()
 export const EvidenceInput = z.object({
-  ticketId: MemoryId, sessionId: z.string().min(1).max(200), eventRef: z.string().regex(/^(?:seq:\d+|review:[a-zA-Z0-9_-]{1,80}:\d+):[a-f0-9]{64}$/),
+  ticketId: MemoryId, sessionId: z.string().min(1).max(200), eventRef: z.string().regex(/^(?:seq:\d+|review:[a-zA-Z0-9_-]{1,80}:\d+|execution:[a-f0-9]{64}):[a-f0-9]{64}$/),
   kind: z.enum(['observation', 'test', 'human', 'commit']), excerpt: z.string().max(2000),
   sourceCommit: z.string().regex(/^[a-f0-9]{7,64}$/).optional(),
   // Only trusted host code may attest evidence. Analyzer output never contains this field.
@@ -37,8 +37,12 @@ export interface MemoryNote extends NoteInput {
   createdAt: string; updatedAt: string; verifiedAt?: string
 }
 export interface MemoryEvidence extends EvidenceInput { id: string; noteId: string; capturedAt: string; claimFingerprint?: string }
+export interface MemoryExecutionReceipt {
+  id: string; repository: string; ticketId: string; sessionId: string; callId: string; command: string; cwd: string
+  head: string; at: string; environment: string; resultFingerprint: string
+}
 export interface MemoryRevision { revision: number; action: string; reason: string; at: string; source_job_id: string; before_json: string | null; after_json: string }
-export interface MemoryDetails { note: MemoryNote; evidence: MemoryEvidence[]; revisions: MemoryRevision[] }
+export interface MemoryDetails { note: MemoryNote; evidence: MemoryEvidence[]; revisions: MemoryRevision[]; executions?: MemoryExecutionReceipt[] }
 export interface MemoryPage {
   items: (Omit<MemoryNote, 'body' | 'repository'> & { snippet: string; evidenceCount: number })[]
   counts: Record<MemoryNote['status'], number>; total: number; next_offset: number | null

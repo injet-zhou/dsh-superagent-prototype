@@ -6,6 +6,7 @@ import type { MemoryAnalysisInput } from './analyzer.ts'
 import { serializeAnalysisInput } from './analyzer.ts'
 import { fingerprint, safeText } from './security.ts'
 import { sessionHistory } from '../session-history.ts'
+import { executionReceipt } from './attestation.ts'
 
 function textOf(event: SessionEvent): string {
   if (event.type === 'tool/call') {
@@ -31,6 +32,14 @@ export async function resolveEvidence(host: Pick<CaptureHost, 'store' | 'context
     const check: typeof sourceChecks[number] = { evidenceId: evidence.id, status: 'unavailable' }
     sourceChecks.push(check)
     if (evidence.kind === 'human' && evidence.eventRef.startsWith('review:')) { check.status = 'host-attested'; continue }
+    const receipt = executionReceipt(host.store, details.note.repository, evidence)
+    if (receipt) {
+      const entry = { ref: evidence.eventRef, type: 'host/execution', text: safeText(JSON.stringify(receipt), 2000), sessionId: receipt.sessionId, evidenceId: evidence.id }
+      if (Buffer.byteLength(serializeAnalysisInput({ ...input, events: [...events, entry], sourceChecks })) <= 90_000) {
+        events.push(entry); check.status = 'host-attested'
+      } else check.status = 'truncated'
+      continue
+    }
     const anchor = /^seq:(\d+):([a-f0-9]{64})$/.exec(evidence.eventRef)
     const ticket = host.store.tickets.get(evidence.ticketId), directory = ticket?.execution?.directory
     if (!anchor || !directory || evidence.sessionId !== `worker-${ticket.id}`) continue

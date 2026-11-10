@@ -6,6 +6,7 @@ import type { PromptVersion } from './app/prompts.ts'
 import type { SettingsVersion } from './app/store.ts'
 import type { SettingsSave } from './policy.ts'
 import type { Retry } from './sources/github.ts'
+import type { MemoryExecutionReceipt } from './app/memory/types.ts'
 
 /** Key of a KV record whose value has type `V`; a plain string represents an untyped key. */
 export type Key<V> = string & { readonly __value?: V }
@@ -25,6 +26,7 @@ export const KV = {
     reviewSequence: record<number>('memory-review-sequence'),
     reviewed: family<{ revision: number; sequence: number }, [note: string]>('memory-reviewed:'),
     evidenceAudit: record<{ at: string; job: string; checks: { evidenceId: string; status: string }[] }>('memory-evidence-audit'),
+    execution: family<MemoryExecutionReceipt, [id: string]>('memory-execution:'),
     lastCapturedAt: record<string>('memory-last-captured-at'), lastConsolidatedAt: record<string>('memory-last-consolidated-at'),
     published: family<boolean, [job: string]>('memory-published:') },
   /** Store: current database schema version. */

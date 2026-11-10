@@ -53,6 +53,7 @@ import type { MemoryAnalyzer } from './memory/analyzer.ts'
 import { DshMemoryAnalyzer } from './memory/dsh-analyzer.ts'
 import { MemoryDreaming } from './memory/dreaming.ts'
 import { MemoryProjection } from './memory/projection.ts'
+import { MemoryAttestor } from './memory/attestation.ts'
 
 // Source plugins interact with dsh-superagent exclusively through the `SourceHost` service interface.
 declare module '@deepseek-ai/cordis' { interface Context { orchestrator: SourceHost } }
@@ -81,6 +82,7 @@ export class Runtime extends Service implements SourceHost {
   readonly effects: Effects
   readonly memory: MemoryService
   private readonly memoryProjection: MemoryProjection
+  private readonly memoryAttestation: MemoryAttestor
   readonly sources: SourceRegistry
   readonly commands: Commands
   readonly sessions: Sessions
@@ -131,6 +133,7 @@ export class Runtime extends Service implements SourceHost {
       const board = this.board
       const effects = this.effects = new Effects(store, board)
       const memory = this.memory = new MemoryService(store, board.claim('memory'))
+      const attestor = this.memoryAttestation = new MemoryAttestor({ store, memory, lifetime: this.lifetime, paused: () => this.paused() })
       const sources = this.sources = new SourceRegistry(() => store.settings(), board, kind => {
         // Sync source member lists once startup completes when a source plugin loads dynamically.
         if (kind.policy?.sync) void this.ready?.then(() => this.settings.syncable().includes(kind.kind) ? this.settings.sync(kind.kind) : undefined)
@@ -146,7 +149,7 @@ export class Runtime extends Service implements SourceHost {
         promptVersion: id => this.sessions.promptVersion(id), mayRead: (id, revision) => this.sessions.mayRead(id, revision),
         feishuPageSize: () => feishuSettings(sources).readPageSize, sourceLink: link }
       const sessions = this.sessions = new Sessions({ context: ctx, store, prompts, effects, health: board.claim('models'), masterId,
-        lifetime: this.lifetime, memory,
+        lifetime: this.lifetime, memory, observeExecution: (context, sessionId) => attestor.bind(context, sessionId),
         closing: () => this.closing(), environment, ...machine.scopedEnvironment ? { executionEnvironment } : {},
         tools: (agent, ticket) => ticket ? executorTools(this.toolHost, ticket) : mainTools(this.toolHost, agent) })
       const policyChanged: EngineForSettings['policyChanged'] = (from, to, effects) => { this.engine.policyChanged(from, to, effects) }
@@ -332,6 +335,7 @@ export class Runtime extends Service implements SourceHost {
       await Promise.allSettled([passes, this.effects.drain(), ...agents.map(agent => agent.whenIdle())])
       // The workers' jobs and subagents stop too: their ends would start worker turns without the tool limits released below.
       await this.executor.shutdown()
+      await this.memoryAttestation.idle()
       await this.memoryProjection.idle()
       this.executor.dispose()
       this.sessions.dispose()

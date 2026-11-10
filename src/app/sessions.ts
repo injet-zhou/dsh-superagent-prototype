@@ -34,6 +34,7 @@ export interface SessionsHost {
   readonly masterId: string
   readonly lifetime: AbortSignal
   readonly memory?: Pick<MemoryService, 'index'>
+  observeExecution?(context: Context, sessionId: string): () => void
   closing(): boolean
   /** Execution environment variables for `ticket`, rendered into its worker's system prompt. */
   environment(ticket: Ticket): Variable[]
@@ -265,6 +266,7 @@ export class Sessions {
     if (this.bindings.get(agent) !== binding) return
     const register = this.registerTool(agent, binding)
     this.scopeEnvironment(agent, binding, ticket)
+    if (ticket && host.observeExecution) binding.disposers.push(host.observeExecution(agent.ctx, String(agent.session.id)))
     const tools = host.tools(agent, ticket)
     for (const tool of tools) if (!ticket || !MEMORY_TOOLS.has(tool.name)) register(tool.name, tool.description, tool.schema, tool.execute)
     if (ticket) this.replaceMemoryTools(agent, binding, tools)

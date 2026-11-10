@@ -5,6 +5,7 @@ import { KV } from '../../kv.ts'
 import { EvidenceInput, MemoryBrowse, MemoryId, MemoryQuery, MemoryStatus, NoteInput, type MemoryDetails, type MemoryEvidence, type MemoryNote, type MemoryPage } from './types.ts'
 import { cleanNote, fingerprint, safeText } from './security.ts'
 import { searchPlan } from './retrieval.ts'
+import { executionReceipt } from './attestation.ts'
 
 /** A rejected optimistic update; callers must reread and form a new proposal. */
 export class MemoryConflict extends Error {}
@@ -24,7 +25,8 @@ export class MemoryStore {
     const note = this.note(row)
     const evidence = this.store.db.prepare('SELECT * FROM memory_evidence WHERE note_id=? ORDER BY id LIMIT 100').all(id).map(row => this.evidence(row))
     const revisions = this.store.db.prepare('SELECT revision,action,before_json,after_json,reason,source_job_id,at FROM memory_revision WHERE note_id=? ORDER BY revision DESC LIMIT 100').all(id)
-    return { note, evidence, revisions: revisions.map(row => ({ revision: Number(row.revision), action: String(row.action), reason: String(row.reason),
+    const executions = evidence.flatMap(item => { const receipt = executionReceipt(this.store, this.repository, item); return receipt ? [receipt] : [] })
+    return { note, evidence, ...executions.length ? { executions } : {}, revisions: revisions.map(row => ({ revision: Number(row.revision), action: String(row.action), reason: String(row.reason),
       at: String(row.at), source_job_id: String(row.source_job_id), before_json: row.before_json === null ? null : String(row.before_json), after_json: String(row.after_json) })) }
   }
   private evidence(row: Record<string, SQLInputValue>): MemoryEvidence {

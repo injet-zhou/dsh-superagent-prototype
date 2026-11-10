@@ -339,6 +339,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/memory/analyzer.ts` | Restricted JSON proposal contract, without tool execution or publishing access |
 | `src/app/memory/capture.ts` | Settled-turn capture effects, raw-log continuity checks, atomic cursors, redaction and call budgets |
 | `src/app/memory/evidence.ts` | Host-controlled scoped Transcript replay, source integrity checks and bounded redacted evidence packages |
+| `src/app/memory/attestation.ts` | Bounded Host-observed test execution receipts, exact facts and replay-safe publication |
 | `src/app/memory/dsh-analyzer.ts` | Tool-free direct LLM stream adapter with explicit model, bounded input/output and no Session |
 | `src/app/memory/dreaming.ts` | Strict proposal publisher, evidence provenance, atomic CAS batches and durable consolidation scheduling |
 | `src/app/memory/projection.ts` | Private atomic Markdown projections, symlink refusal and rebuild coalescing |
@@ -474,6 +475,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/panel-memory.spec.tsx` | Memory settings, source review, safe text rendering, CAS conflicts, manual maintenance and repository selection |
 | `tests/memory-capture.spec.ts` | Capture idempotence, cursor atomicity, retention gaps, budgets and Worker lifecycle |
 | `tests/memory-evidence.spec.ts` | Missing/changed/foreign source history and complete evidence-package bounds |
+| `tests/memory-attestation.spec.ts` | Actual ToolRuntime and Node test execution facts, zero-model reuse, rejection and atomic rollback |
 | `tests/memory-dreaming.spec.ts` | Publisher CAS/merge/retract, model capability isolation, global budgets and projection recovery |
 | `tests/memory-evaluation.spec.ts` | Fixed 20-case offline A/B retrieval fixture, without live model quality/cost claims |
 | `tests/prompts.spec.ts` | Prompt validation, assembly and versions |
