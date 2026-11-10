@@ -73,7 +73,8 @@ export class MemoryService {
       let body = prefix
       for (const line of lines) { if (Buffer.byteLength(body + line + '\n') > 600) break; body += line + '\n' }
       this.snapshot = body
-      this.problem = partial ? 'partial_capture' : undefined
+      const unresolved = this.store.get(KV.memory.evidenceAudit)?.checks.some(check => !['available', 'host-attested'].includes(check.status))
+      this.problem = partial ? 'partial_capture' : unresolved ? 'memory_evidence_unavailable' : undefined
     } catch { this.problem = 'memory_index_unavailable'; this.snapshot = '' }
     this.report()
     for (const listener of this.listeners) {

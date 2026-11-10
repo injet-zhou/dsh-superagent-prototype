@@ -2,8 +2,12 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 
-export async function sessionHistory(context: Context, id: SessionId, signal?: AbortSignal): Promise<readonly SessionEvent[]> {
-  if (typeof context.sessionController.inspect === 'function') return (await context.sessionController.inspect(id, signal)).events
+export async function sessionHistory(context: Context, id: SessionId, signal?: AbortSignal, expectedCwd?: string): Promise<readonly SessionEvent[]> {
+  if (typeof context.sessionController.inspect === 'function') {
+    const snapshot = await context.sessionController.inspect(id, signal)
+    if (expectedCwd && (snapshot.meta?.id !== id || snapshot.meta.cwd !== expectedCwd)) throw new Error('session_history_mismatch')
+    return snapshot.events
+  }
   // 0.2.2 removed inspect(). Its documented query API returns a disposable immutable raw-log cut.
   const query: unknown = context.get('sessionQuery')
   if (!query || typeof query !== 'object' || !('observeSession' in query) || typeof query.observeSession !== 'function') {
@@ -19,6 +23,7 @@ export async function sessionHistory(context: Context, id: SessionId, signal?: A
     signal?.throwIfAborted()
     if (!('header' in observation) || !observation.header || typeof observation.header !== 'object' || !('id' in observation.header)
       || observation.header.id !== id || !('events' in observation) || !Array.isArray(observation.events)) throw new Error('session_history_mismatch')
+    if (expectedCwd && (!('cwd' in observation.header) || observation.header.cwd !== expectedCwd)) throw new Error('session_history_mismatch')
     // Events come from the trusted DSH service; Capture separately validates seq continuity and event fingerprints.
     return observation.events as SessionEvent[]
   } finally { dispose.call(observation) }

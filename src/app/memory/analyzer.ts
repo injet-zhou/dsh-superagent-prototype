@@ -23,8 +23,10 @@ export const MemoryProposal = z.discriminatedUnion('action', [
 ])
 export interface MemoryAnalysisInput {
   mode: 'capture' | 'consolidate'
-  events: readonly { ref: string; type: string; text: string }[]
+  events: readonly { ref: string; type: string; text: string; sessionId?: string; evidenceId?: string }[]
   notes: readonly MemoryDetails[]
+  relatedNotes?: readonly MemoryDetails[]
+  sourceChecks?: readonly { evidenceId: string; status: 'available' | 'changed' | 'missing' | 'unavailable' | 'host-attested' | 'truncated' }[]
 }
 export interface MemoryAnalyzer {
   propose(input: Readonly<MemoryAnalysisInput>, signal: AbortSignal): Promise<unknown>

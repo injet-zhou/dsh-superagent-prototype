@@ -17,6 +17,8 @@ export class DshMemoryAnalyzer implements MemoryAnalyzer {
       + 'Propose only reusable repository experience with exact source evidence and explicit uncertainty. Never infer verification from a model statement. '
       + 'Merge only when kind, title, body and scope are exactly identical, not merely similar in meaning; otherwise leave notes separate. '
       + 'Verified updates require an attached Host attestation whose claimFingerprint matches the unchanged exact claim. '
+      + 'Compare new notes with relatedNotes from earlier rounds. sourceChecks describes original transcript availability; '
+      + 'events contain redacted source anchors and neighboring context. Missing, changed or truncated history is not proof. '
       + 'Leave conflicting candidates for review. You have no tools or execution authority. Schema: ' + JSON.stringify(schema)
     const text = serializeAnalysisInput(input)
     if (Buffer.byteLength(text) > MEMORY_INPUT_BYTES) throw new Error('memory_input_too_large')

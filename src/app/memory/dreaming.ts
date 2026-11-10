@@ -4,10 +4,12 @@ import { KV } from '../../kv.ts'
 import { Later } from '../effects.ts'
 import type { MemoryStore } from './store.ts'
 import { MemoryConflict } from './store.ts'
-import { MemoryProposal, MEMORY_INPUT_BYTES, serializeAnalysisInput, type MemoryAnalysisInput } from './analyzer.ts'
+import { MemoryProposal, serializeAnalysisInput, type MemoryAnalysisInput } from './analyzer.ts'
 import { analyze, type CaptureHost } from './capture.ts'
 import { cleanNote, fingerprint, safeText } from './security.ts'
 import type { MemoryDetails } from './types.ts'
+import { readMatches } from './retrieval.ts'
+import { resolveEvidence } from './evidence.ts'
 
 /** All proposals publish together, against only current same-repository source evidence. */
 export function publish(memory: MemoryStore, job: string, raw: unknown, offered: readonly MemoryDetails[]): void {
@@ -97,7 +99,7 @@ export class MemoryDreaming {
     for (const note of [...candidates, ...verified, ...stale]) {
       const details = memory.get(note.id)!
       const entry = { note: details.note, evidence: details.evidence.slice(0, 5).map(item => ({ ...item, excerpt: safeText(item.excerpt, 500) })), revisions: [] }
-      if (Buffer.byteLength(serializeAnalysisInput({ mode: 'consolidate', events: [], notes: [...notes, entry] })) > MEMORY_INPUT_BYTES) break
+      if (Buffer.byteLength(serializeAnalysisInput({ mode: 'consolidate', events: [], notes: [...notes, entry] })) > 40_000) break
       notes.push(entry)
     }
     return { mode: 'consolidate', events: [], notes }
@@ -106,12 +108,32 @@ export class MemoryDreaming {
     const { host } = this
     if (host.store.get(KV.memory.published(fingerprint(batchId)))) return
     try {
-      const input = this.input()
+      let input = this.input()
       if (!input.notes.length) return
+      if (!host.analyzer || !host.memory.status().remainingCalls) {
+        const code = !host.analyzer ? 'memory_analyzer_unavailable' : 'memory_budget_exhausted'
+        host.memory.degraded(code); throw new Later(code)
+      }
+      const relatedNotes: MemoryDetails[] = [], memory = host.memory.publisher(), seen = new Set(input.notes.map(item => item.note.id))
+      const signal = AbortSignal.any([host.lifetime, host.memory.analysisSignal(), AbortSignal.timeout(5000)])
+      for (const primary of input.notes.slice(0, 5)) {
+        for (const match of await readMatches(host.store.db, memory.relatedPlan(primary.note), signal)) {
+          if (seen.has(match.id)) continue
+          const found = memory.get(match.id)
+          if (!found || found.note.revision !== match.revision) continue
+          const details = { ...found, evidence: found.evidence.slice(0, 5).map(item => ({ ...item, excerpt: safeText(item.excerpt, 500) })), revisions: [] }
+          if (Buffer.byteLength(serializeAnalysisInput({ ...input, relatedNotes: [...relatedNotes, details] })) > 50_000) continue
+          relatedNotes.push(details); seen.add(match.id)
+          if (relatedNotes.length >= 10) break
+        }
+        if (relatedNotes.length >= 10) break
+      }
+      input = await resolveEvidence(host, { ...input, relatedNotes }, signal)
       const proposals = await analyze(host, input)
       if (!host.memory.dreamingEnabled() || host.paused() || host.lifetime.aborted) throw new Later('memory_consolidation_paused')
       host.store.atomic(() => {
-        publish(host.memory.publisher(), batchId, proposals, input.notes)
+        publish(host.memory.publisher(), batchId, proposals, [...input.notes, ...input.relatedNotes ?? []])
+        host.store.set(KV.memory.evidenceAudit, { at: new Date().toISOString(), job: fingerprint(batchId), checks: [...input.sourceChecks ?? []] })
         const sequence = (host.store.get(KV.memory.reviewSequence) ?? 0) + 1
         for (const { note } of input.notes) host.store.set(KV.memory.reviewed(note.id), { revision: note.revision, sequence })
         host.store.set(KV.memory.reviewSequence, sequence)

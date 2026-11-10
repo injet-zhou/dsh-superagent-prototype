@@ -87,6 +87,18 @@ export class MemoryStore {
       ORDER BY COALESCE(json_extract(r.value,'$.sequence'),0),n.id LIMIT ?`)
       .all(KV.memory.reviewed.prefix, this.repository, status, Math.min(limit, 200)).map(row => this.note(row))
   }
+  /** Compare new work against historical knowledge, including revisions already reviewed in previous rounds. */
+  relatedPlan(note: NoteInput & { id: string }) {
+    const words = [...new Set((note.title.toLowerCase().match(/[\p{L}\p{N}_-]{3,}/gu) ?? []))].slice(0, 6)
+    const paths = JSON.stringify(note.scope.paths)
+    const overlap = `EXISTS(SELECT 1 FROM json_each(n.scope_json,'$.paths') p JOIN json_each(?) q
+      WHERE p.value=q.value OR substr(p.value,1,length(q.value)+1)=q.value||'/' OR substr(q.value,1,length(p.value)+1)=p.value||'/')`
+    const terms = words.map(() => "(instr(lower(n.title||' '||n.body),?)>0)").join('+') || '0'
+    return { sql: `SELECT * FROM (SELECT n.*,(n.title=?)*40+(n.body=?)*80+${overlap}*10+${terms} AS relevance
+      FROM memory_note n WHERE n.repository=? AND n.id<>? AND n.status IN ('candidate','verified','stale'))
+      WHERE relevance>0 ORDER BY relevance DESC,status='verified' DESC,updated_at DESC,id LIMIT 4`,
+    params: [note.title, note.body, paths, ...words, this.repository, note.id] }
+  }
   /** Bounded pages for rebuilding the private projection, including stale/retracted records. */
   page(after = ''): MemoryNote[] {
     return this.store.db.prepare('SELECT * FROM memory_note WHERE repository=? AND id>? ORDER BY id LIMIT 100')

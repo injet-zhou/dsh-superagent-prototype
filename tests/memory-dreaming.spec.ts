@@ -3,7 +3,8 @@ import { readFile, rm, symlink, writeFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { MessageId } from '@deepseek-ai/dsh-llm'
 import { Context } from '@deepseek-ai/cordis'
 import type { MemoryAnalysisInput } from '../src/app/memory/analyzer.ts'
 import { HealthBoard } from '../src/infra/health.ts'
@@ -374,4 +375,57 @@ it('reviews small backlogs on a timer and stops scheduling when Memory is disabl
     await vi.advanceTimersByTimeAsync(30 * 60_000); await effects.idle('memory-consolidate')
     expect(propose).toHaveBeenCalledTimes(2)
   } finally { lifetime.abort(); await effects.drain(); vi.useRealTimers() }
+})
+
+it.each(['duplicate', 'contradiction'])('compares a new %s with unchanged history reviewed in an earlier round', async mode => {
+  const f = memoryFixture(), effects = new Effects(f.store, f.board), lifetime = new AbortController()
+  const config = MemoryConfigSchema.parse({ enabled: true, dreaming: true, dailyCallBudget: 5 })
+  f.store.saveSettings({ ...f.store.settings(), memory: config }); f.service.configure(config)
+  const a = f.memory.create(exampleNote, [exampleEvidence], 'ticketA', 'verified', 'history-a')
+  let rounds = 0
+  const propose = vi.fn(async (input: Readonly<MemoryAnalysisInput>) => {
+    if (++rounds === 1) return []
+    const old = input.relatedNotes?.find(item => item.note.id === a.id), next = input.notes.find(item => item.note.id === 'new-b')
+    if (!old || !next) return []
+    return mode === 'duplicate' ? [{ action: 'merge', sourceId: next.note.id, sourceRevision: next.note.revision,
+      targetId: old.note.id, targetRevision: old.note.revision, ...audit }] : [{ action: 'stale', id: old.note.id,
+      expectedRevision: old.note.revision, evidenceIds: old.evidence.map(item => item.id), ...audit }]
+  })
+  const dreaming = new MemoryDreaming({ store: f.store, memory: f.service, effects, context: new Context(), lifetime: lifetime.signal,
+    analyzer: { propose }, paused: () => false })
+  onTestFinished(async () => { lifetime.abort(); await effects.drain() })
+  effects.start(); dreaming.enqueue(); await effects.idle('memory-consolidate')
+  f.memory.create(mode === 'duplicate' ? exampleNote : { ...exampleNote, body: 'The old migration workflow fails with the new API.' },
+    [{ ...exampleEvidence, ticketId: 'ticketB', sessionId: 'worker-ticketB', supportsVerification: false }], 'ticketB', 'candidate', 'new-b')
+  dreaming.enqueue(); await effects.idle('memory-consolidate')
+  expect(propose.mock.calls[1]![0].relatedNotes).toEqual(expect.arrayContaining([expect.objectContaining({ note: expect.objectContaining({ id: a.id }) })]))
+  expect(f.memory.get(a.id)!.note.status).toBe(mode === 'duplicate' ? 'verified' : 'stale')
+  expect(f.memory.get('new-b')!.note.status).toBe(mode === 'duplicate' ? 'retracted' : 'candidate')
+})
+
+it('corrects misleading evidence summaries against the original scoped Transcript and neighboring context', async () => {
+  const f = memoryFixture(), effects = new Effects(f.store, f.board), lifetime = new AbortController(), context = new Context()
+  const config = MemoryConfigSchema.parse({ enabled: true, dreaming: true, dailyCallBudget: 2 })
+  f.store.saveSettings({ ...f.store.settings(), memory: config }); f.service.configure(config)
+  f.store.tickets.save({ id: 'ticketA', title: 'A', decisionId: 'd', mandate: { scope: 'migration', strength: 'explicit', policyVersion: 'v',
+    actor: { source: 'github', id: 'alice' }, basis: { via: 'listed' } }, assignments: [], origin: { triggerId: 't', triggerIds: ['t'] },
+    channels: [], inputs: [], undelivered: [], createdAt: '', updatedAt: '', execution: { name: 'fixture', directory: f.directory, assignment: 'a' } })
+  const base = Session.create(SessionId('worker-ticketA')), session = Session.create(base.id, [], { ...base.header, cwd: f.directory })
+  session.append('turn/start', { turn: 1 })
+  const source = session.append('user/message', { id: MessageId('log'), role: 'user', source: { kind: 'user' }, content: [{ type: 'text',
+    text: 'Progress output. '.repeat(80) + 'ACTUAL_FAILURE: migration rolled back. API_KEY=private-resolver-secret' }] }, { surfaceOp: 'append' })
+  session.append('user/message', { id: MessageId('context'), role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'The old procedure must be revisited.' }] }, { surfaceOp: 'append' })
+  const inspect = vi.fn(async () => ({ meta: session.header, events: session.snapshotEvents() }))
+  context.reflect.provide('sessionController', { inspect })
+  const note = f.memory.create(exampleNote, [{ ...exampleEvidence, eventRef: `seq:${source.seq}:${fingerprint(source)}`, excerpt: 'The migration checks passed.' }], 'misleading', 'verified')
+  const propose = vi.fn(async (input: Readonly<MemoryAnalysisInput>) => input.events.some(item => item.text.includes('ACTUAL_FAILURE'))
+    ? [{ action: 'stale', id: note.id, expectedRevision: 1, evidenceIds: input.notes[0]!.evidence.map(item => item.id), ...audit }] : [])
+  const dreaming = new MemoryDreaming({ store: f.store, memory: f.service, effects, context, lifetime: lifetime.signal, analyzer: { propose }, paused: () => false })
+  onTestFinished(async () => { lifetime.abort(); await effects.drain() })
+  effects.start(); dreaming.enqueue(); await effects.idle('memory-consolidate')
+  expect(f.memory.get(note.id)!.note.status).toBe('stale')
+  expect(inspect).toHaveBeenCalledOnce()
+  const offered = propose.mock.calls[0]![0]
+  expect(offered.events.some(item => item.text.includes('old procedure'))).toBe(true)
+  expect(JSON.stringify(offered)).not.toContain('private-resolver-secret')
 })

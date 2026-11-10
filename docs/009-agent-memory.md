@@ -574,3 +574,5 @@ DSH 0.2.2-rc.1 的真实 Session 烟测发现 `sessionController.inspect` 已删
 ### 第二轮审阅：全库检索（2026-11-10）
 
 移除 FTS 和 fallback 在匹配前截取最近 200 条的行为；现在 Repository/status/path 条件约束全库匹配，仅限制返回结果数。Worker 检索使用固定 Node SQLite 只读子进程，不继承凭据环境；500ms deadline 或取消会终止该专用 reader，避免同步 SQLite 扫描阻塞 Runtime。每个 MemoryService 同时最多一个检索；返回后核对当前修订，丢弃并发变更结果。Host 内部同步查询仅用于后台出版/测试，不进入同步 Prompt render。新增 FTS/无 FTS 的 225 条较新笔记遮挡旧记忆回归，以及真实慢 SQLite 查询的进程隔离、deadline 和事件循环响应测试。以本节替代此前“200 条可见范围、100ms 软截止”的限制描述。
+
+第二轮审阅：Dreaming 每批为新/变化的笔记检索已审阅历史，按精确文本、路径交集与主题词构建独立 `relatedNotes` 对照集合，不把对照项再次标记为本批工作。Host Evidence Resolver 按已有 Evidence 的 Ticket、Session、执行目录、seq 和摘要读取原始日志及相邻上下文；模型不能选择任意 Session/路径或执行命令。输入包含脱敏的原始消息、工具调用命令和工具结果，完整 JSON 保持在 100000 字节内；原始日志缺失、摘要改变、目录不符及包截断均明确标记，结果状态与出版进度同事务审计。候选/verified 和新 Host attestation 的原有约束不变。跨轮重复/矛盾、误导性摘要纠错、跨仓库拒绝和有界包回归通过；全量 `pnpm check` 通过（73 文件、1350 测试）。
