@@ -395,22 +395,22 @@ A/B 对比：Memory disabled vs. enabled（必要时再加入 Capture-only、Dre
 ### 12.4 每个阶段的 DoD
 
 **PR1：Foundation**
-- [ ] 单仓库 SQLite 迁移、安全读写、检索、分页资源、Worker 短索引、显式写入测试入口；开关默认关闭。
-- [ ] 独立 Runtime、多仓库/默认仓库兼容性、无模型情况下读路径与失败降级全部通过。
-- [ ] 不修改 Engine 语义；不改变默认 Prompt 的 Policy 优先级与正常 Ticket 行为。
+- [x] 单仓库 SQLite 迁移、安全读写、检索、分页资源、Worker 短索引、显式写入测试入口；开关默认关闭。
+- [x] 独立 Runtime、多仓库/默认仓库兼容性、无模型情况下读路径与失败降级全部通过。
+- [x] 不修改 Engine 语义；不改变默认 Prompt 的 Policy 优先级与正常 Ticket 行为。
 
 **PR2：Capture**
-- [ ] 先验证 DSH 事件结构与保留语义；再实现稳定的 turn capture hook。
-- [ ] 幂等 Effect、checkpoint/Evidence 原子写入、脱敏、失败重放、partial capture、资源预算。
-- [ ] 真正 idle 与暂时 idle/后台任务差异有自动化回归覆盖。
+- [x] 先验证 DSH 事件结构与保留语义；再实现稳定的 turn capture hook。
+- [x] 幂等 Effect、checkpoint/Evidence 原子写入、脱敏、失败重放、partial capture、资源预算。
+- [x] 真正 idle 与暂时 idle/后台任务差异有自动化回归覆盖。
 
 **PR3：Dreaming**
-- [ ] 验证独立受限模型执行路径；若不具备权限边界，明确失败而不是复用危险 Worker。
-- [ ] Analyzer 输出严格 Schema，Publisher CAS/审计修订，去重/冲突处理，Wiki 可重建。
-- [ ] 定时/手动触发、预算/暂停/关闭/恢复和错误隔离可验证；至少有一个离线 A/B 集。
+- [x] 验证独立受限模型执行路径；若不具备权限边界，明确失败而不是复用危险 Worker。
+- [x] Analyzer 输出严格 Schema，Publisher CAS/审计修订，去重/冲突处理，Wiki 可重建。
+- [x] 定时/手动触发、预算/暂停/关闭/恢复和错误隔离可验证；至少有一个离线 A/B 集。
 
 **PR4（可选）：Panel**
-- [ ] Repository scoped 管理界面、操作权限、健康状态、撤销/失效/手动触发与 UI 测试。
+- [x] Repository scoped 管理界面、操作权限、健康状态、撤销/失效/手动触发与 UI 测试。
 
 ## 13. 实施时推荐的具体文件
 
@@ -547,3 +547,26 @@ DSH 0.2.2-rc.1 的真实 Session 烟测发现 `sessionController.inspect` 已删
 受控真实端到端验证最终通过：生产 MemoryCapture 使用本机 DSH 0.2.2 原始 Session 历史，实际 provider 提取 1 个 candidate；重放同一 turn 不新增模型调用；压缩/恢复保留原始 seq/摘要；Host 运行 Node assert 核证精确 fixture claim；retrieval disabled/enabled 命中分别为 0/1；真实 Dreaming 提案通过 Publisher 后队列排空；Wiki 重建与秘密缺失检查通过。全部分析 tools=[]，未创建 Agent。该成功 run Capture 用 1307 tokens，Dreaming 用 2568 tokens，共 2 次调用、3875 tokens，均为 provider 返回的用量；不是美元费用估算，也不包含此前失败的开发探针。完整无凭据报告见 `docs/memory-live-validation.json`，可重现插件与命令见 `scripts/memory-smoke/README.md`。严格 Publisher 曾正确拒绝模型把“语义相同但文本不同”的笔记合并；已将提示明确为 kind/title/body/scope 完全相等，未放宽校验。
 
 20 项固定离线检索 A/B 仍保留；上述真实烟测是合成仓库/Session 的有限场景，不是完整 Coding Worker 性能评测。没有测量真实 Coding Ticket 完成率、重复命令节省或美元收益。通用自动测试结果认证器、通用秘密/PII 识别、SQLite 硬中断和向量检索仍不在本版能力内；真实自动 Capture 只产生候选，人工核验现在可通过 Panel 完成。
+
+### 本轮最终验证与 UI 证据（2026-11-10）
+
+冻结实现后按要求顺序执行，全部退出码为 0；`VITEST_MAX_WORKERS=2` 仅限制并发，不减少测试或断言。
+
+| 命令 | 结果 |
+| --- | --- |
+| `pnpm install --frozen-lockfile` | 通过，使用已修复且锁定相同版本的 lockfile |
+| `pnpm typecheck` | 通过 |
+| `pnpm test` | 72 文件、1340 项测试全部通过 |
+| `pnpm build` | 通过 |
+| `pnpm check` | typecheck、72 文件/1340 测试、build 全通过 |
+| `git diff --check` | 通过 |
+
+真实 Firefox/WebDriver BiDi 使用同一 1440×1000 视口、light 主题和既有 Panel 测试 API 合成数据验证构建产物。旧版为 `0e5f963`，新版为 `73f0e77`；只截图 Superagent 面板，不包含 DSH 私人 Session 侧栏。源码/构建哈希及夹具来源见 `docs/memory-ui-validation.json`。
+
+| 原版设置（没有 Memory 入口） | 新版 Memory |
+| --- | --- |
+| ![Before](images/memory-before.png) | ![After](images/memory-after.png) |
+
+模型/预算设置与来源核验分别见 `docs/images/memory-settings.png`、`docs/images/memory-review.png`。截图不是重绘稿；API 数据是合成 fixture，真实 Host 的作用域、CAS 与持久化由集成测试另外验证。
+
+本机部署已核对：服务改为从独立功能工作树启动，主工作区仍在 main，`127.0.0.1:3085`、原 `stateDir`、GitHub/Discord 配置及 Policy/Executor 等其他设置保持原值。升级前采用 SQLite backup API 备份，部署后数据库 integrity=ok、Store KV schema=12，Ticket/Memory 记录数保持一致。Memory 设置通过 revision CAS 从 3→4，仅增加已实测的 `reasoningEffort: low`；模型和 dailyCallBudget=90 保持用户设置，`policy_changed=false`、无重启。Runtime、Memory、Capture、Consolidate、GitHub、Discord 均 ready；可选 Feishu/history 仍 paused，没有强制启用。用户库未注入任何合成候选，下一次实际稳定收尾才触发新采集，人工核验后才进入 Worker 的 verified 搜索。默认发行配置仍 Memory disabled、预算 0。

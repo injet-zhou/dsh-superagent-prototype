@@ -1,0 +1,25 @@
+{
+  "browser": "Firefox headless / WebDriver BiDi",
+  "viewport": {
+    "width": 1440,
+    "height": 1000,
+    "devicePixelRatio": 1
+  },
+  "theme": "light",
+  "data": "Synthetic tests/fixtures/panel-server.ts responses; user Runtime API not used",
+  "crop": "Superagent .dt-page only; excludes global DSH Session sidebar",
+  "before": {
+    "commit": "0e5f963a40a111e85e42b9b393268219b13238df",
+    "clientSha256": "25b9724527a5c56bafa92d1a371b106c7774d6c8d78bbd2d8902d28800d8174e",
+    "screenshot": "images/memory-before.png"
+  },
+  "after": {
+    "commit": "73f0e77",
+    "clientSha256": "e6e1537b9349bdd0b26243fbb6a2f270ca875a9b61250cad8da907bbfcaab981",
+    "screenshots": [
+      "images/memory-after.png",
+      "images/memory-settings.png",
+      "images/memory-review.png"
+    ]
+  }
+}
