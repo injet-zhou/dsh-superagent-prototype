@@ -4,6 +4,7 @@ import type { Store } from '../store.ts'
 import { KV } from '../../kv.ts'
 import { EvidenceInput, MemoryBrowse, MemoryId, MemoryQuery, MemoryStatus, NoteInput, type MemoryDetails, type MemoryEvidence, type MemoryNote, type MemoryPage } from './types.ts'
 import { cleanNote, fingerprint, safeText } from './security.ts'
+import { searchPlan } from './retrieval.ts'
 
 /** A rejected optimistic update; callers must reread and form a new proposal. */
 export class MemoryConflict extends Error {}
@@ -101,20 +102,8 @@ export class MemoryStore {
     return row ? this.note(row) : undefined
   }
   search(input: MemoryQuery): MemoryNote[] {
-    const { query, path, limit } = MemoryQuery.parse(input)
-    const params: SQLInputValue[] = [this.repository]
-    const scoped = path ? ` AND (json_array_length(n.scope_json,'$.paths')=0 OR EXISTS (
-      SELECT 1 FROM json_each(n.scope_json,'$.paths') p WHERE p.value=? OR substr(?,1,length(p.value)+1)=p.value||'/'))` : ''
-    if (path) params.push(path, path)
-    // Bound the eligible working set even in fallback mode. LIKE wildcards and FTS syntax are never trusted.
-    const eligible = `SELECT n.* FROM memory_note n WHERE n.repository=? AND n.status='verified'${scoped} ORDER BY n.updated_at DESC,n.id LIMIT 200`
-    if (this.fts && [...query].length >= 3) {
-      const match = `"${query.replaceAll('"', '""')}"`
-      return this.store.db.prepare(`WITH eligible AS (${eligible}) SELECT n.* FROM memory_note_fts f JOIN eligible n ON f.id=n.id
-        WHERE memory_note_fts MATCH ? ORDER BY rank LIMIT ?`).all(...params, match, limit).map(row => this.note(row))
-    }
-    return this.store.db.prepare(`WITH eligible AS (${eligible}) SELECT * FROM eligible WHERE instr(lower(title||' '||body),lower(?))>0 LIMIT ?`)
-      .all(...params, query, limit).map(row => this.note(row))
+    const { sql, params } = searchPlan(this.repository, this.fts, input)
+    return this.store.db.prepare(sql).all(...params).map(row => this.note(row))
   }
   /** Trusted fixture/import entrypoint. Workers and analyzers have no access to this method. */
   create(input: NoteInput, evidenceInput: EvidenceInput[], source: string, status: 'candidate' | 'verified' = 'candidate', id = fingerprint([this.repository, source]).slice(0, 40), audit?: { reason: string; job: string }): MemoryNote {

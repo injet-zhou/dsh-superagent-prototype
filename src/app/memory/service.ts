@@ -5,6 +5,7 @@ import type { Store } from '../store.ts'
 import { KV } from '../../kv.ts'
 import { MEMORY_BOUNDARY, MemoryQuery, MemoryReview, type MemoryBrowse, type MemoryHealth, type MemoryQuery as Query } from './types.ts'
 import { MemoryStore } from './store.ts'
+import { readMatches, searchPlan } from './retrieval.ts'
 
 /** Owns one repository's optional memory, cached index and observable degradation. No Engine dependency. */
 export class MemoryService {
@@ -15,6 +16,7 @@ export class MemoryService {
   private analyzer = false
   private summary = ''
   private remainingCalls = 0
+  private retrieving = false
   private readonly listeners = new Set<() => void>()
   private projectionProblem?: string
   private analysisController = new AbortController()
@@ -106,14 +108,20 @@ export class MemoryService {
   async search(input: Query, signal?: AbortSignal) {
     const parsed = MemoryQuery.parse(input)
     if (!this.enabled() || signal?.aborted) return { boundary: MEMORY_BOUNDARY, items: [], degraded: this.problem ?? 'memory_disabled' }
+    if (this.retrieving) return { boundary: MEMORY_BOUNDARY, items: [], degraded: 'memory_retrieval_busy' }
+    this.retrieving = true
     try {
-      const start = performance.now()
-      const items = this.publisher().search(parsed).map(note => ({ id: note.id, title: note.title, snippet: note.body.slice(0, 300),
+      const memory = this.publisher()
+      const matches = await readMatches(this.store.db, searchPlan(memory.repository, memory.fts, parsed), AbortSignal.any([this.analysisSignal(), ...signal ? [signal] : []]))
+      const items = matches.flatMap(match => {
+        const note = memory.get(match.id)?.note
+        return note?.status === 'verified' && note.revision === match.revision ? [note] : []
+      }).map(note => ({ id: note.id, title: note.title, snippet: note.body.slice(0, 300),
         kind: note.kind, status: note.status, revision: note.revision, scope: note.scope, verifiedAt: note.verifiedAt,
         evidenceCount: this.publisher().evidenceCount(note.id), read: `memory/${note.id}` }))
-      if (signal?.aborted || performance.now() - start > 100) throw new Error('timeout')
       return { boundary: MEMORY_BOUNDARY, items }
     } catch { this.degraded('memory_retrieval_unavailable'); return { boundary: MEMORY_BOUNDARY, items: [], degraded: 'memory_retrieval_unavailable' } }
+    finally { this.retrieving = false }
   }
   read(id: string): string {
     if (!this.enabled()) return JSON.stringify({ boundary: MEMORY_BOUNDARY, degraded: this.problem ?? 'memory_disabled' })

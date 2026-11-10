@@ -570,3 +570,7 @@ DSH 0.2.2-rc.1 的真实 Session 烟测发现 `sessionController.inspect` 已删
 模型/预算设置与来源核验分别见 `docs/images/memory-settings.png`、`docs/images/memory-review.png`。截图不是重绘稿；API 数据是合成 fixture，真实 Host 的作用域、CAS 与持久化由集成测试另外验证。
 
 本机部署已核对：服务改为从独立功能工作树启动，主工作区仍在 main，`127.0.0.1:3085`、原 `stateDir`、GitHub/Discord 配置及 Policy/Executor 等其他设置保持原值。升级前采用 SQLite backup API 备份，部署后数据库 integrity=ok、Store KV schema=12，Ticket/Memory 记录数保持一致。Memory 设置通过 revision CAS 从 3→4，仅增加已实测的 `reasoningEffort: low`；模型和 dailyCallBudget=90 保持用户设置，`policy_changed=false`、无重启。Runtime、Memory、Capture、Consolidate、GitHub、Discord 均 ready；可选 Feishu/history 仍 paused，没有强制启用。用户库未注入任何合成候选，下一次实际稳定收尾才触发新采集，人工核验后才进入 Worker 的 verified 搜索。默认发行配置仍 Memory disabled、预算 0。
+
+### 第二轮审阅：全库检索（2026-11-10）
+
+移除 FTS 和 fallback 在匹配前截取最近 200 条的行为；现在 Repository/status/path 条件约束全库匹配，仅限制返回结果数。Worker 检索使用固定 Node SQLite 只读子进程，不继承凭据环境；500ms deadline 或取消会终止该专用 reader，避免同步 SQLite 扫描阻塞 Runtime。每个 MemoryService 同时最多一个检索；返回后核对当前修订，丢弃并发变更结果。Host 内部同步查询仅用于后台出版/测试，不进入同步 Prompt render。新增 FTS/无 FTS 的 225 条较新笔记遮挡旧记忆回归，以及真实慢 SQLite 查询的进程隔离、deadline 和事件循环响应测试。以本节替代此前“200 条可见范围、100ms 软截止”的限制描述。
