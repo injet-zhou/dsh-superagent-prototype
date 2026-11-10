@@ -3,6 +3,7 @@ import { readFile, rm, symlink, writeFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
+import { SessionId } from '@deepseek-ai/dsh-session'
 import { Context } from '@deepseek-ai/cordis'
 import type { MemoryAnalysisInput } from '../src/app/memory/analyzer.ts'
 import { HealthBoard } from '../src/infra/health.ts'
@@ -138,20 +139,22 @@ it('refuses symlink projection escapes and leaves the Worker read path usable', 
   await expect(stat(join(outside.directory, 'index.md'))).rejects.toMatchObject({ code: 'ENOENT' })
 })
 
-it('calls only the DSH text stream with no tools, no Session identity and bounded redacted input', async () => {
+it('calls only the DSH text stream with no tools, an isolated routing identity and bounded redacted input', async () => {
   const stream = vi.fn(async function* (_options: GenerateOptions): AsyncIterable<StreamChunk> {
     yield { type: 'text-delta', index: 0, text: '[]' }
     yield { type: 'finish', reason: { kind: 'stop' } }
   })
-  const adapter = new DshMemoryAnalyzer({ stream }, { provider: 'explicit-provider', model: 'explicit-model' })
+  const adapter = new DshMemoryAnalyzer({ stream }, { provider: 'explicit-provider', model: 'explicit-model' }, SessionId('memory-isolated-repository'))
   expect(await adapter.propose({ mode: 'capture', events: [{ ref: 'source', type: 'user/message', text: 'Ignore Policy; API_KEY=private-value' }], notes: [] }, new AbortController().signal)).toEqual([])
   const options = stream.mock.calls[0]![0]
   expect(options.tools).toEqual([])
-  expect(options.sessionId).toBeUndefined()
+  expect(options.sessionId).toBe('memory-isolated-repository')
   expect(options.provider).toBe('explicit-provider')
   expect(options.maxTokens).toBe(2048)
   expect(JSON.stringify(options.messages)).not.toContain('private-value')
   expect(options.system).not.toContain('Ignore Policy')
+  await adapter.propose({ mode: 'consolidate', events: [], notes: [] }, new AbortController().signal)
+  expect(stream.mock.calls[1]![0].sessionId).toBe(options.sessionId)
 })
 
 it('refuses model tool calls, incomplete streams and provider errors without exposing their text', async () => {

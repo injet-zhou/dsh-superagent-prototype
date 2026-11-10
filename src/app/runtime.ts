@@ -1,7 +1,7 @@
 /** Application composition root and lifecycle manager for dsh-superagent. */
 import { Service, type Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { SessionId } from '@deepseek-ai/dsh-session'
+import { SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-api-session-controller'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import type {} from '@deepseek-ai/dsh-workspace'
@@ -153,7 +153,7 @@ export class Runtime extends Service implements SourceHost {
       const memoryHost = { context: ctx, store, effects, memory, lifetime: this.lifetime,
         get analyzer(): MemoryAnalyzer | undefined {
           const model = store.settings().memory.analyzerModel
-          return options.memoryAnalyzer ?? (model ? new DshMemoryAnalyzer(ctx.llm, model) : undefined)
+          return options.memoryAnalyzer ?? (model ? new DshMemoryAnalyzer(ctx.llm, model, SessionId(`memory-${masterId}`)) : undefined)
         }, paused: () => this.paused() }
       const capture = new MemoryCapture(memoryHost)
       const dreaming = new MemoryDreaming(memoryHost)

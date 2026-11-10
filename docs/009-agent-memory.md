@@ -539,3 +539,5 @@ git diff --check
 管理阶段全量验证：71 文件、1330 测试，typecheck/build 全通过。面板阶段增加 Memory 页面、独立设置分组、中英文、模型/预算、来源 Session、文本安全显示、修订历史、显式人工核验、失效/撤销、整理/重建、健康和多仓库作用域；设置历史同时显示 Memory 字段变化。全量验证 72 文件、1336 测试，typecheck/build 全通过。没有放宽或跳过原有用例；新增 Memory 标签页后，更新了中文/英文导航的准确期望。
 
 定时整理阶段：每 15 分钟为未审阅的修订排队，候选阈值仍可提前触发；停用和 Runtime shutdown 清理定时器，暂停时保留持久队列。新增生命周期回归测试先失败后通过；全量 `pnpm check` 通过（72 文件、1337 项测试）。整合 main 后冻结安装暴露其新增 loader 直接依赖的 peer 快照引用缺失；重新解析同一锁定版本，修复 peer 引用，并保留 pnpm 生成的弃用元数据。随后 `pnpm install --frozen-lockfile` 通过，未升级依赖版本。
+
+真实适配器兼容修复：OpenCode Go 实测要求稳定 `x-opencode-session`。DSH `GenerateOptions.sessionId` 在本地声明和 pi-ai 适配器中均已确认，仅映射请求路由元数据；每仓库使用独立 `memory-<masterId>`，不创建或解析 Session，不复用 Worker 身份、权限或工具。探针修复后真实调用通过，2 条合法候选提案，工具数 0、新建 Agent 数 0，提供方报告 input/output/total tokens 为 464/1049/1513。模型为显式 opencode-go/deepseek-v4.1-flash、reasoning=low；未更改用户实例的模型设置或预算。
