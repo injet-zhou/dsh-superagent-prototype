@@ -101,6 +101,7 @@ export class MemoryDreaming {
         const sequence = (host.store.get(KV.memory.reviewSequence) ?? 0) + 1
         for (const { note } of input.notes) host.store.set(KV.memory.reviewed(note.id), { revision: note.revision, sequence })
         host.store.set(KV.memory.reviewSequence, sequence)
+        host.store.set(KV.memory.lastConsolidatedAt, new Date().toISOString())
       })
       host.memory.refresh()
     } catch (error) {

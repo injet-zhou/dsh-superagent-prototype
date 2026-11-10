@@ -466,6 +466,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/memory-store.spec.ts` | Schema 12 upgrades, rollback/recovery, source evidence, CAS and retained revisions |
 | `tests/memory-retrieval.spec.ts` | FTS5/fallback, Unicode, scopes, bounded prompt index and hostile data |
 | `tests/memory-runtime.spec.ts` | Cross-Ticket reads, worker authorization, versioned settings and three-repository isolation |
+| `tests/memory-management.spec.ts` | Scoped browsing, explicit human confirmation, revision conflicts, invalidation and atomic audit rollback |
 | `tests/memory-capture.spec.ts` | Capture idempotence, cursor atomicity, retention gaps, budgets and Worker lifecycle |
 | `tests/memory-dreaming.spec.ts` | Publisher CAS/merge/retract, model capability isolation, global budgets and projection recovery |
 | `tests/memory-evaluation.spec.ts` | Fixed 20-case offline A/B retrieval fixture, without live model quality/cost claims |

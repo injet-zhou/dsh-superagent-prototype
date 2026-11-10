@@ -24,6 +24,7 @@ export const KV = {
     usage: record<{ day: string; calls: number }>('memory-usage'),
     reviewSequence: record<number>('memory-review-sequence'),
     reviewed: family<{ revision: number; sequence: number }, [note: string]>('memory-reviewed:'),
+    lastCapturedAt: record<string>('memory-last-captured-at'), lastConsolidatedAt: record<string>('memory-last-consolidated-at'),
     published: family<boolean, [job: string]>('memory-published:') },
   /** Store: current database schema version. */
   store: { schema: record<number>('schema') },

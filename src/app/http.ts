@@ -28,9 +28,11 @@ import { sourcesStatus, type SetupState } from './views/sources.ts'
 import { decisionList, search, threadDetail, threadList } from './views/threads.ts'
 import { executorLoad, ticketDetail, ticketList } from './views/tickets.ts'
 import type { MemoryService } from './memory/service.ts'
+import { MemoryBrowse, MemoryId, MemoryReview } from './memory/types.ts'
+import { MemoryConflict } from './memory/store.ts'
 
 export interface HttpHost {
-  readonly memory?: Pick<MemoryService, 'requestConsolidation' | 'rebuildProjection'>
+  readonly memory?: Pick<MemoryService, 'requestConsolidation' | 'rebuildProjection' | 'browse' | 'details' | 'review'>
   readonly store: Store
   /** Feishu message links resolved since startup, used by search to match AppLink URLs. */
   readonly sourceLinks: Pick<TextCache, 'entries'>
@@ -91,7 +93,8 @@ function failure(error: unknown): [number, Record<string, unknown>] {
   if (error instanceof SetupError) return [400, { error: error.message, setup: error.problem }]
   if (error instanceof RouteError) return [error.status, { error: error.message }]
   if (error instanceof UserError) return [error.missing ? 404 : 400, { error: error.message, code: error.code, values: error.values }]
-  if (error instanceof SettingsConflict || error instanceof PromptConflict) return [409, { error: error.message }]
+  if (error instanceof SettingsConflict || error instanceof PromptConflict || error instanceof MemoryConflict) return [409, { error: error.message }]
+  if (error instanceof Error && error.message === 'memory_unavailable') return [503, { error: 'Repository memory is not available until setup completes' }]
   return [500, { error: error instanceof Error ? error.message : String(error) }]
 }
 
@@ -158,7 +161,15 @@ function routes(runtime: HttpHost, catalog: () => ApiResponse<'GET repositories'
   const { store } = runtime
   const ticket = (id: string) => { if (!store.tickets.get(id)) throw new RouteError(404, 'Ticket not found'); return id }
   const promptBody = (input: { body: (maxBytes?: number) => Promise<unknown> }) => input.body(4 * runtime.machine.promptMaxChars.get() + 4096)
+  const memory = () => { if (!runtime.memory) throw new RouteError(503, 'Repository memory is unavailable'); return runtime.memory }
   return {
+    'GET memory': ({ query }) => memory().browse(MemoryBrowse.parse(query)),
+    'GET memory/:id': ({ params }) => {
+      const details = memory().details(MemoryId.parse(params.id))
+      if (!details) throw new RouteError(404, 'Memory note not found')
+      return details
+    },
+    'POST memory/:id/review': async ({ params, body }) => memory().review(MemoryId.parse(params.id), MemoryReview.parse(await body())),
     'POST memory/consolidate': () => runtime.memory?.requestConsolidation() ?? { queued: false },
     'POST memory/rebuild': () => runtime.memory?.rebuildProjection() ?? { rebuilt: false },
     'GET repositories': catalog,

@@ -13,7 +13,8 @@ import type { DroppedReply, HistoryView, Problem, PromptsView, SetupView, Source
   TicketRow, TicketStage,
   TriggerRow } from '../../src/client/api.ts'
 import { SETUP_FIELDS } from '../../src/deployment.ts'
-import { EvalConfigSchema, ExecutorConfigSchema, PolicyConfigSchema, SettingsSchema } from '../../src/policy.ts'
+import { EvalConfigSchema, ExecutorConfigSchema, MemoryConfigSchema, PolicyConfigSchema, SettingsSchema } from '../../src/policy.ts'
+import type { MemoryDetails } from '../../src/app/memory/types.ts'
 import { SetupError, type SetupCode } from '../../src/setup.ts'
 import { feishuChannel } from '../../src/sources/feishu-trigger.ts'
 import { githubChannel } from '../../src/sources/github-trigger.ts'
@@ -86,6 +87,9 @@ export const MACHINE = { stateDir: '/srv/dsh-superagent', promptMaxChars: 100000
 
 type Settings = ReturnType<typeof SettingsSchema.parse>
 export interface PanelServer {
+  memory: Record<string, MemoryDetails>
+  memoryConflict?: boolean
+  consolidated: number; rebuilt: number
   extraKinds?: SourceKind[]
   joined?: Record<string, string>; joining?: Record<string, string>
   joinError?: string
@@ -250,6 +254,7 @@ function initial(): PanelServer {
     en: 'Feishu message' } }
   const defaults = { revision: 0, previousRevision: null, savedAt: '', source: 'defaults' }
   return {
+    memory: {}, consolidated: 0, rebuilt: 0,
     extraKinds: [], health: {}, down: false, pending: 0, opened: [], requests: [], misuse: [], queued: new Set(), dropped: [], failing: [],
     setup: { machine: MACHINE, problem: null, feishuProblem: null,
       accounts: { repository: 'acme/widgets', agent: 'agent-bot', feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
@@ -294,6 +299,27 @@ const ticketOf = (id: string) =>
 const SourceSave = z.object({ enabled: z.boolean(), config: z.unknown() })
 
 const ROUTES: { [K in keyof Api]: Route<K> } = {
+  'GET memory': { query: ['status', 'query', 'offset', 'limit'], answer: ({ query }) => {
+    const all = Object.values(server.memory), counts = { candidate: 0, verified: 0, stale: 0, retracted: 0 }
+    for (const { note } of all) counts[note.status]++
+    const items = all.filter(({ note }) => (!query.status || query.status === 'all' || note.status === query.status)
+      && (!query.query || `${note.title} ${note.body}`.includes(query.query))).map(({ note, evidence }) => {
+      const { body, repository: _repository, ...fields } = note
+      return { ...fields, snippet: body.slice(0, 300), evidenceCount: evidence.length }
+    })
+    return { items, total: items.length, next_offset: null, counts, health: { enabled: server.settings.memory.enabled, fts: true,
+      dailyCallBudget: server.settings.memory.dailyCallBudget, usedCalls: 0, remainingCalls: server.settings.memory.dailyCallBudget,
+      capturePending: 0, consolidationPending: 0, partialCaptures: 0, lastCaptureAt: null, lastConsolidationAt: null } }
+  } },
+  'GET memory/:id': { answer: ({ params }) => server.memory[params.id] ?? refuse(404, 'Memory note not found') },
+  'POST memory/:id/review': { body: true, answer: ({ params, body }) => {
+    const details = server.memory[params.id]
+    if (!details) return refuse(404, 'Memory note not found')
+    if (server.memoryConflict || body.revision !== details.note.revision) return refuse(409, 'memory_revision_conflict')
+    details.note = { ...details.note, status: body.action === 'confirm' ? 'verified' : body.action === 'retract' ? 'retracted' : 'stale',
+      revision: details.note.revision + 1 }
+    return details
+  } },
   'GET repositories': { answer: () => [{ id: 'default', name: 'Default', repository: 'acme/widgets', configured: true }] },
   'GET state': { answer: stateView },
   'GET overview': { answer: overviewView },
@@ -347,17 +373,18 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     server.revisions.pause = (server.revisions.pause ?? 0) + 1
     return { paused: body.paused }
   } },
-  'POST memory/consolidate': { answer: () => ({ queued: false }) },
-  'POST memory/rebuild': { answer: () => ({ rebuilt: false }) },
+  'POST memory/consolidate': { answer: () => { server.consolidated++; return { queued: server.settings.memory.dreaming } } },
+  'POST memory/rebuild': { answer: () => { server.rebuilt++; return { rebuilt: server.settings.memory.enabled } } },
   'PUT settings/:block': { body: true, answer: ({ params: { block }, body }) => {
     const source = block.startsWith('source:') ? kinds().find(kind => `source:${kind.kind}` === block) : undefined
-    if (!['policy', 'eval', 'executor'].includes(block) && !source) return block.startsWith('source:') ? refuse(404, 'Source not found')
+    if (!['policy', 'eval', 'executor', 'memory'].includes(block) && !source) return block.startsWith('source:') ? refuse(404, 'Source not found')
       : refuse(400, 'Invalid settings: block')
     if (body.revision !== (server.revisions[block] ?? 0)) return refuse(409, 'Settings changed. Reload before saving.')
     let restarting = false
     if (block === 'policy') server.settings = { ...server.settings, policy: PolicyConfigSchema.parse(body.value) }
     else if (block === 'executor') server.settings = { ...server.settings, executor: ExecutorConfigSchema.parse(body.value) }
     else if (block === 'eval') server.settings = { ...server.settings, eval: EvalConfigSchema.parse(body.value) }
+    else if (block === 'memory') server.settings = { ...server.settings, memory: MemoryConfigSchema.parse(body.value) }
     else if (source) {
       const { enabled, config: value } = SourceSave.parse(body.value)
       const config = source.schema.parse(value)

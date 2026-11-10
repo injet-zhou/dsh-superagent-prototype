@@ -82,6 +82,7 @@ export class MemoryCapture {
     this.host.store.db.prepare(`INSERT INTO memory_capture_checkpoint VALUES (?,?,?,?,?) ON CONFLICT(ticket_id,session_id) DO UPDATE
       SET snapshot_fingerprint=excluded.snapshot_fingerprint,cursor_json=excluded.cursor_json,updated_at=excluded.updated_at`)
       .run(batch.ticketId, batch.sessionId, batch.endHash, JSON.stringify(cursor), new Date().toISOString())
+    if (!cursor.partial && cursor.seq >= 0) this.host.store.set(KV.memory.lastCapturedAt, new Date().toISOString())
   }
   private async run(batch: CaptureBatch, job: string): Promise<void> {
     const { host } = this

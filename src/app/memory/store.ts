@@ -2,7 +2,7 @@
 import type { SQLInputValue } from 'node:sqlite'
 import type { Store } from '../store.ts'
 import { KV } from '../../kv.ts'
-import { EvidenceInput, MemoryId, MemoryQuery, MemoryStatus, NoteInput, type MemoryDetails, type MemoryEvidence, type MemoryNote } from './types.ts'
+import { EvidenceInput, MemoryBrowse, MemoryId, MemoryQuery, MemoryStatus, NoteInput, type MemoryDetails, type MemoryEvidence, type MemoryNote, type MemoryPage } from './types.ts'
 import { cleanNote, fingerprint, safeText } from './security.ts'
 
 /** A rejected optimistic update; callers must reread and form a new proposal. */
@@ -23,7 +23,8 @@ export class MemoryStore {
     const note = this.note(row)
     const evidence = this.store.db.prepare('SELECT * FROM memory_evidence WHERE note_id=? ORDER BY id LIMIT 100').all(id).map(row => this.evidence(row))
     const revisions = this.store.db.prepare('SELECT revision,action,before_json,after_json,reason,source_job_id,at FROM memory_revision WHERE note_id=? ORDER BY revision DESC LIMIT 100').all(id)
-    return { note, evidence, revisions }
+    return { note, evidence, revisions: revisions.map(row => ({ revision: Number(row.revision), action: String(row.action), reason: String(row.reason),
+      at: String(row.at), source_job_id: String(row.source_job_id), before_json: row.before_json === null ? null : String(row.before_json), after_json: String(row.after_json) })) }
   }
   private evidence(row: Record<string, SQLInputValue>): MemoryEvidence {
     return {
@@ -42,6 +43,41 @@ export class MemoryStore {
   list(status: MemoryNote['status'] = 'verified', limit = 200): MemoryNote[] {
     return this.store.db.prepare('SELECT * FROM memory_note WHERE repository=? AND status=? ORDER BY updated_at DESC,id LIMIT ?')
       .all(this.repository, status, Math.min(limit, 200)).map(row => this.note(row))
+  }
+  /** Management-only browsing includes invalidated notes, with bounded pages and no model work. */
+  browse(input: MemoryBrowse): MemoryPage {
+    const { query, status, offset, limit } = MemoryBrowse.parse(input)
+    const params: SQLInputValue[] = [this.repository]
+    let where = 'repository=?'
+    if (status !== 'all') { where += ' AND status=?'; params.push(status) }
+    if (query) { where += " AND instr(lower(title||' '||body),lower(?))>0"; params.push(query) }
+    const total = Number(this.store.db.prepare(`SELECT count(*) AS n FROM memory_note WHERE ${where}`).get(...params)?.n ?? 0)
+    const items = this.store.db.prepare(`SELECT n.*,(SELECT count(*) FROM memory_evidence e WHERE e.note_id=n.id) AS evidence_count
+      FROM memory_note n WHERE ${where} ORDER BY updated_at DESC,id LIMIT ? OFFSET ?`).all(...params, limit, offset).map(row => {
+      const { body, repository: _repository, ...note } = this.note(row)
+      return { ...note, snippet: body.slice(0, 300), evidenceCount: Number(row.evidence_count) }
+    })
+    const counts = { candidate: 0, verified: 0, stale: 0, retracted: 0 }
+    for (const row of this.store.db.prepare('SELECT status,count(*) AS n FROM memory_note WHERE repository=? GROUP BY status').all(this.repository)) {
+      counts[MemoryStatus.parse(row.status)] = Number(row.n)
+    }
+    return { items, counts, total, next_offset: offset + items.length < total ? offset + items.length : null }
+  }
+  /** Explicit operator confirmation is fresh human evidence, bound to this exact claim and immutable review revision. */
+  confirm(id: string, revision: number, reason: string): MemoryDetails {
+    return this.store.atomic(() => {
+      const details = this.get(id)
+      if (!details || details.note.revision !== revision) throw new MemoryConflict('memory_revision_conflict')
+      const before = details.note, anchor = details.evidence[0]
+      if (!anchor || !['candidate', 'stale'].includes(before.status)) throw new MemoryConflict('memory_review_conflict')
+      const at = new Date().toISOString()
+      const note: MemoryNote = { ...before, revision: revision + 1, status: 'verified', updatedAt: at, verifiedAt: at }
+      const claim = { kind: note.kind, title: note.title, body: note.body, scope: note.scope }
+      this.addEvidence(id, { ticketId: anchor.ticketId, sessionId: anchor.sessionId, kind: 'human', supportsVerification: true,
+        eventRef: `review:${id}:${note.revision}:${fingerprint(reason)}`, excerpt: safeText(reason, 500) }, at, fingerprint(claim))
+      this.write(note, before, 'confirm', reason, `human-review:${id}:${note.revision}`)
+      return this.get(id)!
+    })
   }
   /** Durable review rotation: unseen notes precede changed notes, ordered by their last successful review. */
   reviewable(status: MemoryNote['status'], limit: number): MemoryNote[] {
@@ -128,10 +164,7 @@ export class MemoryStore {
       const prior = { kind: before.kind, title: before.title, body: before.body, scope: before.scope }
       const verifiedAt = status === 'verified' && (before.status !== 'verified' || fingerprint(prior) !== fingerprint(parsed)) ? at : before.verifiedAt
       const note: MemoryNote = { ...before, ...parsed, status, revision: revision + 1, updatedAt: at, ...verifiedAt ? { verifiedAt } : {} }
-      this.store.db.prepare('UPDATE memory_note SET title=?,body=?,kind=?,scope_json=?,status=?,revision=?,updated_at=?,verified_at=? WHERE id=? AND repository=? AND revision=?')
-        .run(note.title, note.body, note.kind, JSON.stringify(note.scope), status, note.revision, at, note.verifiedAt ?? null, id, this.repository, revision)
-      this.audit(note, before, patch.status === 'stale' ? 'stale' : status === before.status ? 'update' : status, reason, job)
-      this.index(note)
+      this.write(note, before, patch.status === 'stale' ? 'stale' : status === before.status ? 'update' : status, reason, job)
       return note
     })
   }
@@ -181,6 +214,12 @@ export class MemoryStore {
     this.store.db.prepare('INSERT INTO memory_revision VALUES (?,?,?,?,?,?,?,?)').run(note.id, note.revision, action,
       before ? JSON.stringify(before) : null, JSON.stringify(note), safeText(reason, 500), fingerprint(job), note.updatedAt)
     this.store.afterCommit(this.changed)
+  }
+  private write(note: MemoryNote, before: MemoryNote, action: string, reason: string, job: string): void {
+    this.store.db.prepare('UPDATE memory_note SET title=?,body=?,kind=?,scope_json=?,status=?,revision=?,updated_at=?,verified_at=? WHERE id=? AND repository=? AND revision=?')
+      .run(note.title, note.body, note.kind, JSON.stringify(note.scope), note.status, note.revision, note.updatedAt, note.verifiedAt ?? null, note.id, this.repository, before.revision)
+    this.audit(note, before, action, reason, job)
+    this.index(note)
   }
   private index(note: MemoryNote): void {
     if (!this.fts) return

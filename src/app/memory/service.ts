@@ -3,7 +3,7 @@ import type { MemoryConfig } from '../../policy.ts'
 import type { HealthEntry } from '../../infra/health.ts'
 import type { Store } from '../store.ts'
 import { KV } from '../../kv.ts'
-import { MEMORY_BOUNDARY, MemoryQuery, type MemoryQuery as Query } from './types.ts'
+import { MEMORY_BOUNDARY, MemoryQuery, MemoryReview, type MemoryBrowse, type MemoryHealth, type MemoryQuery as Query } from './types.ts'
 import { MemoryStore } from './store.ts'
 
 /** Owns one repository's optional memory, cached index and observable degradation. No Engine dependency. */
@@ -82,6 +82,25 @@ export class MemoryService {
   publisher(): MemoryStore {
     if (!this.database || this.problem === 'memory_repository_mismatch') throw new Error('memory_unavailable')
     return this.database
+  }
+  /** Management access remains available when retrieval is disabled; all paths stay bound to this Runtime. */
+  browse(input: MemoryBrowse) { return { ...this.publisher().browse(input), health: this.status() } }
+  details(id: string) { return this.publisher().get(id) }
+  review(id: string, input: MemoryReview) {
+    const review = MemoryReview.parse(input), memory = this.publisher()
+    if (review.action === 'confirm') return memory.confirm(id, review.revision, review.reason)
+    memory.update(id, review.revision, { status: review.action === 'stale' ? 'stale' : 'retracted' }, [], review.reason, `human-review:${id}:${review.revision + 1}`)
+    return memory.get(id)!
+  }
+  status(): MemoryHealth {
+    const day = new Date().toISOString().slice(0, 10), usage = this.store.get(KV.memory.usage)
+    const usedCalls = usage?.day === day ? usage.calls : 0
+    const pending = (kind: string) => Number(this.store.db.prepare('SELECT count(*) AS n FROM effect WHERE kind=?').get(kind)?.n ?? 0)
+    return { enabled: this.config.enabled, fts: !!this.database?.fts, dailyCallBudget: this.config.dailyCallBudget, usedCalls,
+      remainingCalls: Math.max(0, this.config.dailyCallBudget - usedCalls), capturePending: pending('memory-capture'), consolidationPending: pending('memory-consolidate'),
+      partialCaptures: Number(this.store.db.prepare("SELECT count(*) AS n FROM memory_capture_checkpoint WHERE json_extract(cursor_json,'$.partial')=1").get()?.n ?? 0),
+      lastCaptureAt: this.store.get(KV.memory.lastCapturedAt) ?? null, lastConsolidationAt: this.store.get(KV.memory.lastConsolidatedAt) ?? null,
+      ...this.problem || this.projectionProblem ? { problem: this.problem ?? this.projectionProblem } : {} }
   }
   async search(input: Query, signal?: AbortSignal) {
     const parsed = MemoryQuery.parse(input)

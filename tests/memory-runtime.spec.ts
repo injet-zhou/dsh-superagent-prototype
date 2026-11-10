@@ -85,6 +85,14 @@ it('keeps default, backend and frontend memory, scoped settings and health isola
   const selected = await h.api('GET', '/orchestrator/repositories/backend/api/state')
   expect(selected.body.health).toMatchObject({ memory: { detail: 'partial_capture' } })
   expect((await h.api('GET', '/orchestrator/repositories/missing/api/state')).status).toBe(404)
+  expect((await h.api('GET', '/orchestrator/repositories/backend/api/memory/same-id')).body).toMatchObject({ note: { body: 'Private experience for backend' } })
+  expect((await h.api('GET', '/orchestrator/repositories/frontend/api/memory/same-id')).body).toMatchObject({ note: { body: 'Private experience for frontend' } })
+  expect((await h.api('POST', '/orchestrator/repositories/backend/api/memory/same-id/review',
+    { action: 'stale', revision: 1, reason: 'Backend environment changed' })).status).toBe(200)
+  expect((await h.api('GET', 'memory/same-id')).body).toMatchObject({ note: { status: 'verified' } })
+  expect((await h.api('GET', '/orchestrator/repositories/frontend/api/memory/same-id')).body).toMatchObject({ note: { status: 'verified' } })
+  expect((await h.api('GET', '/orchestrator/repositories/backend/api/memory')).body.counts).toMatchObject({ verified: 0, stale: 1 })
+  expect((await h.api('GET', '/orchestrator/repositories/missing/api/memory/same-id')).status).toBe(404)
 })
 
 it('keeps authorization, tool restrictions and repository environments installed while Memory changes and skills are delayed', async () => {

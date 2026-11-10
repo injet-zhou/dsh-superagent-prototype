@@ -529,3 +529,9 @@ git diff --check
 本次新增 9 项回归测试；新增轮转元数据不改变既有 DB 路径、默认设置、Engine 或授权语义。全部模型调用使用 fake/offline stream，真实模型未开启。此前最终验证表对应 `7ee760a`，本次验证另行记录。
 
 复审最终验证：在同一 Node/pnpm 环境，按顺序运行 `pnpm install --frozen-lockfile`、`pnpm typecheck`、`pnpm test`、`pnpm build`、`pnpm check`、`git diff --check`，全部通过。两次全量测试均为 70 文件、1317 项测试全部通过（`VITEST_MAX_WORKERS=2`，正常本机 loopback/进程权限），未跳过测试或弱化原断言；lockfile 未修改。
+
+### 完成管理与真实验证（2026-11-10，进行中）
+
+实现位于独立 `feat/repository-memory` 工作树，已整合 main 的仓库配置保存修复和 Discord 消息反应功能。整合前基线 1318 项测试、整合后 1327 项测试全部通过。
+
+管理 API 以当前 Repository Runtime 为边界，支持有界分页、状态/文本筛选、证据与历史查看，以及携带 revision 和理由的过期/撤销。人工确认必须明确声明已核对来源；它在同一事务新增绑定当前笔记内容的 human attestation 和不可变审阅修订，再发布 verified。其 `review:<note>:<revision>:<fingerprint>` 来源引用指向本次实际管理审阅，不伪装为 DSH transcript 事件。模型提案不能创建该认证证据。stale 后必须重新确认，原认证不能复用；同一毫秒发生的人工操作通过修订顺序区分。此入口沿用现有管理 API 的本机操作者信任边界，不宣称提供同 OS 用户的恶意代码隔离。
