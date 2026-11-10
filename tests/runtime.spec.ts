@@ -250,6 +250,18 @@ it('relays an explicit member mention as a candidate and creates the ticket, ack
   expect(await route({ kind: 'accept', trigger_id: trigger.id, title: 'again', worktree_name: worktreeName, acknowledgement: 'x' })).toMatchObject({ ticket: { ticket_id: ticket.id } })
 })
 
+it('tells a Source about a created Ticket after the accept commits, until it unsubscribes', async () => {
+  const seen: string[] = []
+  const dispose = runtime.context({ kind: 'github', health: [] }).onTicketCreated(ticket => { seen.push(ticket.id) })
+  const { ticket } = await acceptedTicket()
+  expect(seen).toEqual([ticket.id])
+  dispose()
+  const later = feishu('2', '@bot 再修一个')
+  runtime.engine.receive(later)
+  expect(runtime.engine.decide(later.id, { kind: 'accept', title: 'Second', scope: 'small', reason: 'asked', name: 'second' }).kind).toBe('accept')
+  expect(seen).toEqual([ticket.id])
+})
+
 it('fans a person\'s later thread message out to the live worker as context and tells the orchestrator, without an Eval', async () => {
   const { ticket, sessionId } = await acceptedTicket()
   deliveries.mockClear()
