@@ -1,7 +1,7 @@
 # dsh-superagent：Repository-scoped Agent Memory 技术设计
 
 > 状态：Phase 1–4 均已实现；真实受限模型 Capture/Dreaming、持久发布与 Wiki 烟测已通过。详细验证记录见文末，原始 RFC 与验收约束保留。
-> 基线：`injet-zhou/dsh-superagent-prototype`，`main`，commit `86271f435e8130a25ff4bc9ade3b4077143c8532`（2026-11-08）。实际实施前重新核对 HEAD。  
+> 基线：`injet-zhou/dsh-superagent-prototype`，`main`，commit `86271f435e8130a25ff4bc9ade3b4077143c8532`（2026-11-08）。实际实施前重新核对 HEAD。
 > 依据：Anthropic《The components of agent memory》（https://www.anthropic.com/research/components-of-agent-memory）所讨论的 Transcripts、Memory Notes、Memory Representations、Injected Context 和 Dreaming；下述 API、Schema、默认参数为**本项目的设计建议**，并非 Anthropic 官方实现。
 
 ## 0. 给实现 Agent 的执行摘要
