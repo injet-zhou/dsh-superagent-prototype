@@ -1,6 +1,6 @@
 # dsh-superagent：Repository-scoped Agent Memory 技术设计
 
-> 状态：Phase 1/2 已交付；Phase 3 的安全适配器、Host Publisher、Wiki 与离线测试已实现，真实 provider 验证进行中；Phase 4 管理面板已实现。详细验证记录见文末，原始 RFC 与验收约束保留。
+> 状态：Phase 1–4 均已实现；真实受限模型 Capture/Dreaming、持久发布与 Wiki 烟测已通过。详细验证记录见文末，原始 RFC 与验收约束保留。
 > 基线：`injet-zhou/dsh-superagent-prototype`，`main`，commit `86271f435e8130a25ff4bc9ade3b4077143c8532`（2026-11-08）。实际实施前重新核对 HEAD。  
 > 依据：Anthropic《The components of agent memory》（https://www.anthropic.com/research/components-of-agent-memory）所讨论的 Transcripts、Memory Notes、Memory Representations、Injected Context 和 Dreaming；下述 API、Schema、默认参数为**本项目的设计建议**，并非 Anthropic 官方实现。
 
@@ -530,7 +530,7 @@ git diff --check
 
 复审最终验证：在同一 Node/pnpm 环境，按顺序运行 `pnpm install --frozen-lockfile`、`pnpm typecheck`、`pnpm test`、`pnpm build`、`pnpm check`、`git diff --check`，全部通过。两次全量测试均为 70 文件、1317 项测试全部通过（`VITEST_MAX_WORKERS=2`，正常本机 loopback/进程权限），未跳过测试或弱化原断言；lockfile 未修改。
 
-### 完成管理与真实验证（2026-11-10，进行中）
+### 完成管理与真实验证（2026-11-10）
 
 实现位于独立 `feat/repository-memory` 工作树，已整合 main 的仓库配置保存修复和 Discord 消息反应功能。整合前基线 1318 项测试、整合后 1327 项测试全部通过。
 
@@ -543,3 +543,7 @@ git diff --check
 真实适配器兼容修复：OpenCode Go 实测要求稳定 `x-opencode-session`。DSH `GenerateOptions.sessionId` 在本地声明和 pi-ai 适配器中均已确认，仅映射请求路由元数据；每仓库使用独立 `memory-<masterId>`，不创建或解析 Session，不复用 Worker 身份、权限或工具。探针修复后真实调用通过，2 条合法候选提案，工具数 0、新建 Agent 数 0，提供方报告 input/output/total tokens 为 464/1049/1513。模型为显式 opencode-go/deepseek-v4.1-flash、reasoning=low；未更改用户实例的模型设置或预算。
 
 DSH 0.2.2-rc.1 的真实 Session 烟测发现 `sessionController.inspect` 已删除。新增小型被动历史适配器：旧 SDK 继续使用 inspect；已核实的新 `sessionQuery.observeSession(id, {signal, projectionMode: 'none'})` 读取原始连续事件，并始终释放其 Disposable lease。拒绝返回其他 Session 的 observation，shutdown 后迟到的 lease 同样释放而不发布。Capture 与原有 transcript read 共用此兼容入口，无 Agent 激活或会话恢复。新增 3 项回归，完整 `pnpm check` 通过（72 文件、1340 测试）。真实 Capture 已确认 checkpoint 推进、candidate 来源和 replay 零额外调用；真实 Dreaming 对语义相近但文本不一致的 merge 提案按预期拒绝，继续验证其提示契约。
+
+受控真实端到端验证最终通过：生产 MemoryCapture 使用本机 DSH 0.2.2 原始 Session 历史，实际 provider 提取 1 个 candidate；重放同一 turn 不新增模型调用；压缩/恢复保留原始 seq/摘要；Host 运行 Node assert 核证精确 fixture claim；retrieval disabled/enabled 命中分别为 0/1；真实 Dreaming 提案通过 Publisher 后队列排空；Wiki 重建与秘密缺失检查通过。全部分析 tools=[]，未创建 Agent。该成功 run Capture 用 1307 tokens，Dreaming 用 2568 tokens，共 2 次调用、3875 tokens，均为 provider 返回的用量；不是美元费用估算，也不包含此前失败的开发探针。完整无凭据报告见 `docs/memory-live-validation.json`，可重现插件与命令见 `scripts/memory-smoke/README.md`。严格 Publisher 曾正确拒绝模型把“语义相同但文本不同”的笔记合并；已将提示明确为 kind/title/body/scope 完全相等，未放宽校验。
+
+20 项固定离线检索 A/B 仍保留；上述真实烟测是合成仓库/Session 的有限场景，不是完整 Coding Worker 性能评测。没有测量真实 Coding Ticket 完成率、重复命令节省或美元收益。通用自动测试结果认证器、通用秘密/PII 识别、SQLite 硬中断和向量检索仍不在本版能力内；真实自动 Capture 只产生候选，人工核验现在可通过 Panel 完成。
