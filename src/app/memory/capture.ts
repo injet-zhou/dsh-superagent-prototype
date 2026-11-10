@@ -6,6 +6,7 @@ import { KV } from '../../kv.ts'
 import { Later, type Effects } from '../effects.ts'
 import type { Store } from '../store.ts'
 import type { MemoryService } from './service.ts'
+import { sessionHistory } from '../session-history.ts'
 import { CaptureProposal, MEMORY_INPUT_BYTES, serializeAnalysisInput, type MemoryAnalyzer, type MemoryAnalysisInput } from './analyzer.ts'
 import { fingerprint, safeText } from './security.ts'
 
@@ -97,7 +98,7 @@ export class MemoryCapture {
       // whenIdle() itself does not flush DSH persistence. The durable effect retries a failed flush/inspection.
       const signal = AbortSignal.any([host.lifetime, host.memory.analysisSignal(), AbortSignal.timeout(15_000)])
       await withAbort(host.context.sessionPersistence.flush(), signal)
-      const { events } = await withAbort(host.context.sessionController.inspect(batch.sessionId as SessionId, signal), signal)
+      const events = await withAbort(sessionHistory(host.context, batch.sessionId as SessionId, signal), signal)
       signal.throwIfAborted()
       inspected = true
       const cursor = previous

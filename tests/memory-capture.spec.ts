@@ -138,6 +138,43 @@ it('keeps raw DSH anchors through a real surface replacement and Session restore
   expect(f.memory.list('candidate')).toHaveLength(2)
 })
 
+it('captures through the DSH 0.2.2 query observation API and releases its retained history lease', async () => {
+  const f = captureFixture(), end = turn(f.session, 1), dispose = vi.fn()
+  Object.defineProperty(f.context.sessionController, 'inspect', { value: undefined })
+  const observeSession = vi.fn(async () => ({ header: { id: f.session.id }, events: f.session.snapshotEvents(), [Symbol.dispose]: dispose }))
+  f.context.reflect.provide('sessionQuery', { observeSession })
+  f.capture.enqueue('ticketA', 'assignmentA', end); await f.effects.idle('memory-capture')
+  expect(f.cursor()).toMatchObject({ seq: Number(end.seq), partial: false })
+  expect(f.memory.list('candidate')).toHaveLength(1)
+  expect(observeSession).toHaveBeenCalledWith(f.session.id, { signal: expect.any(AbortSignal), projectionMode: 'none' })
+  expect(dispose).toHaveBeenCalledOnce()
+})
+
+it('releases a late query observation after shutdown without publishing or advancing its checkpoint', async () => {
+  const f = captureFixture(), end = turn(f.session, 1), dispose = vi.fn(), pending = deferred<unknown>()
+  Object.defineProperty(f.context.sessionController, 'inspect', { value: undefined })
+  const observeSession = vi.fn(async () => pending.promise)
+  f.context.reflect.provide('sessionQuery', { observeSession })
+  f.capture.enqueue('ticketA', 'assignmentA', end)
+  await waitUntil(() => observeSession.mock.calls.length === 1)
+  f.lifetime.abort(); await f.effects.idle('memory-capture')
+  pending.resolve({ header: { id: f.session.id }, events: f.session.snapshotEvents(), [Symbol.dispose]: dispose })
+  await waitUntil(() => dispose.mock.calls.length === 1)
+  expect(f.cursor()).toBeNull()
+  expect(f.memory.list('candidate')).toEqual([])
+  expect(f.effects.pending('memory-capture')).toBe(true)
+})
+
+it('rejects a query observation for another Session and releases its lease', async () => {
+  const f = captureFixture(), end = turn(f.session, 1), dispose = vi.fn()
+  Object.defineProperty(f.context.sessionController, 'inspect', { value: undefined })
+  f.context.reflect.provide('sessionQuery', { observeSession: async () => ({ header: { id: 'worker-other' }, events: f.session.snapshotEvents(), [Symbol.dispose]: dispose }) })
+  f.capture.enqueue('ticketA', 'assignmentA', end); await f.effects.idle('memory-capture')
+  expect(f.cursor()).toMatchObject({ partial: true, seq: -1 })
+  expect(f.memory.list('candidate')).toEqual([])
+  expect(dispose).toHaveBeenCalledOnce()
+})
+
 it('bounds incremental batches, redacts before analysis, and prevents fabricated verification/evidence', async () => {
   const propose = vi.fn(async (input: Readonly<MemoryAnalysisInput>) => proposal(input))
   const f = captureFixture({ propose })

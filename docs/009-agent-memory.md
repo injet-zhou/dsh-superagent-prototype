@@ -541,3 +541,5 @@ git diff --check
 定时整理阶段：每 15 分钟为未审阅的修订排队，候选阈值仍可提前触发；停用和 Runtime shutdown 清理定时器，暂停时保留持久队列。新增生命周期回归测试先失败后通过；全量 `pnpm check` 通过（72 文件、1337 项测试）。整合 main 后冻结安装暴露其新增 loader 直接依赖的 peer 快照引用缺失；重新解析同一锁定版本，修复 peer 引用，并保留 pnpm 生成的弃用元数据。随后 `pnpm install --frozen-lockfile` 通过，未升级依赖版本。
 
 真实适配器兼容修复：OpenCode Go 实测要求稳定 `x-opencode-session`。DSH `GenerateOptions.sessionId` 在本地声明和 pi-ai 适配器中均已确认，仅映射请求路由元数据；每仓库使用独立 `memory-<masterId>`，不创建或解析 Session，不复用 Worker 身份、权限或工具。探针修复后真实调用通过，2 条合法候选提案，工具数 0、新建 Agent 数 0，提供方报告 input/output/total tokens 为 464/1049/1513。模型为显式 opencode-go/deepseek-v4.1-flash、reasoning=low；未更改用户实例的模型设置或预算。
+
+DSH 0.2.2-rc.1 的真实 Session 烟测发现 `sessionController.inspect` 已删除。新增小型被动历史适配器：旧 SDK 继续使用 inspect；已核实的新 `sessionQuery.observeSession(id, {signal, projectionMode: 'none'})` 读取原始连续事件，并始终释放其 Disposable lease。拒绝返回其他 Session 的 observation，shutdown 后迟到的 lease 同样释放而不发布。Capture 与原有 transcript read 共用此兼容入口，无 Agent 激活或会话恢复。新增 3 项回归，完整 `pnpm check` 通过（72 文件、1340 测试）。真实 Capture 已确认 checkpoint 推进、candidate 来源和 replay 零额外调用；真实 Dreaming 对语义相近但文本不一致的 merge 提案按预期拒绝，继续验证其提示契约。

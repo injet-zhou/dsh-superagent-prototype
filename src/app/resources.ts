@@ -22,6 +22,7 @@ import type { Store } from './store.ts'
 import type { TextCache } from './cache.ts'
 import type { MemoryService } from './memory/service.ts'
 import { liveTicket } from '../core/index.ts'
+import { sessionHistory } from './session-history.ts'
 
 /** Resource descriptors exposed via orchestrator_read, marking which resources worker sessions may also read for their own ticket. */
 export const RESOURCES: readonly { name: string; holds: string; executor?: true; memory?: true }[] = [
@@ -121,7 +122,7 @@ const THREAD_DECISIONS = 5
 const triggerLine = (trigger: Trigger) => ({ trigger_id: trigger.id, actor: trigger.actor.id, human: trigger.human, at: trigger.at,
   preview: preview(trigger.text), chars: trigger.text.length, read: `trigger/${trigger.id}` })
 async function transcript(host: ResourceHost, ticketId: string) {
-  return (await host.context.sessionController.inspect(workerSessionId(ticketId) as SessionId)).events
+  return sessionHistory(host.context, workerSessionId(ticketId) as SessionId)
 }
 
 const ROUTES: readonly Route[] = [
