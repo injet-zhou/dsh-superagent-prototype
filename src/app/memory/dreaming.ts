@@ -58,13 +58,27 @@ export function publish(memory: MemoryStore, job: string, raw: unknown, offered:
 
 /** Runs one bounded analyzer/publisher at a time per repository, with a shared process-wide model reservation. */
 export class MemoryDreaming {
+  private timer?: ReturnType<typeof setInterval>
   constructor(private readonly host: CaptureHost) {
     host.effects.handle('memory-consolidate', ({ batchId }) => this.run(batchId), {
       ordered: true, limit: () => host.memory.dreamingEnabled() && !host.paused() && !host.lifetime.aborted ? 1 : 0,
     })
-    host.memory.subscribe(() => {
-      if (host.memory.dreamingEnabled() && host.memory.publisher().list('candidate', 5).length >= 5) this.enqueue()
-    })
+    const schedule = () => {
+      if (!host.memory.dreamingEnabled() || host.lifetime.aborted) {
+        clearInterval(this.timer); this.timer = undefined; return
+      }
+      this.timer ??= setInterval(() => this.schedule(), 15 * 60_000).unref()
+      this.schedule(true)
+    }
+    const unsubscribe = host.memory.subscribe(schedule)
+    host.lifetime.addEventListener('abort', () => { clearInterval(this.timer); unsubscribe() }, { once: true })
+    schedule()
+  }
+  private schedule(threshold = false): void {
+    if (this.host.lifetime.aborted || !this.host.memory.dreamingEnabled()) return
+    try {
+      if (!threshold || this.host.memory.publisher().list('candidate', 5).length >= 5) this.enqueue()
+    } catch { this.host.memory.degraded('memory_maintenance_unavailable') }
   }
   /** Manual Host entrypoint; the stable snapshot key also coalesces repeated scheduling. */
   enqueue(): boolean {

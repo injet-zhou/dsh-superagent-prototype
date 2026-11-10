@@ -342,3 +342,33 @@ it('bounds a non-cooperative analyzer with the configured deadline and retains i
     expect(f.store.get(KV.memory.usage)?.calls).toBe(1)
   } finally { pending.resolve([]); deadline.mockRestore() }
 })
+
+it('reviews small backlogs on a timer and stops scheduling when Memory is disabled or the Runtime shuts down', async () => {
+  const f = memoryFixture(), effects = new Effects(f.store, f.board), lifetime = new AbortController()
+  const config = MemoryConfigSchema.parse({ enabled: true, dreaming: true, dailyCallBudget: 3 })
+  f.store.saveSettings({ ...f.store.settings(), memory: config }); f.service.configure(config)
+  f.memory.create(exampleNote, [exampleEvidence], 'periodic', 'verified')
+  const propose = vi.fn(async () => [])
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+  try {
+    new MemoryDreaming({ store: f.store, memory: f.service, effects, context: new Context(), lifetime: lifetime.signal,
+      analyzer: { propose }, paused: () => false })
+    effects.start()
+    await effects.idle('memory-consolidate')
+    expect(propose).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(15 * 60_000); await effects.idle('memory-consolidate')
+    expect(propose).toHaveBeenCalledTimes(1)
+    expect(f.service.status().lastConsolidationAt).toEqual(expect.any(String))
+    f.service.configure({ ...config, enabled: false })
+    f.memory.create({ ...exampleNote, title: 'Later observation' }, [exampleEvidence], 'disabled', 'candidate')
+    await vi.advanceTimersByTimeAsync(30 * 60_000); await effects.idle('memory-consolidate')
+    expect(propose).toHaveBeenCalledTimes(1)
+    f.service.configure(config)
+    await vi.advanceTimersByTimeAsync(15 * 60_000); await effects.idle('memory-consolidate')
+    expect(propose).toHaveBeenCalledTimes(2)
+    lifetime.abort()
+    f.memory.create({ ...exampleNote, title: 'After shutdown' }, [exampleEvidence], 'after-shutdown', 'candidate')
+    await vi.advanceTimersByTimeAsync(30 * 60_000); await effects.idle('memory-consolidate')
+    expect(propose).toHaveBeenCalledTimes(2)
+  } finally { lifetime.abort(); await effects.drain(); vi.useRealTimers() }
+})

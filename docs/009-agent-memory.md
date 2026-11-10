@@ -537,3 +537,5 @@ git diff --check
 管理 API 以当前 Repository Runtime 为边界，支持有界分页、状态/文本筛选、证据与历史查看，以及携带 revision 和理由的过期/撤销。人工确认必须明确声明已核对来源；它在同一事务新增绑定当前笔记内容的 human attestation 和不可变审阅修订，再发布 verified。其 `review:<note>:<revision>:<fingerprint>` 来源引用指向本次实际管理审阅，不伪装为 DSH transcript 事件。模型提案不能创建该认证证据。stale 后必须重新确认，原认证不能复用；同一毫秒发生的人工操作通过修订顺序区分。此入口沿用现有管理 API 的本机操作者信任边界，不宣称提供同 OS 用户的恶意代码隔离。
 
 管理阶段全量验证：71 文件、1330 测试，typecheck/build 全通过。面板阶段增加 Memory 页面、独立设置分组、中英文、模型/预算、来源 Session、文本安全显示、修订历史、显式人工核验、失效/撤销、整理/重建、健康和多仓库作用域；设置历史同时显示 Memory 字段变化。全量验证 72 文件、1336 测试，typecheck/build 全通过。没有放宽或跳过原有用例；新增 Memory 标签页后，更新了中文/英文导航的准确期望。
+
+定时整理阶段：每 15 分钟为未审阅的修订排队，候选阈值仍可提前触发；停用和 Runtime shutdown 清理定时器，暂停时保留持久队列。新增生命周期回归测试先失败后通过；全量 `pnpm check` 通过（72 文件、1337 项测试）。整合 main 后冻结安装暴露其新增 loader 直接依赖的 peer 快照引用缺失；重新解析同一锁定版本，修复 peer 引用，并保留 pnpm 生成的弃用元数据。随后 `pnpm install --frozen-lockfile` 通过，未升级依赖版本。

@@ -74,7 +74,7 @@ export class MemoryService {
       this.problem = partial ? 'partial_capture' : undefined
     } catch { this.problem = 'memory_index_unavailable'; this.snapshot = '' }
     this.report()
-    if (this.active()) for (const listener of this.listeners) {
+    for (const listener of this.listeners) {
       try { listener() } catch { this.degraded('memory_maintenance_unavailable') }
     }
   }
