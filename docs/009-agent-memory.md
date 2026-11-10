@@ -616,3 +616,12 @@ DSH 0.2.2-rc.1 的真实 Session 烟测发现 `sessionController.inspect` 已删
 | `git diff --check` | 通过；另检查完整 `origin/main` 差异通过 |
 
 采用正常本机 loopback/子进程权限和 `VITEST_MAX_WORKERS=2`；没有跳过测试或弱化原断言。新增测试曾因分页返回值的类型收窄不足导致 typecheck 失败，修正后从依赖安装开始完整重跑以上六条命令。复用原 Schema 12 KV 进行主题、重要性、执行收据和审阅 epoch 记录，不新增表、不要求手工迁移；原空库/v10/v11/v12、多仓库和迁移回滚回归继续通过。默认 disabled、模型预算 0、Engine 授权和 Ticket 语义均保持不变。
+
+
+### 本机验证实例更新
+
+已在运行/排队 Worker 均为 0 时，用 SQLite backup API 备份原库，再优雅停止并把 `superagent` profile 插件链接切换到经过上述验证的 `memory-review` 独立工作树。主工作区仍为 main，原功能工作树 `agent-memory` 保留。监听仍为 `127.0.0.1:3085`，`stateDir` 和 profile patch 原值未改；Settings revision=19、Memory revision=4 及整份设置摘要完全一致，Policy、模型、预算和渠道配置未重写。数据库 integrity=ok、Schema=12，原 1 条 Ticket、0 条 Memory 保持一致，没有将烟测夹具注入用户库。
+
+`superagent-test status` 实测 Runtime、Memory、Capture、Consolidate、GitHub、Discord 均 ready，无错误；可选 Feishu/history 保持 paused。当前用户先前启用的 Memory 配置仍是 OpenCode Go / DeepSeek V4.1 Flash、low、每日 90 次；发布默认仍 disabled/预算 0。通过 SSH 转发 3085 后使用现有面板；设置 → Memory 可开关及修改模型/每日调用上限。后续合适的 foreground 测试可以自动沉淀限定执行事实；一般模型经验仍先生成候选，需有效 Host 证据或人工核验后才能进入 verified 搜索。
+
+本次更新前的私有备份目录：`~/.dsh/state/superagent/backups/before-memory-review-20261110-190734/`，包含在线一致 SQLite 备份、profile package/patch、启动助手及更新前后检查记录。功能回滚可在设置中关闭 Memory，保留现有数据；需要恢复 Schema 11 的旧二进制时先停止服务并恢复升级前完整数据库，不能只切分支。若仅回退本轮代码，保留的旧 Schema 12 工作树及 profile/助手备份可用于恢复链接，无需丢弃用户状态；不要用过期 DB 备份覆盖后来新增的任务数据。
