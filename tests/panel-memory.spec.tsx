@@ -20,11 +20,13 @@ it('configures an explicit Memory model and daily call budget without changing P
   await mount()
   await click('启用仓库记忆')
   await click('自动提取候选')
-  await type(field<HTMLInputElement>('每日模型调用上限'), '5')
+  await type(field<HTMLInputElement>('每日模型调用上限'), '1000')
+  await type(field<HTMLInputElement>('整理预留调用次数'), '300')
   await type(field<HTMLInputElement>(zh.modelProvider), 'memory-provider')
   await type(field<HTMLInputElement>(zh.modelName), 'memory-model')
   await click(zh.save)
-  expect(server.settings.memory).toMatchObject({ enabled: true, autoCapture: true, dreaming: false, dailyCallBudget: 5,
+  expect(server.settings.memory).toMatchObject({ enabled: true, autoCapture: true, dreaming: false, dailyCallBudget: 1000,
+    consolidationReservedCalls: 300,
     analyzerModel: { provider: 'memory-provider', model: 'memory-model' } })
   expect(server.settings.policy).toEqual(policy)
   expect(server.settings.executor).toEqual(executor)
@@ -65,6 +67,22 @@ it('refreshes a conflicted review and requires the person to confirm the changed
   expect((find('提交确认') as HTMLButtonElement).disabled).toBe(true)
   await click(find('我已核对原始来源和适用范围', 'label')); await click('提交确认')
   expect(server.memory.note!.note).toMatchObject({ revision: 3, status: 'verified' })
+})
+
+it('explains a repeated consolidation request when the single task is already queued', async () => {
+  server.settings.memory.enabled = true; server.settings.memory.dreaming = true
+  const original = fetch
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/memory/consolidate')) return new Response(JSON.stringify({ queued: false }), { status: 200 })
+    const response = await original(url, init)
+    if (url.startsWith('/orchestrator/api/memory?')) {
+      const body = JSON.parse(await response.text()); body.health.consolidationPending = 1
+      return new Response(JSON.stringify(body), { status: response.status })
+    }
+    return response
+  }))
+  at({ page: 'memory' }); await mount(); await click('整理记忆')
+  expect(text()).toContain('整理任务已在队列中，会继续处理待审阅笔记。')
 })
 
 it('loads Memory through the selected repository scope and removes the previous repository note', async () => {

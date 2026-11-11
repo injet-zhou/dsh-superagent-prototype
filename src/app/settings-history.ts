@@ -10,7 +10,7 @@ type SourceSettings = SettingsVersion['settings']['sources'][string]
 export type SettingsChangeCode = 'ruleAdded' | 'ruleRenamed' | 'ruleInstruction' | 'ruleEnabled' | 'ruleDisabled' | 'ruleRemoved'
   | 'sourceEnabled' | 'sourceDisabled' | 'sourceField' | 'sourceRowsAdded' | 'sourceRowsRemoved' | 'sourceRowsChanged' | 'sourceAdmission'
   | 'mode' | 'timeout' | 'evalModel' | 'executorModel' | 'maxWorkers' | 'paused' | 'resumed' | 'executionDirectory' | 'prepareCommand'
-  | 'blockedCommands' | 'memoryEnabled' | 'memoryRetrieval' | 'memoryCapture' | 'memoryDreaming' | 'memoryBudget' | 'memoryModel'
+  | 'blockedCommands' | 'memoryEnabled' | 'memoryRetrieval' | 'memoryCapture' | 'memoryDreaming' | 'memoryBudget' | 'memoryConsolidationReserve' | 'memoryModel'
 /** A single settings diff entry rendered by the panel using `change.<code>` and field labels from the Source listing. */
 export interface SettingsChange {
   code: SettingsChangeCode; items?: string[]; from?: string | number | boolean; to?: string | number | boolean; name?: string; source?: string
@@ -74,7 +74,7 @@ function settingsChanges(before: SettingsVersion['settings'], after: SettingsVer
   if (!same(before.executor.blockedCommands, after.executor.blockedCommands)) changes.push({ code: 'blockedCommands', from: before.executor.blockedCommands.join(' '), to: after.executor.blockedCommands.join(' ') })
   const previousMemory = before.memory ?? MemoryConfigSchema.parse({}), nextMemory = after.memory ?? MemoryConfigSchema.parse({})
   for (const [field, code] of [['enabled', 'memoryEnabled'], ['retrieval', 'memoryRetrieval'], ['autoCapture', 'memoryCapture'],
-    ['dreaming', 'memoryDreaming'], ['dailyCallBudget', 'memoryBudget']] as const) {
+    ['dreaming', 'memoryDreaming'], ['dailyCallBudget', 'memoryBudget'], ['consolidationReservedCalls', 'memoryConsolidationReserve']] as const) {
     if (previousMemory[field] !== nextMemory[field]) changes.push({ code, from: previousMemory[field], to: nextMemory[field] })
   }
   if (!same(previousMemory.analyzerModel, nextMemory.analyzerModel)) changes.push({ code: 'memoryModel' })

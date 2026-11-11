@@ -8,6 +8,7 @@ import { MemoryConflict, MemoryStore } from './store.ts'
 import { fingerprint } from './security.ts'
 import { readMatches, searchPlan } from './retrieval.ts'
 import { importanceOf, MemoryKnowledge } from './knowledge.ts'
+import { memoryAllowance } from './budget.ts'
 
 /** Owns one repository's optional memory, cached index and observable degradation. No Engine dependency. */
 export class MemoryService {
@@ -111,12 +112,11 @@ export class MemoryService {
     })
   }
   status(): MemoryHealth {
-    const day = new Date().toISOString().slice(0, 10), usage = this.store.get(KV.memory.usage)
-    const usedCalls = usage?.day === day ? usage.calls : 0
+    const { day: _day, ...usage } = memoryAllowance(this.config, this.store.get(KV.memory.usage))
     const pending = (kind: string) => Number(this.store.db.prepare('SELECT count(*) AS n FROM effect WHERE kind=?').get(kind)?.n ?? 0)
-    return { enabled: this.config.enabled, fts: !!this.database?.fts, dailyCallBudget: this.config.dailyCallBudget, usedCalls,
+    return { enabled: this.config.enabled, fts: !!this.database?.fts, dailyCallBudget: this.config.dailyCallBudget, ...usage,
       retrieval: this.config.retrieval, autoCapture: this.config.autoCapture, dreaming: this.config.dreaming, analyzerAvailable: this.analyzer,
-      remainingCalls: Math.max(0, this.config.dailyCallBudget - usedCalls), capturePending: pending('memory-capture'), consolidationPending: pending('memory-consolidate'),
+      capturePending: pending('memory-capture'), consolidationPending: pending('memory-consolidate'),
       partialCaptures: Number(this.store.db.prepare("SELECT count(*) AS n FROM memory_capture_checkpoint WHERE json_extract(cursor_json,'$.partial')=1").get()?.n ?? 0),
       lastCaptureAt: this.store.get(KV.memory.lastCapturedAt) ?? null, lastConsolidationAt: this.store.get(KV.memory.lastConsolidatedAt) ?? null,
       ...this.problem || this.projectionProblem || this.retrievalProblem ? { problem: this.problem ?? this.projectionProblem ?? this.retrievalProblem } : {} }

@@ -98,9 +98,11 @@ export const ExecutorConfigSchema = z.object({
 export const SourceInstanceSchema = z.object({ enabled: z.boolean().default(true), config: z.record(z.string(), z.unknown()).default({}) }).strict()
 export const MemoryConfigSchema = z.object({
   enabled: z.boolean().default(false), retrieval: z.boolean().default(true), autoCapture: z.boolean().default(false),
-  dreaming: z.boolean().default(false), dailyCallBudget: z.number().int().min(0).max(100).default(0),
+  dreaming: z.boolean().default(false), dailyCallBudget: z.number().int().min(0).max(LIMITS.memoryDailyCalls.max).default(0),
+  consolidationReservedCalls: z.number().int().min(0).max(LIMITS.memoryDailyCalls.max).default(0),
   analyzerModel: RoleModelSchema.nullable().default(null),
-}).strict()
+}).strict().refine(value => value.dailyCallBudget === 0 || value.consolidationReservedCalls <= value.dailyCallBudget,
+  { path: ['consolidationReservedCalls'], message: 'Consolidation reserve must not exceed the daily call limit' })
 export type MemoryConfig = z.infer<typeof MemoryConfigSchema>
 export const SettingsSchema = z.object({
   paused: z.boolean().default(false),

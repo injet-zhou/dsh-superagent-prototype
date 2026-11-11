@@ -54,12 +54,28 @@ it('browses bounded pages and retained records while disabled without allowing f
 it('keeps Memory option and budget changes in the existing revision history without changing Policy', async () => {
   const h = await startRuntime()
   onTestFinished(() => h.stop())
-  const saved = await h.api('PUT', 'settings/memory', { revision: 0, value: { enabled: true, dailyCallBudget: 5 } })
+  const saved = await h.api('PUT', 'settings/memory', { revision: 0, value: { enabled: true, dailyCallBudget: 5, consolidationReservedCalls: 2 } })
   expect(saved.body.policy_changed).toBe(false)
   const history = await h.api('GET', 'policy/history')
   expect((history.body.items as ApiResponse<'GET policy/history'>['items'])[0]).toMatchObject({ block: 'memory', policyChanged: false, changes: expect.arrayContaining([
     { code: 'memoryEnabled', from: false, to: true }, { code: 'memoryBudget', from: 0, to: 5 },
+    { code: 'memoryConsolidationReserve', from: 0, to: 2 },
   ]) })
+})
+
+it('accepts an explicit larger call budget while retaining a finite limit and zero-call defaults', async () => {
+  const h = await startRuntime()
+  onTestFinished(() => h.stop())
+  expect(h.runtime.store.settings().memory.dailyCallBudget).toBe(0)
+  const saved = await h.api('PUT', 'settings/memory', { revision: 0, value: { enabled: true, dailyCallBudget: 300 } })
+  expect(saved.status).toBe(200)
+  expect(saved.body.policy_changed).toBe(false)
+  expect(h.runtime.memory.status().dailyCallBudget).toBe(300)
+  expect((await h.api('PUT', 'settings/memory', { revision: 1, value: { dailyCallBudget: 100, consolidationReservedCalls: 101 } })).status).toBe(400)
+  expect((await h.api('PUT', 'settings/memory', { revision: 1, value: { enabled: true, dailyCallBudget: 10_001 } })).status).toBe(400)
+  expect(h.runtime.memory.status().dailyCallBudget).toBe(300)
+  expect((await h.api('PUT', 'settings/memory', { revision: 1, value: { enabled: true, dailyCallBudget: 10_000 } })).status).toBe(200)
+  expect(h.runtime.memory.status().dailyCallBudget).toBe(10_000)
 })
 
 it('rolls back human proof and note publication together and requires fresh confirmation after invalidation', async () => {

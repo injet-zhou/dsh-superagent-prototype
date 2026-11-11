@@ -9,6 +9,7 @@ import { settingsRoute } from './route.ts'
 import { ConfigHistory, Field, Fields, ModelField, SwitchRow, numberOf, useBlockDraft, useSettings } from './settings-kit.tsx'
 import { Hint, LabelValue, LoadMore, LoadState, PageHead, Section, StatusHead } from './widgets.tsx'
 import { valueLabel, when } from './text.ts'
+import { LIMITS } from '../limits.ts'
 
 const FILTERS = ['all', 'candidate', 'verified', 'stale', 'retracted'] as const
 const TONES: Record<MemoryNote['status'], TagTone> = { candidate: 'warning', verified: 'success', stale: 'quiet', retracted: 'danger' }
@@ -20,7 +21,7 @@ export function MemoryStatusPage({ status, query }: { status: typeof FILTERS[num
   const consolidate = useAction(async () => {
     const result = await call('POST memory/consolidate')
     notify(t(result.queued ? 'memoryQueued' : !data?.health.enabled ? 'memoryDisabled'
-      : !data.health.dreaming ? 'memoryConsolidationOff' : 'memoryNothingQueued'))
+      : !data.health.dreaming ? 'memoryConsolidationOff' : data.health.consolidationPending ? 'memoryAlreadyQueued' : 'memoryNothingQueued'))
   }, { reload })
   const rebuild = useAction(async () => { const result = await call('POST memory/rebuild'); notify(t(result.rebuilt ? 'memoryRebuilt' : 'memoryDisabled')) }, { reload })
   const filter = (next: typeof status, q = query) => { setLimit(20); navigate({ page: 'memory', query: { status: next, q } }, true) }
@@ -30,6 +31,9 @@ export function MemoryStatusPage({ status, query }: { status: typeof FILTERS[num
       <div className="dt-row-meta dt-status-line">
         <span className="dt-status-text">{t(data.health.enabled ? 'memoryOn' : 'memoryDisabled')}</span>
         <LabelValue label={t('memoryCallsToday')} value={`${data.health.usedCalls} / ${data.health.dailyCallBudget}`} />
+        <LabelValue label={t('memoryCaptureCalls')} value={data.health.captureCalls} />
+        <LabelValue label={t('memoryConsolidationCalls')} value={data.health.consolidationCalls} />
+        {data.health.unclassifiedCalls > 0 && <LabelValue label={t('memoryUnclassifiedCalls')} value={data.health.unclassifiedCalls} />}
         <LabelValue label={t('memoryPendingCapture')} value={data.health.capturePending} />
         <LabelValue label={t('memoryPendingConsolidation')} value={data.health.consolidationPending} />
       </div>
@@ -152,8 +156,9 @@ export function MemoryNotePage({ id }: { id: string }) {
 export function MemorySettings() {
   const { t } = usePanel()
   const block = useSettings().settings.blocks.memory
-  const draft = useBlockDraft('memory', { ...block.value, dailyCallBudget: String(block.value.dailyCallBudget) }, block.revision,
-    value => ({ ...value, dailyCallBudget: numberOf(value.dailyCallBudget) }))
+  const draft = useBlockDraft('memory', { ...block.value, dailyCallBudget: String(block.value.dailyCallBudget),
+    consolidationReservedCalls: String(block.value.consolidationReservedCalls) }, block.revision,
+    value => ({ ...value, dailyCallBudget: numberOf(value.dailyCallBudget), consolidationReservedCalls: numberOf(value.consolidationReservedCalls) }))
   const value = draft.value
   const edit = (patch: Partial<typeof value>) => draft.edit({ ...value, ...patch })
   return <div className="dt-form">
@@ -164,8 +169,12 @@ export function MemorySettings() {
         <SwitchRow label={t('memoryCapture')} checked={value.autoCapture} onChange={autoCapture => edit({ autoCapture })} />
         <SwitchRow label={t('memoryDreaming')} checked={value.dreaming} onChange={dreaming => edit({ dreaming })} />
         <Field label={t('memoryBudget')} hint={t('memoryBudgetHint')}>
-          <Input type="number" min={0} max={100} required value={value.dailyCallBudget}
+          <Input type="number" min={0} max={LIMITS.memoryDailyCalls.max} required value={value.dailyCallBudget}
             onChange={event => edit({ dailyCallBudget: event.target.value })} />
+        </Field>
+        <Field label={t('memoryConsolidationReserve')} hint={t('memoryConsolidationReserveHint')}>
+          <Input type="number" min={0} max={Number(value.dailyCallBudget) || LIMITS.memoryDailyCalls.max} required value={value.consolidationReservedCalls}
+            onChange={event => edit({ consolidationReservedCalls: event.target.value })} />
         </Field>
         <Section title={t('memoryModel')} hint={t('memoryModelHint')}>
           <ModelField id="dt-memory-model" explicit value={value.analyzerModel} onChange={analyzerModel => edit({ analyzerModel })} />
