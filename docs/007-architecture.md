@@ -337,6 +337,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/memory/store.ts` | Repository binding, evidence-backed writes, revision CAS and bounded FTS5 retrieval |
 | `src/app/memory/service.ts` | Failure isolation, health, read/search facade and precomputed prompt index |
 | `src/app/memory/analyzer.ts` | Restricted JSON proposal contract, without tool execution or publishing access |
+| `src/app/memory/budget.ts` | Shared daily allowance, per-mode usage and consolidation reservations |
 | `src/app/memory/capture.ts` | Settled-turn capture effects, raw-log continuity checks, atomic cursors, redaction and call budgets |
 | `src/app/memory/evidence.ts` | Host-controlled scoped Transcript replay, source integrity checks and bounded redacted evidence packages |
 | `src/app/memory/attestation.ts` | Bounded Host-observed test execution receipts, exact facts and replay-safe publication |
