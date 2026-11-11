@@ -574,7 +574,7 @@ const TEXT = {
   'memoryError.memory_attestation_unavailable': ['自动执行核证暂时不可用，Worker 可以继续工作。', 'Automatic execution attestation is unavailable; Workers can continue.'],
   'memoryError.memory_capture_failed': ['记忆提取失败，任务会保留并重试。', 'Memory capture failed and will retry.'],
   'memoryError.memory_capture_retry_limit': ['同一段历史已连续提取失败 3 次，已暂停重试以保护额度。请调整并保存记忆设置后重试；次日也会自动恢复。', 'Capture failed three times for the same history and retries are paused to protect the budget. Change and save Memory settings to retry, or wait until the next UTC day.'],
-  'memoryError.memory_analysis_timeout': ['记忆模型未在 15 秒内完成，采集进度已保留。', 'The memory model did not finish within 15 seconds. Capture progress is preserved.'],
+  'memoryError.memory_analysis_timeout': ['记忆模型未在 45 秒内完成，采集进度已保留。', 'The memory model did not finish within 45 seconds. Capture progress is preserved.'],
   'memoryError.memory_model_incomplete': ['记忆模型输出不完整，采集进度已保留。', 'The memory model returned an incomplete response. Capture progress is preserved.'],
   'memoryError.memory_invalid_json': ['记忆模型未返回有效 JSON，未发布结果。', 'The memory model returned invalid JSON. Nothing was published.'],
   'memoryError.memory_invalid_proposals': ['记忆提议的格式或来源不正确，未发布结果。', 'The memory proposal has an invalid format or source. Nothing was published.'],

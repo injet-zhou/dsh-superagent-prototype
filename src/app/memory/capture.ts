@@ -39,7 +39,7 @@ export async function analyze(host: CaptureHost, input: MemoryAnalysisInput): Pr
   const analyzer = host.analyzer
   if (!analyzer) { host.memory.degraded('memory_analyzer_unavailable'); throw new Later('memory_analyzer_unavailable') }
   if (analyzing) throw new Later('memory_analyzer_busy')
-  const deadline = AbortSignal.timeout(15_000)
+  const deadline = AbortSignal.timeout(45_000)
   const configuration = host.memory.analysisSignal()
   const signal = AbortSignal.any([host.lifetime, configuration, deadline])
   const config = host.store.settings().memory, day = new Date().toISOString().slice(0, 10)

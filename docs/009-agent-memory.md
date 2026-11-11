@@ -692,3 +692,10 @@ Capture remains a single writer per Repository, but a delayed/held Session no lo
 
 
 最终验证：`pnpm install --frozen-lockfile`、独立 build、`VITEST_MAX_WORKERS=1 pnpm check`（typecheck、76 文件 / 1416 测试、build）及 `git diff --check` 通过。首轮全量仅飞书状态覆盖断言失败，已在未修改的 main 独立复现；另一个独立提交保留本次 consumer 的解析/告警错误，防止迟到的 readiness 信号覆盖，并覆盖两种管道到达顺序。原断言均保留，未提高超时或跳过测试。现场服务仍使用 main，自动模型预算暂设 0 以停止重复记账；队列/历史完整保留，恢复原 90 次/日及真实会话采集须待外发授权与部署后另验。
+
+
+### Model deadline after real-history replay (2026-11-11)
+
+经操作员明确授权后，在合并的 main 上恢复真实积压。采集已产生有来源的候选并推进两个 Session 的检查点，但随后合法批次触发 `memory_analysis_timeout`，证明固定 15 秒对当前模型/历史不足。仅将 Capture/Dreaming 共用的模型等待上限提高到 45 秒；Session flush/inspection 的 15 秒上限保持不变。12 KB Capture 输入、2,048 输出 Token、单次全局模型租约、UTC 每日调用额度、同检查点三次失败保护及取消/关闭信号均保持原约束。
+
+新增公共分析接口回归：模型在第 20 秒返回严格结果时应成功且仅记账一次（旧 15 秒实现确定失败）；非协作模型仍由 45 秒期限中止等待，保留租约直到真实结束，并禁止迟到发布。测试使用可控时间推进，不提高 Vitest 超时。此修复不迁移数据库，不改变 WorkerSlot 或授权。

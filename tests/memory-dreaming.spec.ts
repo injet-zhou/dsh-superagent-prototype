@@ -341,6 +341,28 @@ it('rolls back proposals and review progress together when a review checkpoint c
   expect(effects.pending('memory-consolidate')).toBe(false)
 })
 
+it('accepts a bounded model response after twenty seconds without charging a retry', async () => {
+  const f = memoryFixture()
+  f.store.saveSettings({ ...f.store.settings(), memory: MemoryConfigSchema.parse({ enabled: true, dreaming: true, dailyCallBudget: 2 }) })
+  f.service.configure(f.store.settings().memory)
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  const deadline = vi.spyOn(AbortSignal, 'timeout').mockImplementation(ms => {
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(), ms)
+    return controller.signal
+  })
+  try {
+    const host = { store: f.store, memory: f.service, context: new Context(), effects: new Effects(f.store, f.board),
+      lifetime: new AbortController().signal, paused: () => false,
+      analyzer: { propose: () => new Promise(resolve => setTimeout(() => resolve([]), 20_000)) } }
+    const outcome = analyze(host, { mode: 'consolidate', events: [], notes: [] })
+      .then(value => ({ value }), error => ({ error: (error as Error).message }))
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(await outcome).toEqual({ value: [] })
+    expect(f.store.get(KV.memory.usage)?.calls).toBe(1)
+  } finally { vi.clearAllTimers(); vi.useRealTimers(); deadline.mockRestore() }
+})
+
 it('bounds a non-cooperative analyzer with the configured deadline and retains its global reservation until completion', async () => {
   const f = memoryFixture(), timeout = new AbortController(), pending = deferred<unknown>()
   f.store.saveSettings({ ...f.store.settings(), memory: MemoryConfigSchema.parse({ enabled: true, dreaming: true, dailyCallBudget: 2 }) })
@@ -353,7 +375,7 @@ it('bounds a non-cooperative analyzer with the configured deadline and retains i
   try {
     const active = analyze(host, input)
     await waitUntil(() => propose.mock.calls.length === 1)
-    expect(deadline).toHaveBeenCalledWith(15_000)
+    expect(deadline).toHaveBeenCalledWith(45_000)
     timeout.abort()
     await expect(active).rejects.toThrow('memory_analysis_timeout')
     await expect(analyze(host, input)).rejects.toThrow('memory_analyzer_busy')
