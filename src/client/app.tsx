@@ -163,6 +163,7 @@ function Header({ masterId, repositories }: { masterId: string | undefined; repo
 function Pages({ route, openTab, deploymentForm, repositories }: { route: Route; openTab: (tab: Tab) => void; deploymentForm: DeploymentForm; repositories: RepositoryChoice }) {
   const { t } = usePanel()
   const { state, error, reload } = usePanelData()
+  const attention = repositories.entries.find(entry => entry.id === repositories.id)?.attention ?? 0
   // Keep the active tab scrolled into view on narrow screens when routes change via links.
   useEffect(() => { document.getElementById(`dt-tab-${route.page}`)?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' }) }, [route.page])
   const waiting = error ? <p className="dt-error" role="alert">{error.message}</p> : <p className="dt-hint">{t('loading')}</p>
@@ -187,7 +188,9 @@ function Pages({ route, openTab, deploymentForm, repositories }: { route: Route;
       <Header masterId={state?.masterId} repositories={repositories} />
       {error && state && <p className="dt-error" role="status">{error.message}</p>}
       <SegmentedTabs className="dt-tabs" label={t('pagesLabel')} value={route.page} onChange={openTab}
-        items={TABS.map(value => ({ value, label: t(`tab.${value}`), id: `dt-tab-${value}`, panelId: 'dt-page' }))} />
+        items={TABS.map(value => ({ value, label: t(`tab.${value}`), id: `dt-tab-${value}`, panelId: 'dt-page',
+          ...value === 'execution' && attention > 0 ? { badge: attention,
+            badgeLabel: t('repositoryAttention', { count: attention }) } : {} }))} />
       <main id="dt-page" role="tabpanel" aria-labelledby={`dt-tab-${route.page}`} className="dt-main">{page}</main>
     </div>
   </div>

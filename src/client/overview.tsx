@@ -78,7 +78,7 @@ export function OverviewPage() {
     <Section title={t('pendingTickets')} count={data.person.length}>
       {data.person.length ? <ul className="dt-list dt-cards">{data.person.map(ticket => <TicketLine key={ticket.id} ticket={ticket} question
         onChanged={reload} />)}</ul>
-        : <Hint>{t('needsYouNone')}</Hint>}
+        : <p className="dt-hint dt-ok"><Icon name="decision" size={14} />{t('needsYouNone')}</p>}
     </Section>
     {data.problems.length > 0 && <Section title={t('problems')} count={data.problems.length}>
       <ul className="dt-list dt-cards">{data.problems.map((problem, index) => <ProblemLine key={index} problem={problem}

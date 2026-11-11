@@ -96,3 +96,17 @@ it('moves the tab selection with arrow keys and wraps at the ends', async () => 
   expect(container.querySelector('[aria-selected="true"]')?.textContent).toBe('a')
   act(() => { root.unmount() })
 })
+
+it('shows an attention badge without changing a tab label', async () => {
+  const container = document.createElement('div'); document.body.append(container)
+  const root = createRoot(container)
+  await act(async () => { root.render(<SegmentedTabs label="pages" value="a" onChange={() => {}}
+    items={[{ value: 'a', label: 'a', id: 't-a', panelId: 'p', badge: 2, badgeLabel: '2 need you' },
+      { value: 'b', label: 'b', id: 't-b', panelId: 'p' }]} />) })
+  const tabs = [...container.querySelectorAll<HTMLElement>('[role="tab"]')]
+  expect(tabs.map(tab => tab.textContent)).toEqual(['a', 'b'])
+  expect(tabs[0]!.getAttribute('data-badge')).toBe('2')
+  expect(tabs[0]!.title).toBe('2 need you')
+  expect(tabs[1]!.hasAttribute('data-badge')).toBe(false)
+  act(() => { root.unmount() })
+})

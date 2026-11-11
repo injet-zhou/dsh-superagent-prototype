@@ -13,7 +13,7 @@ it('leads the overview with the pending Tickets, then problems, the last day and
   expect(all('.dt-section-title').map(title => title.textContent)).toEqual(['待处理工单2', '系统问题2', '过去 24 小时详情 ›', '执行器详情 ›'])
   expect(all('.dt-cards .dt-ticket-stage').map(item => item.textContent)).toEqual(['待回答', '待处理失败'])
   expect(all('.dt-cards .dt-att-what').map(item => item.textContent)).toEqual(['飞书 来源异常', '评估未完成：这个文案好奇怪'])
-  // Actions sit below the title and Threads, apart from the stage, each with its icon.
+  // Actions sit beside the title, apart from the stage, each with its icon.
   expect(all('.dt-ticket').every(row => row.querySelector('.dt-ticket-stage button, .dt-ticket-stage a') === null
     && [...row.querySelectorAll('.dt-ticket-actions button, .dt-ticket-actions a')].every(action => action.querySelector('svg')))).toBe(true)
   expect(text()).toContain('来源会在每次轮询时自动重试')
@@ -24,6 +24,13 @@ it('leads the overview with the pending Tickets, then problems, the last day and
   expect(document.querySelector<HTMLAnchorElement>('a.dt-chip-link')?.href).toBe('https://github.com/acme/widgets/pull/42')
   await click(all('.dt-more-link').at(-1)!)
   expect(tab(zh['tab.execution']).getAttribute('aria-selected')).toBe('true')
+})
+
+it('confirms quietly when nothing needs a person', async () => {
+  server.person = []
+  await mount()
+  expect(text()).toContain(zh.needsYouNone)
+  expect(document.querySelector('.dt-ok svg')).not.toBeNull()
 })
 
 it('re-evaluates or dismisses an unjudged Eval from the problem list', async () => {
