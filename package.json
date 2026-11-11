@@ -4,7 +4,7 @@
   "license": "MIT",
   "version": "0.1.0",
   "private": true,
-  "description": "A proactive agent for local GitHub and Gitea repositories, as a DSH (DeepSeek Harness) bundle: it isolates each repository's state and accounts, evaluates requests under a Policy, and executes authorized Tickets in local DSH Sessions.",
+  "description": "A proactive agent for local GitHub, Gitea and self-managed GitLab repositories, as a DSH (DeepSeek Harness) bundle: it isolates each repository's state and accounts, evaluates requests under a Policy, and executes authorized Tickets in local DSH Sessions.",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -28,7 +28,8 @@
     "README.md",
     "prompts",
     "skills",
-    "scripts/dsh-gitea"
+    "scripts/dsh-gitea",
+    "scripts/dsh-gitlab"
   ],
   "dsh": {
     "bundle": {

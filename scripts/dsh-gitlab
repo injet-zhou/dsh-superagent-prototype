@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""Account-isolated GitLab REST v4 CLI and Git credential helper (Python 3.8+)."""
+import argparse
+import ipaddress
+import json
+import os
+import re
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never forward the private token to a redirect target."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def instance_url(value):
+    url = urllib.parse.urlsplit(value)
+    if (url.scheme not in ("http", "https") or not url.hostname or url.username
+            or url.password or url.query or url.fragment):
+        raise ValueError("config baseUrl must be an HTTP(S) instance root")
+    try:
+        loopback = ipaddress.ip_address(url.hostname).is_loopback
+    except ValueError:
+        loopback = url.hostname.lower() == "localhost"
+    if url.scheme != "https" and not loopback:
+        raise ValueError("GitLab requires HTTPS; HTTP is allowed only on loopback hosts")
+    if re.search(r"/api/v4/?$", url.path, re.I) or re.search(r"%2f|%5c|%2e", url.path, re.I):
+        raise ValueError("Use the GitLab instance root without /api/v4 or encoded path separators")
+    if any(part in (".", "..") for part in url.path.split("/")) or "\\" in url.path:
+        raise ValueError("GitLab instance root has an invalid path")
+    host = "[" + url.hostname.lower() + "]" if ":" in url.hostname else url.hostname.lower()
+    if url.port is not None and url.port != (443 if url.scheme == "https" else 80):
+        host += ":" + str(url.port)
+    return urllib.parse.urlunsplit((url.scheme.lower(), host, url.path.rstrip("/"), "", ""))
+
+
+def api_url(base, path):
+    decoded = path.split("?", 1)[0]
+    for _ in range(8):
+        next_value = urllib.parse.unquote(decoded)
+        if next_value == decoded:
+            break
+        decoded = next_value
+    if (decoded.startswith("/") or ":" in decoded or "\\" in decoded or "%" in decoded
+            or any(part in (".", "..") for part in decoded.split("/"))):
+        raise ValueError("API paths must be relative to this GitLab instance")
+    return base + "/api/v4/" + path
+
+
+def request(config, url, method="GET", data=None):
+    remaining = config["_deadline"] - time.monotonic()
+    if remaining <= 0 or config["_requests"] <= 0:
+        raise ValueError("GitLab operation budget exceeded")
+    config["_requests"] -= 1
+    headers = {"PRIVATE-TOKEN": config["token"], "Accept": "application/json"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.build_opener(NoRedirect()).open(req, timeout=min(30, remaining)) as response:
+            body = response.read(16 * 1024 * 1024 + 1)
+            if len(body) > 16 * 1024 * 1024:
+                raise ValueError("GitLab response exceeded 16 MiB")
+            return json.loads(body) if body else None, response.headers
+    except urllib.error.HTTPError as error:
+        raise ValueError("GitLab API failed (HTTP %s)" % error.code) from None
+    except (urllib.error.URLError, TimeoutError):
+        raise ValueError("GitLab connection failed") from None
+
+
+def read_pages(config, args, data):
+    url = api_url(config["baseUrl"], args.path)
+    method = args.method or ("POST" if data is not None else "GET")
+    if args.paginate and method != "GET":
+        raise ValueError("pagination is only supported for GET")
+    pages, visited, count, offset = [], set(), 0, args.offset
+    while True:
+        if url in visited:
+            raise ValueError("GitLab pagination did not finish")
+        visited.add(url)
+        result, headers = request(config, url, method, json.dumps(data).encode() if data is not None else None)
+        if args.paginate:
+            if not isinstance(result, list):
+                raise ValueError("pagination requires an array response")
+            skipped = min(offset, len(result))
+            offset -= skipped
+            result = result[skipped:]
+            if args.max_items is not None:
+                result = result[:args.max_items - count]
+            count += len(result)
+        pages.append(result)
+        if not args.paginate or (args.max_items is not None and count >= args.max_items):
+            break
+        next_url = None
+        for link in headers.get("Link", "").split(","):
+            if 'rel="next"' in link:
+                next_url = urllib.parse.urljoin(url, link.split("<", 1)[1].split(">", 1)[0])
+        if not next_url and headers.get("X-Next-Page"):
+            next_page = headers["X-Next-Page"]
+            if not next_page.isdigit() or int(next_page) <= 0:
+                raise ValueError("Invalid GitLab pagination")
+            parsed = urllib.parse.urlsplit(url)
+            query = urllib.parse.parse_qs(parsed.query)
+            query["page"] = [next_page]
+            next_url = urllib.parse.urlunsplit(parsed._replace(query=urllib.parse.urlencode(query, doseq=True)))
+        if not next_url:
+            break
+        prefix = config["baseUrl"] + "/api/v4/"
+        if not next_url.startswith(prefix):
+            raise ValueError("GitLab pagination left the configured API")
+        api_url(config["baseUrl"], next_url[len(prefix):])
+        url = next_url
+    return pages if args.slurp else ([item for page in pages for item in page] if args.paginate else pages[0])
+
+
+def credential(config, args):
+    if args.operation != "get":
+        return
+    values = dict(line.rstrip("\n").split("=", 1) for line in sys.stdin if "=" in line)
+    base = urllib.parse.urlsplit(config["baseUrl"])
+    expected = (base.path.strip("/") + "/" + args.repository).lstrip("/")
+    path = values.get("path", "")
+    if path.endswith(".git"):
+        path = path[:-4]
+    if values.get("protocol") != base.scheme or values.get("host") != base.netloc or path != expected:
+        return
+    user, _ = request(config, api_url(config["baseUrl"], "user"))
+    if values.get("username") and values["username"] != user["username"]:
+        return
+    print("username=" + user["username"])
+    print("password=" + config["token"])
+    print()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", default=os.environ.get("DSH_GITLAB_CONFIG"))
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("config", help="print the instance URL, never credentials")
+    rest = commands.add_parser("api", help="call a relative GitLab /api/v4 endpoint")
+    rest.add_argument("path")
+    rest.add_argument("--method", "-X")
+    rest.add_argument("--field", "-f", action="append", default=[])
+    rest.add_argument("--typed-field", "-F", action="append", default=[])
+    rest.add_argument("--input")
+    rest.add_argument("--paginate", action="store_true")
+    rest.add_argument("--slurp", action="store_true")
+    rest.add_argument("--offset", type=int, default=0)
+    rest.add_argument("--max-items", type=int)
+    rest.add_argument("--timeout-seconds", type=float, default=30)
+    rest.add_argument("--max-requests", type=int, default=128)
+    auth = commands.add_parser("auth")
+    auth.add_argument("kind", choices=["git-credential"])
+    auth.add_argument("--repository", required=True)
+    auth.add_argument("operation", choices=["get", "store", "erase"])
+    args = parser.parse_args()
+    if not args.config:
+        raise ValueError("set --config to the agent's private GitLab JSON configuration")
+    with open(args.config, encoding="utf-8") as stream:
+        config = json.load(stream)
+    config["baseUrl"] = instance_url(config["baseUrl"])
+    timeout, budget = getattr(args, "timeout_seconds", 30), getattr(args, "max_requests", 128)
+    if timeout <= 0 or budget <= 0 or getattr(args, "offset", 0) < 0 or (getattr(args, "max_items", None) is not None and args.max_items <= 0):
+        raise ValueError("GitLab operation budgets must be positive and offsets nonnegative")
+    config.update(_deadline=time.monotonic() + timeout, _requests=budget)
+    if not isinstance(config.get("token"), str) or not config["token"] or any(ord(c) < 33 or ord(c) > 126 for c in config["token"]):
+        raise ValueError("GitLab configuration needs an agent token")
+    if args.command == "config":
+        print(json.dumps({"baseUrl": config["baseUrl"]}))
+    elif args.command == "auth":
+        credential(config, args)
+    else:
+        fields = {}
+        for field, typed in [(v, False) for v in args.field] + [(v, True) for v in args.typed_field]:
+            key, separator, value = field.partition("=")
+            if not separator:
+                raise ValueError("fields must be name=value")
+            fields[key] = json.loads(value) if typed else value
+        data = fields or None
+        if args.input:
+            if fields:
+                raise ValueError("use --input or fields, not both")
+            if args.input == "-":
+                data = json.load(sys.stdin)
+            else:
+                with open(args.input, encoding="utf-8") as stream:
+                    data = json.load(stream)
+        print(json.dumps(read_pages(config, args, data), ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (ValueError, KeyError, OSError) as error:
+        message = str(error) if isinstance(error, ValueError) and not isinstance(error, json.JSONDecodeError) else "Cannot read GitLab configuration or response"
+        print(message, file=sys.stderr)
+        sys.exit(1)

@@ -23,7 +23,7 @@ const MARKER = '# Written by dsh-superagent on every start; edits are lost.'
 /** Markers of files written under the project's earlier names (`dsh-tag`, `dsh-go`, `dsh-freelancer`), which `dsh-superagent` owns and replaces too. */
 const LEGACY_MARKERS = ['dsh-tag', 'dsh-go', 'dsh-freelancer'].map(name => `# Written by ${name} on every start; edits are lost.`)
 /** Commands workers need, which `blockedCommands` cannot block: the shims and git. */
-export const WORKER_COMMANDS: readonly string[] = ['gh', 'gitea', 'git', 'lark-cli']
+export const WORKER_COMMANDS: readonly string[] = ['gh', 'gitea', 'gitlab', 'glab', 'git', 'lark-cli']
 export const workerBin = (stateDir: string): string => join(stateDir, 'worker-bin')
 export const workerGitConfig = (stateDir: string): string => join(stateDir, 'worker-gitconfig')
 const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`
@@ -31,7 +31,7 @@ const gitQuote = (value: string): string => `"${value.replace(/[\\"]/g, char => 
 export const credentialHelper = (cli: string, repository?: string): string =>
   `!${shellQuote(cli)} auth git-credential${repository ? ` --repository ${shellQuote(repository)}` : ''}`
 const credentialScope = (deployment: Pick<Deployment, 'github' | 'repository'>): string =>
-  deployment.github.provider === 'gitea' ? deployment.github.baseUrl! : 'https://github.com'
+  deployment.github.provider && deployment.github.provider !== 'github' ? deployment.github.baseUrl! : 'https://github.com'
 
 export function sameDirectory(a: string, b: string): boolean {
   const real = (path: string): string => { try { return realpathSync(path) } catch { return resolve(path) } }
@@ -55,7 +55,7 @@ export const GIT_LOCATION: readonly string[] = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT
  */
 export function agentVariables(stateDir: string): Record<string, string | undefined> {
   return {
-    GH_TOKEN: undefined, GITHUB_TOKEN: undefined, GITEA_TOKEN: undefined,
+    GH_TOKEN: undefined, GITHUB_TOKEN: undefined, GITEA_TOKEN: undefined, GITLAB_TOKEN: undefined, GITLAB_ACCESS_TOKEN: undefined, GLAB_TOKEN: undefined,
     // A worker's git finds the repository from its directory, never from the host's environment.
     ...Object.fromEntries(GIT_LOCATION.map(name => [name, undefined])),
     GIT_CONFIG_GLOBAL: workerGitConfig(stateDir), GIT_CONFIG_NOSYSTEM: '1',
@@ -108,13 +108,16 @@ export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' |
   ].join('\n')
   const run = (program: string): string => `${withoutShims}\nexec ${shellQuote(program)} "$@"`
   const fail = (message: string): string => `echo ${shellQuote(message)} >&2\nexit 1`
-  const gitea = github.provider === 'gitea'
-  const giteaUrl = gitea ? new URL(github.baseUrl!) : undefined
-  await shim('gh', gitea ? fail('This installation uses Gitea; use gitea api, not gh.') : run(github.cli))
-  await shim('gitea', gitea ? run(github.cli) : fail('This installation uses GitHub; use gh.'))
+  const provider = github.provider ?? 'github'
+  const selfHosted = provider !== 'github'
+  const cliName = selfHosted ? provider : 'gh'
+  const instanceUrl = selfHosted ? new URL(github.baseUrl!) : undefined
+  await shim('gh', selfHosted ? fail(`This installation uses ${provider === 'gitlab' ? 'GitLab' : 'Gitea'}; use ${cliName} api, not gh.`) : run(github.cli))
+  for (const name of ['gitea', 'gitlab']) await shim(name, provider === name ? run(github.cli) : fail(`This installation uses ${provider}; use ${cliName}.`))
+  await shim('glab', fail(`Use the account-isolated ${cliName} CLI.`))
   await shim('lark-cli', feishu ? run(feishu.cli) : fail('lark-cli is unavailable: this installation has no Feishu bot.'))
   for (const name of new Set(blockedCommands.filter(name => !WORKER_COMMANDS.includes(name)))) {
-    await shim(name, fail(`${name} is blocked in this installation; use ${gitea ? 'gitea' : 'gh'}, which acts as ${github.login}.`))
+    await shim(name, fail(`${name} is blocked in this installation; use ${cliName}, which acts as ${github.login}.`))
   }
   for (const name of before) if (!kept.has(name)) await unlink(join(dir, name))
   await own(workerGitConfig(stateDir), [
@@ -122,12 +125,12 @@ export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' |
     // Make git refuse to commit without an explicit identity set by the worker instead of guessing from the operator's OS user.
     '[user]', '\tuseConfigOnly = true',
     '[credential]', '\thelper =',
-    `[credential ${gitQuote(credentialScope(deployment))}]`, `\thelper = ${gitQuote(credentialHelper(github.cli, gitea ? repository : undefined))}`,
-    ...gitea ? ['\tuseHttpPath = true'] : [],
-    ...giteaUrl ? [
+    `[credential ${gitQuote(credentialScope(deployment))}]`, `\thelper = ${gitQuote(credentialHelper(github.cli, selfHosted ? repository : undefined))}`,
+    ...selfHosted ? ['\tuseHttpPath = true'] : [],
+    ...instanceUrl ? [
       // SSH repository paths do not contain the HTTP reverse-proxy prefix; retain it in the replacement URL.
-      `[url ${gitQuote(`${github.baseUrl}/`)}]`, `\tinsteadOf = git@${giteaUrl.hostname}:`,
-      `\tinsteadOf = ssh://git@${giteaUrl.hostname}/`,
+      `[url ${gitQuote(`${github.baseUrl}/`)}]`, `\tinsteadOf = git@${instanceUrl.hostname}:`,
+      `\tinsteadOf = ssh://git@${instanceUrl.hostname}/`,
       // Unknown usernames/hosts and custom SSH ports must fail rather than use the operator's SSH keys.
       '[protocol "ssh"]', '\tallow = never',
     ] : ['[url "https://github.com/"]', '\tinsteadOf = git@github.com:', '\tinsteadOf = ssh://git@github.com/'],
@@ -162,7 +165,7 @@ export async function verifyEnvironment(deployment: Pick<Deployment, 'github' | 
   const { github, stateDir } = deployment
   // `-z` separates fields with NUL and never quotes paths.
   const helpers = (await runAsWorker(subprocess, ['git', 'config', '-z', '--show-origin', '--get-all', `credential.${credentialScope(deployment)}.helper`], stateDir, AbortSignal.any([signal, AbortSignal.timeout(60_000)]), env).catch(() => '')).split('\0')
-  if (helpers.join('\0') !== [`file:${workerGitConfig(stateDir)}`, credentialHelper(github.cli, github.provider === 'gitea' ? deployment.repository : undefined), ''].join('\0')) throw new SetupError('gitTooOld')
+  if (helpers.join('\0') !== [`file:${workerGitConfig(stateDir)}`, credentialHelper(github.cli, github.provider && github.provider !== 'github' ? deployment.repository : undefined), ''].join('\0')) throw new SetupError('gitTooOld')
 }
 
 /**

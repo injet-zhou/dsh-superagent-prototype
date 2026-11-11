@@ -46,7 +46,7 @@ export function repliedTo({ store, sources }: { store: Pick<Store, 'triggers'>; 
 }
 /** Finds tickets subscribed to threads referenced in `trigger.text` (such as `#12` or URLs) that are not already in `known`. */
 function referencedTickets(host: LinkHost, trigger: Trigger, known: readonly Ticket[]): Ticket[] {
-  const threads = (trigger.text.match(/#\d+|https?:\/\/[^\s)>\]]+/g) ?? []).flatMap(reference => host.sources.find(reference).threads)
+  const threads = (trigger.text.match(/[#!]\d+|https?:\/\/[^\s)>\]]+/g) ?? []).flatMap(reference => host.sources.find(reference).threads)
   const ids = new Set(threads.flatMap(thread => host.store.threads.get(thread)?.subscriptions ?? []))
   for (const ticket of known) ids.delete(ticket.id)
   return [...ids].flatMap(id => host.store.tickets.get(id) ?? []).slice(0, 4)

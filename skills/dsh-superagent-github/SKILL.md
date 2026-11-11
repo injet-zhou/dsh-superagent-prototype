@@ -1,9 +1,17 @@
 ---
 name: dsh-superagent-github
-description: Read repository issues, pull requests, reviews and CI using the configured GitHub or Gitea account.
+description: Read repository issues, pull requests, reviews and CI using the configured GitHub, Gitea or GitLab account.
 ---
 
-Check `DSH_SUPERAGENT_REPOSITORY_PROVIDER` first. When it is `gitea`, follow the Gitea section below; the GitHub commands and GraphQL instructions later in this skill apply only to provider `github`.
+Check `DSH_SUPERAGENT_REPOSITORY_PROVIDER` first and follow its section. GitHub commands and GraphQL apply only to `github`.
+
+## GitLab
+
+Use the account-isolated `gitlab` shim for REST v4. Preserve returned `web_url` links. Legacy `github` resources, Source/Policy IDs and environment variables refer to this GitLab project. Encode the full namespace, including subgroups, as one URL component: `project=$(python3 -c 'import os,urllib.parse; print(urllib.parse.quote(os.environ["DSH_SUPERAGENT_GITHUB_REPOSITORY"], safe="")))'`.
+Read `gitlab api "projects/$project"`, `projects/$project/merge_requests/<iid>` or `projects/$project/issues/<iid>`. Use `--paginate --slurp` for complete lists (array of pages); `-f name=value` for strings, `-F name=JSON` for typed fields, or `--input <file>` / `--input -` for JSON bodies.
+Push the ticket branch with ordinary git, then create an MR with `gitlab api "projects/$project/merge_requests" --method POST --input <file>` and JSON `{ "source_branch": "<ticket branch>", "target_branch": "<base>", "title": "<title>", "description": "<description>" }`. Immediately report its native `iid` as `pr_number`. Close superseded MRs with `--method PUT -f state_event=close` after explaining why.
+Read Issue context with `orchestrator_read github/issues/<iid>` and MR context with `github/pulls/<iid>`. Internal Issue thread IDs are `github:issue-<iid>`; MR thread IDs are `github:<iid>`, so Issue #1 and MR !1 are independent. Issue resources also accept `issue-<iid>`. Standard comment, review-thread and checks resources remain available. MR head refs are `refs/merge-requests/<iid>/head`. Diff discussion replies retain their root note ID, file and line. Host replies go to the Issue/MR conversation; for a direct diff reply, read `gitlab api "projects/$project/merge_requests/<iid>/discussions" --paginate --slurp`, find the discussion containing the note ID, then POST its `/discussions/<discussion-id>/notes` with `-f body=<text>`.
+Read original human triggers and acknowledge them before substantial work, and report progress as described below. Do not use gh, glab, GitHub GraphQL, GitHub reviewer coauthor rewriting or auto-merge. Leave merging and approval-rule decisions to people. CI covers published commit statuses; missing statuses are unavailable. Use the configured commit email and automated-agent disclosure.
 
 ## Gitea
 

@@ -5,7 +5,7 @@ import { CliError } from '../infra/commands.ts'
 import { sameName } from '../infra/text.ts'
 import type { SourceContext } from './host.ts'
 import type { ChannelLink, ChannelLinks } from './kind.ts'
-import { githubAddress, githubPage } from './github-trigger.ts'
+import { githubAddress, githubPage, repositoryNumber, displayNumber } from './github-trigger.ts'
 
 const CommentSchema = z.looseObject({
   id: z.number(), body: z.string().nullish(), in_reply_to_id: z.number().nullish(), user: z.looseObject({ login: z.string() }).nullish(),
@@ -18,11 +18,11 @@ const missing = (error: unknown): boolean => error instanceof CliError && (error
 export async function sendGithub(host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'> {
   const { commands } = host
   const { repository, github } = commands.deployment
-  const number = Number(message.channel.address.number)
+  const number = repositoryNumber(message.channel.address.number ?? '')
   if (!number) throw new Error('Missing GitHub reply target')
   try {
     // Retained trigger URLs also route replies queued before thread-aware delivery.
-    const address = githubAddress(message.channel.address.url ?? '', repository, github.baseUrl)
+    const address = githubAddress(message.channel.address.url ?? '', repository, github.baseUrl, github.provider)
     let rootId: number | undefined
     if (address?.pr && address.discussion && address.number === number) {
       // Fall back to a top-level PR comment if the target inline review comment was deleted.
@@ -45,6 +45,9 @@ export async function sendGithub(host: Pick<SourceContext, 'commands'>, message:
 }
 export function githubLink(address: Record<string, string>, links: ChannelLinks): ChannelLink {
   const number = address.number ?? ''
+  if (links.github?.provider === 'gitlab') return {
+    url: address.url ?? (links.repository ? githubPage(links.repository, repositoryNumber(number), !number.startsWith('issue-'), links.github.baseUrl, 'gitlab') : ''),
+    label: { zh: `GitLab ${number.startsWith('issue-') ? displayNumber(number) : `!${number}`}`, en: `GitLab ${number.startsWith('issue-') ? displayNumber(number) : `!${number}`}` } }
   const review = !!links.repository && !!githubAddress(address.url ?? '', links.repository, links.github?.baseUrl)?.discussion
   if (links.github?.provider === 'gitea') return {
     url: address.url ?? (links.repository ? githubPage(links.repository, Number(number), false, links.github.baseUrl) : ''),

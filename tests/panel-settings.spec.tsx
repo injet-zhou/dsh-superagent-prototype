@@ -44,7 +44,7 @@ it('saves the Eval block on the Policy settings and the Executor with its execut
   prepare.setSelectionRange(17, 17)
   await click('可用的环境变量 3')
   expect(all('.dt-table tbody tr').map(row => row.textContent)).toEqual(['DSH_SUPERAGENT_DIR工单的执行目录执行器', 'DSH_SUPERAGENT_NAME工单短名执行器',
-    'DSH_SUPERAGENT_GITHUB_REPOSITORY仓库GitHub / Gitea · 已关闭'])
+    'DSH_SUPERAGENT_GITHUB_REPOSITORY仓库GitHub / Gitea / GitLab · 已关闭'])
   await click('DSH_SUPERAGENT_DIR')
   expect(field<HTMLTextAreaElement>(zh.prepareCommand).value).toBe('git worktree add "$DSH_SUPERAGENT_DIR"')
   await type(field<HTMLInputElement>(zh.blockedCommands), 'gh-personal  gh.other')
@@ -101,7 +101,7 @@ it('shows save and discard only while a settings block has edits, at the end of 
   expect(document.activeElement).toBe(workers.form)
   await click(find(zh['term.source'], '.dt-settings-link'))
   expect(all('.dt-savebar')).toHaveLength(0)
-  const github = all('.dt-card').find(card => card.querySelector('.dt-card-title')?.textContent === 'GitHub / Gitea')!
+  const github = all('.dt-card').find(card => card.querySelector('.dt-card-title')?.textContent === 'GitHub / Gitea / GitLab')!
   await type(field<HTMLInputElement>('智能体的仓库 CLI'), 'gh-other')
   expect(github.lastElementChild!.classList.contains('dt-savebar')).toBe(true)
   // The agent CLI is read by setup, so the bar warns that saving restarts dsh-superagent and interrupts running work.

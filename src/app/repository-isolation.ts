@@ -16,7 +16,7 @@ export function assertRepositoryIsolation(entries: readonly { id: string; settin
       if (multi && kind === 'feishu' && config.otherChats === 'mentions') throw new SettingsConflict('Multi-repository Feishu requires explicit chat lists; otherChats must be none')
       if (kind === 'github' && config.repository) {
         let instance = 'https://github.com'
-        if (config.provider === 'gitea') {
+        if (config.provider === 'gitea' || config.provider === 'gitlab') {
           try { instance = new URL(String(config.baseUrl ?? '')).href.replace(/\/$/, '') }
           catch { continue /* Setup reports invalid instance URLs without stopping other repositories. */ }
         }

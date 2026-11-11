@@ -4,16 +4,30 @@ import { key, type ChannelRef, type Trigger } from '../core/index.ts'
 import { escapeRegExp, sameName } from '../infra/text.ts'
 
 export const SOURCE = 'github'
+/** GitLab has separate Issue/MR IID sequences; prefix Issue IDs while keeping native MR numbers for worker reports. */
+export const RepositoryNumberSchema = z.union([z.number(), z.string().regex(/^issue-[1-9]\d*$/)])
+export type RepositoryNumber = z.infer<typeof RepositoryNumberSchema>
+export const repositoryNumber = (value: string): RepositoryNumber => value.startsWith('issue-') ? value : Number(value)
+export const displayNumber = (value: RepositoryNumber): string => typeof value === 'string' ? `#${value.slice(6)}` : `#${value}`
 /** GitHub reply address: issue/PR conversation, or a review thread when `url` points at a discussion comment. */
-export const githubChannel = (number: number, url?: string): ChannelRef =>
+export const githubChannel = (number: RepositoryNumber, url?: string): ChannelRef =>
   ({ source: SOURCE, thread: `github:${number}`, address: { number: String(number), ...(url ? { url } : {}) } })
-export function githubPage(repository: string, number: number, pr = false, baseUrl = 'https://github.com'): string {
+export function githubPage(repository: string, number: RepositoryNumber, pr = false, baseUrl = 'https://github.com', provider?: string): string {
+  if (provider === 'gitlab') return `${baseUrl}/${repository}/-/${pr ? 'merge_requests' : 'issues'}/${String(number).replace(/^issue-/, '')}`
   let section = 'issues'
   if (pr) section = baseUrl === 'https://github.com' ? 'pull' : 'pulls'
   return `${baseUrl}/${repository}/${section}/${number}`
 }
 /** Parses a web or API URL for an Issue, PR, or review comment in `repository`; returns undefined for other URLs or repositories. */
-export function githubAddress(url: string, repository: string, baseUrl = 'https://github.com'): { number: number; pr: boolean; discussion?: number } | undefined {
+export function githubAddress(url: string, repository: string, baseUrl?: string): { number: number; pr: boolean; discussion?: number } | undefined
+export function githubAddress(url: string, repository: string, baseUrl: string | undefined, provider: string | undefined): { number: RepositoryNumber; pr: boolean; discussion?: number } | undefined
+export function githubAddress(url: string, repository: string, baseUrl = 'https://github.com', provider?: string): { number: RepositoryNumber; pr: boolean; discussion?: number } | undefined {
+  if (provider === 'gitlab') {
+    const root = `${baseUrl}/${repository}/-/`
+    if (!url.startsWith(root)) return undefined
+    const match = /^(issues|merge_requests)\/([1-9]\d*)\/?(?:#note_\d+)?$/.exec(url.slice(root.length))
+    return match ? { number: match[1] === 'issues' ? `issue-${match[2]}` : Number(match[2]), pr: match[1] === 'merge_requests' } : undefined
+  }
   if (baseUrl !== 'https://github.com') {
     const roots = [`${baseUrl}/${repository}/`, `${baseUrl}/api/v1/repos/${repository}/`]
     const root = roots.find(root => url.toLowerCase().startsWith(root.toLowerCase()))
@@ -44,12 +58,12 @@ export const CommentSchema = z.looseObject({
 export type GithubComment = z.infer<typeof CommentSchema>
 /** An Issue as `issues/<number>` returns it; GitHub sets `pull_request` when the number is a pull request. */
 export const IssueSchema = CommentSchema.extend({
-  number: z.number(), title: z.string(), state: z.string(), created_at: z.string(), html_url: z.string(),
+  number: RepositoryNumberSchema, title: z.string(), state: z.string(), created_at: z.string(), html_url: z.string(),
   pull_request: z.looseObject({ url: z.string() }).nullish(),
 })
 export type GithubIssue = z.infer<typeof IssueSchema>
 type Opened = Pick<GithubIssue, 'number' | 'title' | 'body' | 'user' | 'created_at' | 'html_url'>
-export interface PullRef { number: number; isPr: boolean; url?: string; prAuthor?: string }
+export interface PullRef { number: RepositoryNumber; isPr: boolean; url?: string; prAuthor?: string }
 /**
  * True when GitHub reports the account as a regular user rather than a bot or GitHub App.
  * Review bots running under ordinary user accounts count as human here; the prompts identify which accounts are automated.
