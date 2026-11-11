@@ -1,0 +1,38 @@
+{
+  "synthetic": true,
+  "calls": [
+    {
+      "inputBytes": 11171,
+      "tools": 0,
+      "finish": "stop",
+      "durationMs": 3575
+    },
+    {
+      "inputBytes": 11180,
+      "tools": 0,
+      "finish": "stop",
+      "durationMs": 2985
+    }
+  ],
+  "cursor": {
+    "seq": 20,
+    "hash": "b5ee79fd7031818d251dbd4d9267a2e10969a718002329a796034ccc7d93eb07",
+    "partial": false
+  },
+  "used": 2,
+  "candidates": 0,
+  "health": {
+    "state": "error",
+    "detail": "memory_budget_exhausted",
+    "at": "2026-11-11T04:55:20.856Z"
+  },
+  "pending": true,
+  "agentsCreated": 0,
+  "success": true,
+  "scope": "Synthetic public fixture only; no live transcript replay",
+  "configuredModel": {
+    "provider": "opencode-go",
+    "model": "deepseek-v4.1-flash",
+    "reasoningEffort": "low"
+  }
+}

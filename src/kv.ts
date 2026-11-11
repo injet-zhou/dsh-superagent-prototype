@@ -23,6 +23,7 @@ export const KV = {
   /** Memory: immutable repository binding; private memory is never inherited by another context. */
   memory: { repository: record<string>('memory-repository'),
     usage: record<{ day: string; calls: number }>('memory-usage'),
+    captureFailures: family<{ cursor: number; epoch: string; failures: number }, [session: string]>('memory-capture-failures:'),
     reviewSequence: record<number>('memory-review-sequence'),
     reviewed: family<{ revision: number; sequence: number; epoch?: number }, [note: string]>('memory-reviewed:'),
     evidenceAudit: record<{ at: string; job: string; checks: { evidenceId: string; status: string }[] }>('memory-evidence-audit'),

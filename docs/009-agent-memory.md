@@ -678,3 +678,14 @@ DSH 0.2.2-rc.1 的真实 Session 烟测发现 `sessionController.inspect` 已删
 默认 Runtime、Memory、Capture、Consolidate 运行正常。rosign 原有 setupPending 在新旧代码中均存在，且 Memory 仍按默认关闭；因此服务脚本的聚合 status 会返回组件状态码 2。首次部署检查据此回退了插件链接，核对旧版同样状态后，第二次更新严格比较并保留该既有错误，没有删除仓库、修改其配置或把它伪报为 ready。没有恢复过期数据库来覆盖用户状态。后续可在仓库配置中完成 rosign 的部署检查，和本轮 Memory 修复分别处理。
 
 回滚功能可关闭 Memory，取消排队/在途工作并保留审计数据。完整退回本轮代码可使用保留的旧工作树与 profile/助手备份；跨 Schema 退回旧二进制仍须配套旧版本数据库备份。启动 URL 继续由 /home/injetz/.local/bin/superagent-test url 获取当前进程的完整登录链接。
+
+
+### Capture failure recovery (2026-11-11)
+
+Capture now limits each complete redacted JSON payload to 12,000 UTF-8 bytes, at most 200 raw events and 1,000 characters per text event. The generic analyzer preflight retains its 100,000-byte limit. Candidate extraction asks for at most two brief notes within the existing 2,048-output-token and 15-second limits; consolidation retains its own publication rules.
+
+Analyzer failures use fixed codes for deadline, incomplete response, invalid JSON/proposals, credentials, configuration, provider limits and refused tool output. Provider messages, generated content and transcript text never enter Effects/health errors. A failed cursor gets at most three analysis/publication failures per UTC day and Memory-settings version/configuration. Its durable retry hold survives restart and new turn keys; a successful atomic checkpoint clears it. Changing and saving Memory settings or the next UTC day releases the hold. Inspection failures retain ordinary retries without consuming model calls.
+
+Capture remains a single writer per Repository, but a delayed/held Session no longer blocks other Tickets. Every batch rechecks the same Session's current cursor before publication; a later settled turn can cover an earlier boundary and the old effect then becomes a no-op. Failed analysis never advances the checkpoint or publishes partial proposals. All state remains in the existing private SQLite database; this change needs no schema migration.
+
+现场诊断只确认原始历史完整、锚点匹配、旧版首批约 83 KB，旧错误码不能区分模型失败原因；不能据此声称现场一定超时。真实会话的外部诊断调用被自动审批阻止，未执行。隔离模型验证仅使用合成的公开 fixture，且必须等待 credentials 服务就绪。真实积压的恢复结果须另行核验，不得以合成样本通过替代。

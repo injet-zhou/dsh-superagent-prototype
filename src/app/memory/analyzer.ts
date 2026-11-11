@@ -4,6 +4,12 @@ import { MemoryId, MemoryImportance, MemoryTopicInput, NoteInput, type MemoryDet
 import { redact } from './security.ts'
 
 export const MEMORY_INPUT_BYTES = 100_000
+/** Fixed, non-sensitive analysis failure codes safe for durable Effects and health. */
+export class MemoryAnalysisFailure extends Error {
+  constructor(code: 'memory_analyzer_failed' | 'memory_analysis_timeout' | 'memory_tool_output_refused'
+    | 'memory_output_too_large' | 'memory_model_incomplete' | 'memory_invalid_json' | 'memory_invalid_proposals'
+    | 'memory_model_credentials' | 'memory_model_configuration' | 'memory_model_rate_limit') { super(code) }
+}
 /** Shared wire representation: batching and budget preflight measure exactly what the adapter sends. */
 export const serializeAnalysisInput = (input: Readonly<MemoryAnalysisInput>): string => redact(JSON.stringify(input))
 

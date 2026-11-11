@@ -531,7 +531,7 @@ A generated column is computed from its row's JSON and is empty outside its set,
 | Session prompt history | `session-prompts:<session id>` |
 | Source state | Read positions such as `github-cursor:<number>`, PR CI fingerprints and seen Feishu-topic messages; keys begin with the kind or `thread-` plus a Thread key |
 | Display names | `source-labels:<source id>` |
-| Memory | Immutable repository identity, UTC daily call reservations, published-job replay markers, reviewed note revisions and durable rotation sequence |
+| Memory | Immutable repository identity, UTC daily call reservations, durable per-Session/cursor capture retry holds, published-job replay markers, reviewed note revisions and durable rotation sequence |
 
 Dismissal is stored on its Decision. Input text is rendered from the Ticket when read, so neither needs a separate key-value record.
 

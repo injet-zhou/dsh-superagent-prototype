@@ -7,11 +7,13 @@ import { Later, type Effects } from '../effects.ts'
 import type { Store } from '../store.ts'
 import type { MemoryService } from './service.ts'
 import { sessionHistory } from '../session-history.ts'
-import { CaptureProposal, MEMORY_INPUT_BYTES, serializeAnalysisInput, type MemoryAnalyzer, type MemoryAnalysisInput } from './analyzer.ts'
+import { CaptureProposal, MemoryAnalysisFailure, MEMORY_INPUT_BYTES, serializeAnalysisInput, type MemoryAnalyzer, type MemoryAnalysisInput } from './analyzer.ts'
 import { fingerprint, safeText } from './security.ts'
 
 export interface CaptureBatch { ticketId: string; assignmentId: string; sessionId: string; endSeq: number; endHash: string }
 const Cursor = z.object({ seq: z.number().int(), hash: z.string(), partial: z.boolean() }).strict()
+// The generic adapter accepts 100 KB, but capture must also fit a short model deadline and output budget.
+const CAPTURE_INPUT_BYTES = 12_000
 type Cursor = z.infer<typeof Cursor>
 export interface CaptureHost {
   store: Store; effects: Effects; memory: MemoryService; context: Context; lifetime: AbortSignal
@@ -37,7 +39,9 @@ export async function analyze(host: CaptureHost, input: MemoryAnalysisInput): Pr
   const analyzer = host.analyzer
   if (!analyzer) { host.memory.degraded('memory_analyzer_unavailable'); throw new Later('memory_analyzer_unavailable') }
   if (analyzing) throw new Later('memory_analyzer_busy')
-  const signal = AbortSignal.any([host.lifetime, host.memory.analysisSignal(), AbortSignal.timeout(15_000)])
+  const deadline = AbortSignal.timeout(15_000)
+  const configuration = host.memory.analysisSignal()
+  const signal = AbortSignal.any([host.lifetime, configuration, deadline])
   const config = host.store.settings().memory, day = new Date().toISOString().slice(0, 10)
   if (!host.memory.active() || host.paused() || signal.aborted) throw new Later('memory_analysis_paused')
   if (Buffer.byteLength(serializeAnalysisInput(input)) > MEMORY_INPUT_BYTES) throw new Error('memory_input_too_large')
@@ -53,7 +57,12 @@ export async function analyze(host: CaptureHost, input: MemoryAnalysisInput): Pr
   const pending = Promise.resolve().then(() => { signal.throwIfAborted(); return analyzer.propose(input, signal) })
   // A non-cooperative adapter retains its process-wide reservation until it actually ends.
   void pending.then(() => { analyzing = false }, () => { analyzing = false })
-  const result = await withAbort(pending, signal)
+  let result: unknown
+  try { result = await withAbort(pending, signal) }
+  catch (error) {
+    if (deadline.aborted && !host.lifetime.aborted && !configuration.aborted) throw new MemoryAnalysisFailure('memory_analysis_timeout')
+    throw error
+  }
   signal.throwIfAborted()
   if (JSON.stringify(result).length > 32_000) throw new Error('memory_proposals_too_large')
   return result
@@ -64,7 +73,7 @@ export class MemoryCapture {
   constructor(private readonly host: CaptureHost) {
     host.memory.analyzerAvailable(!!host.analyzer)
     host.effects.handle('memory-capture', (batch, job) => this.run(batch, job), {
-      ordered: true, limit: () => host.memory.captureEnabled() && !host.paused() && !host.lifetime.aborted ? 1 : 0,
+      limit: () => host.memory.captureEnabled() && !host.paused() && !host.lifetime.aborted ? 1 : 0,
     })
   }
   enqueue(ticketId: string, assignmentId: string, event: SessionEvent<'turn/end'>): void {
@@ -87,14 +96,21 @@ export class MemoryCapture {
   }
   private async run(batch: CaptureBatch, job: string): Promise<void> {
     const { host } = this
+    const failureKey = KV.memory.captureFailures(fingerprint(batch.sessionId))
+    const epoch = fingerprint([new Date().toISOString().slice(0, 10), host.store.blockRevision('memory'), host.store.settings().memory])
     let previous: Cursor | undefined
     let inspected = false
+    let submitted = false
     try {
       if (batch.sessionId !== `worker-${batch.ticketId}` || !host.store.tickets.get(batch.ticketId)?.assignments.some(item => item.id === batch.assignmentId)) {
         throw new Error('memory_capture_scope_mismatch')
       }
       previous = this.cursor(batch)
       if (previous.seq >= batch.endSeq) return
+      const failure = host.store.get(failureKey)
+      if (failure?.cursor === previous.seq && failure.epoch === epoch && failure.failures >= 3) {
+        host.memory.degraded('memory_capture_retry_limit'); throw new Later('memory_capture_retry_limit')
+      }
       // whenIdle() itself does not flush DSH persistence. The durable effect retries a failed flush/inspection.
       const signal = AbortSignal.any([host.lifetime, host.memory.analysisSignal(), AbortSignal.timeout(15_000)])
       await withAbort(host.context.sessionPersistence.flush(), signal)
@@ -120,21 +136,24 @@ export class MemoryCapture {
         // Never submit reasoning, credentials, tool-call arguments, system prompts or raw tool result objects.
         const blocks = event.type === 'user/message' ? event.data.content
           : event.type === 'assistant/message' || event.type === 'tool/result' ? event.data.message.content : []
-        const text = safeText(blocks.filter(block => block.type === 'text').map(block => block.text).join('\n'), 2000)
+        const text = safeText(blocks.filter(block => block.type === 'text').map(block => block.text).join('\n'), 1000)
         const entry = text.trim() ? { ref: `seq:${event.seq}:${fingerprint(event)}`, type: event.type, text } : undefined
-        if (entry && Buffer.byteLength(serializeAnalysisInput({ ...input, events: [...textEvents, entry] })) > MEMORY_INPUT_BYTES) break
+        if (entry && Buffer.byteLength(serializeAnalysisInput({ ...input, events: [...textEvents, entry] })) > CAPTURE_INPUT_BYTES) break
         last = event
         if (entry) textEvents.push(entry)
       }
-      const raw = textEvents.length ? await analyze(host, Object.freeze({ ...input,
+      submitted = textEvents.length > 0
+      const raw = submitted ? await analyze(host, Object.freeze({ ...input,
         events: Object.freeze(textEvents.map(event => Object.freeze({ ...event }))) })) : []
-      const proposals = z.array(CaptureProposal).max(20).parse(raw)
+      const parsed = z.array(CaptureProposal).max(20).safeParse(raw)
+      if (!parsed.success) throw new MemoryAnalysisFailure('memory_invalid_proposals')
+      const proposals = parsed.data
       if (!host.memory.captureEnabled() || host.paused() || host.lifetime.aborted) throw new Later('memory_capture_paused')
       host.store.atomic(() => {
         if (JSON.stringify(this.cursor(batch)) !== JSON.stringify(cursor)) throw new Error('memory_capture_cursor_conflict')
         for (const proposal of proposals) {
           const sources = proposal.evidenceRefs.map(ref => textEvents.find(event => event.ref === ref))
-          if (sources.some(event => !event)) throw new Error('memory_capture_unknown_evidence')
+          if (sources.some(event => !event)) throw new MemoryAnalysisFailure('memory_invalid_proposals')
           const evidence = sources.map(event => ({ ticketId: batch.ticketId, sessionId: batch.sessionId, eventRef: event!.ref,
             kind: 'observation' as const, excerpt: event!.text.slice(0, 500), supportsVerification: false }))
           // Source event refs distinguish identical text at different positions, and remain stable on retries.
@@ -142,12 +161,19 @@ export class MemoryCapture {
             { job, reason: `${safeText(proposal.reason, 220)}; uncertainty: ${safeText(proposal.uncertainty, 220)}` })
         }
         this.checkpoint(batch, { seq: Number(last.seq), hash: fingerprint(last), partial: false })
+        host.store.delete(failureKey)
         if (Number(last.seq) < batch.endSeq) host.effects.enqueue('memory-capture', `${job}:${last.seq}`, batch)
       })
       host.memory.refresh()
     } catch (error) {
       if (error instanceof Later) throw error
-      let code = error instanceof Error && error.message === 'partial_capture' ? 'partial_capture' : 'memory_capture_failed'
+      if (submitted && previous && !host.lifetime.aborted && !host.memory.analysisSignal().aborted) {
+        const failure = host.store.get(failureKey)
+        host.store.set(failureKey, { cursor: previous.seq, epoch,
+          failures: failure?.cursor === previous.seq && failure.epoch === epoch ? failure.failures + 1 : 1 })
+      }
+      let code = error instanceof MemoryAnalysisFailure ? error.message
+        : error instanceof Error && error.message === 'partial_capture' ? 'partial_capture' : 'memory_capture_failed'
       // A failed inspection is an unobserved range, never a completed empty batch. Intentional shutdown/disable keeps it queued.
       if (!inspected && previous && !host.lifetime.aborted && host.memory.captureEnabled() && !host.paused()) {
         const cursor = previous
