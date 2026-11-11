@@ -4,7 +4,13 @@ import { createHash } from 'node:crypto'
 import { readWecomSecret } from './wecom-secret.ts'
 
 /** Connection settings derived by setup; the secret itself is read from `secretFile` on every connect. */
-export interface WecomConnectionOptions { botId: string; secretFile: string; wsUrl?: string }
+export interface WecomConnectionOptions {
+  botId: string
+  secretFile: string
+  wsUrl?: string
+  /** How long one authentication round may take; tests shorten it. */
+  connectTimeoutMs?: number
+}
 /** Health-bearing connection state. `retry` asks the caller to reconnect; a connection kicked by another client is not retried. */
 export interface WecomConnectionState { state: 'ready' | 'paused' | 'error'; detail: string; retry?: boolean }
 export interface WecomConnection {
@@ -23,7 +29,8 @@ export interface WecomConnection {
 const GONE = new Set([40003, 81013, 86003])
 /** The SDK writes connection chatter to its logger; health carries what an operator needs, so its output is dropped. */
 const QUIET: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
-const CONNECT_TIMEOUT_MS = 30_000
+const AUTH_TIMEOUT_MS = 30_000
+const authTimedOut = (): Error => new Error('Timed out waiting for WeCom authentication; check the network and the robot secret file')
 
 /** One robot's shared WebSocket: connects on demand, fans callbacks to its consumers, and sends Markdown replies. */
 class WecomTransport implements WecomConnection {
@@ -33,10 +40,15 @@ class WecomTransport implements WecomConnection {
   private manual = false
   private kicked = false
   private blocked?: string
+  private authTimer?: ReturnType<typeof setTimeout>
+  private rejectConnect?: (error: Error) => void
+  private readonly connectTimeoutMs: number
   private readonly messages = new Set<(body: unknown) => void>()
   private readonly states = new Set<(state: WecomConnectionState) => void>()
 
-  constructor(private readonly options: WecomConnectionOptions) {}
+  constructor(private readonly options: WecomConnectionOptions) {
+    this.connectTimeoutMs = options.connectTimeoutMs ?? AUTH_TIMEOUT_MS
+  }
 
   get connected(): boolean { return this.state === 'ready' }
 
@@ -57,13 +69,14 @@ class WecomTransport implements WecomConnection {
     this.state = 'connecting'
     return new Promise<void>((resolve, reject) => {
       let settled = false
-      let timer: ReturnType<typeof setTimeout> | undefined
       const settle = (error?: Error) => {
         if (settled) return
         settled = true
-        if (timer) clearTimeout(timer)
+        this.rejectConnect = undefined
+        this.clearAuthTimer()
         if (error) { this.state = 'connecting'; reject(error) } else resolve()
       }
+      this.rejectConnect = error => settle(error)
       void (async () => {
         const secret = await readWecomSecret(this.options.secretFile)
         if (secret.botId !== this.options.botId) throw new Error('The WeCom secret file now names another robot; restart dsh-superagent after changing it')
@@ -71,17 +84,16 @@ class WecomTransport implements WecomConnection {
         const client = new WSClient({ botId: secret.botId, secret: secret.secret, logger: QUIET,
           ...(this.options.wsUrl ? { wsUrl: this.options.wsUrl } : {}), maxReconnectAttempts: -1, maxAuthFailureAttempts: 3 })
         this.client = client
-        timer = setTimeout(() => {
-          this.emit({ state: 'error', detail: 'Timed out connecting to WeCom; check the network and the robot secret file', retry: true })
-          settle(new Error('Timed out connecting to WeCom; check the network and the robot secret file'))
-          this.destroy()
-        }, CONNECT_TIMEOUT_MS)
+        // Every WebSocket open starts a fresh authentication round, including the SDK's automatic reconnects.
+        client.on('connected', () => { this.armAuthTimeout() })
         client.on('authenticated', () => {
+          this.clearAuthTimer()
           this.state = 'ready'
           this.emit({ state: 'ready', detail: 'Connected to WeCom' })
           settle()
         })
         client.on('disconnected', reason => {
+          this.clearAuthTimer()
           if (this.kicked) return
           this.state = 'connecting'
           this.emit({ state: 'paused', detail: `The WeCom connection closed (${reason}); reconnecting` })
@@ -95,6 +107,7 @@ class WecomTransport implements WecomConnection {
           if (!settled) settle(error instanceof Error ? error : new Error(detail))
         })
         client.on('event.disconnected_event', () => {
+          this.clearAuthTimer()
           this.kicked = true
           this.state = 'connecting'
           const detail = 'WeCom closed this connection because another client connected with the same robot; stop the other client, then restart dsh-superagent'
@@ -107,6 +120,8 @@ class WecomTransport implements WecomConnection {
             try { listener(frame.body) } catch { /* One consumer's failure must not starve the others. */ }
           }
         })
+        // The timer also covers a socket that never opens; `connected` restarts it for each reconnect.
+        this.armAuthTimeout()
         client.connect()
       })().catch(error => {
         settle(error instanceof Error ? error : new Error(String(error)))
@@ -115,9 +130,29 @@ class WecomTransport implements WecomConnection {
     })
   }
 
+  /** Arms the protection for one authentication round; a timeout reports a retryable error and drops the dead client. */
+  private armAuthTimeout(): void {
+    this.clearAuthTimer()
+    this.authTimer = setTimeout(() => {
+      this.authTimer = undefined
+      const error = authTimedOut()
+      this.emit({ state: 'error', detail: error.message, retry: true })
+      this.rejectConnect?.(error)
+      this.destroy()
+    }, this.connectTimeoutMs)
+  }
+
+  private clearAuthTimer(): void {
+    if (!this.authTimer) return
+    clearTimeout(this.authTimer)
+    this.authTimer = undefined
+  }
+
   disconnect(): void {
     this.manual = true
     this.blocked = undefined
+    this.rejectConnect?.(new Error('The WeCom connection was closed'))
+    this.rejectConnect = undefined
     this.destroy()
     this.state = 'idle'
   }
@@ -157,6 +192,7 @@ class WecomTransport implements WecomConnection {
   }
 
   private destroy(): void {
+    this.clearAuthTimer()
     const client = this.client
     this.client = undefined
     if (!client) return
@@ -168,7 +204,8 @@ class WecomTransport implements WecomConnection {
 const transports = new Map<string, WecomTransport>()
 /** Returns the process-wide connection for one robot, so callbacks and replies share a single WebSocket. */
 export function wecomTransport(options: WecomConnectionOptions): WecomConnection {
-  const identity = createHash('sha256').update(JSON.stringify([options.secretFile, options.botId, options.wsUrl ?? ''])).digest('hex')
+  const identity = createHash('sha256').update(JSON.stringify([options.secretFile, options.botId, options.wsUrl ?? '',
+    options.connectTimeoutMs ?? AUTH_TIMEOUT_MS])).digest('hex')
   let transport = transports.get(identity)
   if (!transport) { transport = new WecomTransport(options); transports.set(identity, transport) }
   return transport

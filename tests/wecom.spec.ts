@@ -13,7 +13,9 @@ import { HealthBoard } from '../src/infra/health.ts'
 import { testDeployment } from './fixtures/deployment.ts'
 import { sourceContextOf, type SourceContextDeps } from '../src/app/source-context.ts'
 import { SetupError } from '../src/setup.ts'
-import { resetWecomTransports, wecomTransport, type WecomConnection } from '../src/infra/wecom.ts'
+import { resetWecomTransports, wecomTransport, type WecomConnection, type WecomConnectionState } from '../src/infra/wecom.ts'
+import { Outbox } from '../src/app/outbox.ts'
+import { Effects } from '../src/app/effects.ts'
 import { resolveWecomBot } from '../src/deployment.ts'
 import { receiveWecom, runWecom, sendWecom, wecomKind, wecomScope, wecomText, wecomTime, wecomTrigger, WecomConfigSchema, WecomMessageSchema }
   from '../src/sources/wecom.ts'
@@ -202,6 +204,15 @@ describe('wecom reply', () => {
     await expect(sendWecom({ commands: h.commands }, message({ text: Array.from({ length: 101 }, (_, i) => `word${i}`).join(' ') }),
       connection().value)).rejects.toThrow(/maximum is 100/)
   })
+  it('rejects an over-long reply before the Outbox persists a receipt', () => {
+    const h = fixture()
+    const outbox = new Outbox({ store: h.store, effects: new Effects(h.store, h.board), commands: h.commands,
+      sources: { instance: () => ({ id: 'wecom', kind: 'wecom', enabled: true, config: {} }), channelAllowed: () => true,
+        send: async () => 'sent' } as never, paused: () => false })
+    const long = message({ id: 'out4', text: Array.from({ length: 101 }, (_, i) => `word${i}`).join(' ') })
+    expect(() => outbox.send(long)).toThrow(/maximum is 100/)
+    expect(h.store.receipts.get('out4')).toBeUndefined()
+  })
 })
 
 describe('wecom loop', () => {
@@ -242,6 +253,58 @@ describe('wecom loop', () => {
 })
 
 describe('wecom transport', () => {
+  const secret = (): string => {
+    const secretFile = join(directory(), 'wecom.json')
+    writeFileSync(secretFile, JSON.stringify({ botId: 'bot1', secret: 's3cret' }), { mode: 0o600 })
+    return secretFile
+  }
+  const listening = async (server: WebSocketServer): Promise<number> => {
+    await new Promise<void>(resolve => server.once('listening', resolve))
+    return (server.address() as { port: number }).port
+  }
+  it('times out when the socket opens but WeCom never authenticates', async () => {
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
+    const port = await listening(server)
+    const sockets: WebSocket[] = []
+    server.on('connection', socket => { sockets.push(socket) })
+    const transport = wecomTransport({ botId: 'bot1', secretFile: secret(), wsUrl: `ws://127.0.0.1:${port}`, connectTimeoutMs: 150 })
+    const states: WecomConnectionState[] = []
+    transport.onState(state => states.push(state))
+    await expect(transport.connect()).rejects.toThrow('Timed out waiting for WeCom authentication')
+    expect(states.some(state => state.state === 'error' && state.retry === true && state.detail.includes('Timed out'))).toBe(true)
+    expect(transport.connected).toBe(false)
+    transport.disconnect()
+    for (const socket of sockets) socket.terminate()
+    await new Promise<void>(resolve => server.close(() => resolve()))
+  })
+  it('puts its own authentication timeout on every automatic reconnect', async () => {
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
+    const port = await listening(server)
+    const sockets: WebSocket[] = []
+    let connections = 0
+    server.on('connection', socket => {
+      connections++
+      sockets.push(socket)
+      socket.on('message', raw => {
+        const frame = JSON.parse(String(raw)) as { cmd?: string; headers: { req_id: string } }
+        if (frame.cmd === 'aibot_subscribe' && connections === 1) {
+          socket.send(JSON.stringify({ headers: { req_id: frame.headers.req_id }, errcode: 0, errmsg: 'ok' }))
+        }
+      })
+    })
+    const transport = wecomTransport({ botId: 'bot1', secretFile: secret(), wsUrl: `ws://127.0.0.1:${port}`, connectTimeoutMs: 200 })
+    await transport.connect()
+    const states: WecomConnectionState[] = []
+    transport.onState(state => states.push(state))
+    sockets[0]!.terminate()
+    await vi.waitFor(() => expect(connections).toBeGreaterThanOrEqual(2), { timeout: 5000 })
+    await vi.waitFor(() => expect(states.some(state => state.state === 'error' && state.retry === true
+      && state.detail.includes('authentication'))).toBe(true), { timeout: 5000 })
+    expect(transport.connected).toBe(false)
+    transport.disconnect()
+    for (const socket of sockets) socket.terminate()
+    await new Promise<void>(resolve => server.close(() => resolve()))
+  })
   it('authenticates, receives a callback and sends a Markdown reply over a WebSocket', async () => {
     const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
     await new Promise<void>(resolve => server.once('listening', resolve))
