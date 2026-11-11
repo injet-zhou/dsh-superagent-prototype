@@ -221,3 +221,6 @@ Memory capture runs after a confirmed stable turn in its own durable queue. A fa
 
 
 Capture and consolidation share a per-repository finite daily model budget. An explicit consolidation reservation makes Capture yield unused reserved capacity without occupying a WorkerSlot. Consolidation coalesces snapshot wakeups into one durable Effect and continues through all unreviewed pages; changed in-flight work advances its generation, while unchanged scheduling retains retry backoff. Budget exhaustion and restart preserve notes, review progress and queued work.
+
+
+A consolidation proposal that leaves a Note's canonical claim and status unchanged is a completed review, not a new revision. The Publisher still checks revision/source/evidence constraints and charges the actual model call; no-op publication cannot create another catch-up page. Evidence additions retain their Store revision audit.

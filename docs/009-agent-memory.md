@@ -716,3 +716,12 @@ UTC usage 增加可选 capture/consolidation 分类计数，旧的 `{day,calls}`
 
 
 本轮最终验证：冻结安装、`VITEST_MAX_WORKERS=1 pnpm check`（79 文件 / 1477 测试、typecheck、build）及 `git diff --check` 全部通过。首轮遗漏新增模块的架构目录条目，补齐后文档与全量重新通过，没有跳过或弱化断言。经操作员明确授权，临时部署并 CAS 设置为 1000/300；当日旧 90 次仍作为未分类记账。真实积压从 67 条候选、41 条已审阅、24 个整理任务，推进到 73 条候选全部已审阅、0 个整理任务，仅新增 6 次提取和 5 次整理调用（总计 101）。没有无 Evidence 的笔记，SQLite quick_check 为 ok，处理保持开启。仍有 2 个提取 Effect 被同检查点三次失败保护暂停，属于模型提议校验问题，未清空或伪装完成；reviewed 不等于 verified。仅计数/状态的脱敏验证记录见 `memory-throughput-live-validation.json`。原主工作树的用户修改保持原样，PR 未自动合并。
+
+
+### Equivalent publication must not create catch-up work (PR #14 review)
+
+审阅复现：对已经 stale 的 Note 再提合法 stale，旧 Publisher 会无条件写新 revision；自动接续看到前一 revision 的 review marker，便再次调用模型，直至花完四次测试预算。仅放宽预算或限制接续页数都不能修复这个因果循环。
+
+Publisher 在完成 Scope/CAS、来源可用性及 Evidence 关联检查后，只在目标状态确实变化时执行状态更新；claim 更新先经过与持久化相同的 cleanNote 脱敏/规范化，再判断是否改变。等价发布不会新建 Note revision、刷新 updatedAt 或移动 stale 失效边界；本次已经发生的模型调用仍计账一次，并正常提交 review marker，从而结束当前页。Store 的通用 update/Evidence 审计保持原样，真实新增证据、外部内容变更和后续页面仍可形成新工作。
+
+新增回归覆盖重复 stale、等价 update、脱敏后等价 update；均断言仅一次调用、仍余三次预算、无待整理任务、Note/Evidence/revisions 完全不变。随后分别注入外部内容变更和新增 Evidence，验证仍会审阅且只保留实质修订。Publisher 另测等价操作仍拒绝旧 revision、伪造和未关联 Evidence，不得以幂等为由跳过授权/证据校验。

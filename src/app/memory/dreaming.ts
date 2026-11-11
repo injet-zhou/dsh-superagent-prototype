@@ -89,10 +89,14 @@ export function publish(memory: MemoryStore, job: string, raw: unknown, offered:
         if (proposal.evidenceIds.some(id => !before.evidence.some(item => item.id === id))) throw new Error('memory_evidence_not_attached')
         if (proposal.action === 'update') {
           const prior = { kind: before.note.kind, title: before.note.title, body: before.note.body, scope: before.note.scope }
-          if (JSON.stringify(prior) !== JSON.stringify(proposal.note) || before.note.status !== proposal.status) {
-            memory.update(proposal.id, proposal.expectedRevision, { ...proposal.note, status: proposal.status }, proposal.evidenceIds, reason, job)
+          const replacement = cleanNote(proposal.note)
+          if (JSON.stringify(prior) !== JSON.stringify(replacement) || before.note.status !== proposal.status) {
+            memory.update(proposal.id, proposal.expectedRevision, { ...replacement, status: proposal.status }, proposal.evidenceIds, reason, job)
           }
-        } else memory.update(proposal.id, proposal.expectedRevision, { status: proposal.action === 'retract' ? 'retracted' : 'stale' }, proposal.evidenceIds, reason, job)
+        } else {
+          const status = proposal.action === 'retract' ? 'retracted' : 'stale'
+          if (before.note.status !== status) memory.update(proposal.id, proposal.expectedRevision, { status }, proposal.evidenceIds, reason, job)
+        }
       }
     }
     memory.store.set(KV.memory.published(fingerprint(job)), true)

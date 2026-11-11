@@ -295,6 +295,47 @@ it('rotates through all candidate, verified and stale pages after empty proposal
   expect(propose.mock.calls.at(-1)![0].notes).toMatchObject([{ note: { id: changed.id, revision: changed.revision + 1 } }])
 })
 
+it.each(['stale', 'update', 'redacted-update'] as const)('finishes an equivalent %s proposal in one call and revisits only a later external revision', async action => {
+  const f = memoryFixture(), effects = new Effects(f.store, f.board), lifetime = new AbortController()
+  f.store.saveSettings({ ...f.store.settings(), memory: MemoryConfigSchema.parse({ enabled: true, dreaming: true, dailyCallBudget: 4 }) })
+  f.service.configure(f.store.settings().memory)
+  const claim = action === 'redacted-update' ? { ...exampleNote, body: 'Credential handling: token=[REDACTED]' } : exampleNote
+  const note = f.memory.create(claim, [{ ...exampleEvidence, kind: 'human', eventRef: `review:source:1:${fingerprint('operator proof')}` }],
+    'equivalent', action === 'redacted-update' ? 'candidate' : 'verified')
+  if (action !== 'redacted-update') f.memory.update(note.id, 1, { status: 'stale' }, [], 'Changed checkout', 'operator')
+  const before = f.memory.get(note.id)!
+  const propose = vi.fn(async (input: Readonly<MemoryAnalysisInput>) => input.notes.map(({ note, evidence }) => {
+    const base = { id: note.id, expectedRevision: note.revision, evidenceIds: evidence.map(item => item.id), ...audit }
+    return action === 'stale' ? { ...base, action: 'stale' }
+      : { ...base, action: 'update', status: note.status, note: { kind: note.kind, title: note.title,
+        body: action === 'redacted-update' ? note.body.replace('[REDACTED]', 'fixture-private-value') : note.body, scope: note.scope } }
+  }))
+  const dreaming = new MemoryDreaming({ store: f.store, memory: f.service, effects, context: new Context(), lifetime: lifetime.signal,
+    analyzer: { propose }, paused: () => false })
+  onTestFinished(async () => { lifetime.abort(); await effects.drain() })
+  dreaming.enqueue(); effects.start(); await effects.idle('memory-consolidate')
+  expect(propose).toHaveBeenCalledTimes(1)
+  expect(f.service.status()).toMatchObject({ usedCalls: 1, remainingCalls: 3, consolidationPending: 0 })
+  expect(f.memory.get(note.id)).toEqual(before)
+  expect(f.memory.reviewable(before.note.status, 10)).toEqual([])
+  expect(dreaming.enqueue()).toBe(false)
+  f.memory.update(note.id, before.note.revision, { body: before.note.body + ' External context.' },
+    before.evidence.map(item => item.id), 'External claim change', 'operator-2')
+  dreaming.enqueue(); await effects.idle('memory-consolidate')
+  expect(propose).toHaveBeenCalledTimes(2)
+  expect(f.memory.get(note.id)!.note.revision).toBe(before.note.revision + 1)
+  expect(f.service.status()).toMatchObject({ usedCalls: 2, consolidationPending: 0 })
+  const changed = f.memory.get(note.id)!.note
+  const source = f.memory.create({ kind: changed.kind, title: changed.title, body: changed.body, scope: changed.scope },
+    [{ ...exampleEvidence, kind: 'human', eventRef: `review:new-proof:1:${fingerprint('new operator proof')}` }], 'new-proof', 'verified')
+  f.memory.addEvidenceFrom(note.id, changed.revision, f.memory.get(source.id)!.evidence.map(item => item.id), 'Additional evidence', 'operator-3')
+  dreaming.enqueue(); await effects.idle('memory-consolidate')
+  expect(propose).toHaveBeenCalledTimes(3)
+  expect(f.memory.get(note.id)!.note.revision).toBe(before.note.revision + 2)
+  expect(f.memory.get(note.id)!.evidence).toHaveLength(2)
+  expect(f.service.status()).toMatchObject({ usedCalls: 3, consolidationPending: 0 })
+})
+
 it('coalesces changing snapshots while budget is exhausted and drains every page after it resumes', async () => {
   const f = memoryFixture(), effects = new Effects(f.store, f.board), lifetime = new AbortController()
   const config = MemoryConfigSchema.parse({ enabled: true, dreaming: true, dailyCallBudget: 0 })
