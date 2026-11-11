@@ -6,7 +6,7 @@ import type { PromptVersion } from './app/prompts.ts'
 import type { SettingsVersion } from './app/store.ts'
 import type { SettingsSave } from './policy.ts'
 import type { Retry } from './sources/github.ts'
-import type { MemoryExecutionReceipt, MemoryImportanceRecord, MemoryTopic, MemoryReviewRequest } from './app/memory/types.ts'
+import type { MemoryExecutionReceipt, MemoryImportanceRecord, MemoryTopic, MemoryReviewRequest, MemoryUsage } from './app/memory/types.ts'
 
 /** Key of a KV record whose value has type `V`; a plain string represents an untyped key. */
 export type Key<V> = string & { readonly __value?: V }
@@ -22,7 +22,7 @@ export function family<V, A extends unknown[] = [string]>(prefix: string, format
 export const KV = {
   /** Memory: immutable repository binding; private memory is never inherited by another context. */
   memory: { repository: record<string>('memory-repository'),
-    usage: record<{ day: string; calls: number }>('memory-usage'),
+    usage: record<MemoryUsage>('memory-usage'),
     captureFailures: family<{ cursor: number; epoch: string; failures: number }, [session: string]>('memory-capture-failures:'),
     reviewSequence: record<number>('memory-review-sequence'),
     reviewed: family<{ revision: number; sequence: number; epoch?: number }, [note: string]>('memory-reviewed:'),

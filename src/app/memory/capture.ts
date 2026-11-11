@@ -9,6 +9,7 @@ import type { MemoryService } from './service.ts'
 import { sessionHistory } from '../session-history.ts'
 import { CaptureProposal, MemoryAnalysisFailure, MEMORY_INPUT_BYTES, serializeAnalysisInput, type MemoryAnalyzer, type MemoryAnalysisInput } from './analyzer.ts'
 import { fingerprint, safeText } from './security.ts'
+import { memoryAllowance } from './budget.ts'
 
 export interface CaptureBatch { ticketId: string; assignmentId: string; sessionId: string; endSeq: number; endHash: string }
 const Cursor = z.object({ seq: z.number().int(), hash: z.string(), partial: z.boolean() }).strict()
@@ -42,16 +43,18 @@ export async function analyze(host: CaptureHost, input: MemoryAnalysisInput): Pr
   const deadline = AbortSignal.timeout(45_000)
   const configuration = host.memory.analysisSignal()
   const signal = AbortSignal.any([host.lifetime, configuration, deadline])
-  const config = host.store.settings().memory, day = new Date().toISOString().slice(0, 10)
+  const config = host.store.settings().memory
   if (!host.memory.active() || host.paused() || signal.aborted) throw new Later('memory_analysis_paused')
   if (Buffer.byteLength(serializeAnalysisInput(input)) > MEMORY_INPUT_BYTES) throw new Error('memory_input_too_large')
   host.store.atomic(() => {
-    const previous = host.store.get(KV.memory.usage)
-    const calls = previous?.day === day ? previous.calls : 0
-    if (!config.dailyCallBudget || calls >= config.dailyCallBudget) {
+    const usage = memoryAllowance(config, host.store.get(KV.memory.usage))
+    if (!usage.remainingCalls) {
       host.memory.degraded('memory_budget_exhausted'); throw new Later('memory_budget_exhausted')
     }
-    host.store.set(KV.memory.usage, { day, calls: calls + 1 })
+    if (input.mode === 'capture' && !usage.captureRemainingCalls) throw new Later('memory_budget_reserved')
+    host.store.set(KV.memory.usage, { day: usage.day, calls: usage.usedCalls + 1,
+      captureCalls: usage.captureCalls + Number(input.mode === 'capture'),
+      consolidationCalls: usage.consolidationCalls + Number(input.mode === 'consolidate') })
   })
   analyzing = true
   const pending = Promise.resolve().then(() => { signal.throwIfAborted(); return analyzer.propose(input, signal) })

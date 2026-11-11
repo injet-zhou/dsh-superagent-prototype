@@ -702,3 +702,26 @@ Capture remains a single writer per Repository, but a delayed/held Session no lo
 
 
 45 秒后续修复的最终检查：冻结安装与 `VITEST_MAX_WORKERS=1 pnpm check` 通过（78 文件 / 1462 测试，含 typecheck/build），`git diff --check` 通过。经已授权的临时部署，真实检查点由 62、474 推进到 336、848，生成 28 条有 Evidence 的 candidate 与 28 个 Wiki 投影，partial capture 为 0，SQLite quick_check 为 ok；当天已记账 56 次，90 次上限和此前记账均保留。提取/整理队列为 ready，历史继续后台处理。这不等于全部 Memory health 为绿：仍观察到长 turn 证据包 `truncated` 和严格拒绝的 `memory_invalid_proposals`，不能把未复核来源或模型错误升级为 verified。详情仅保存脱敏的计数/状态元数据于 `memory-live-deadline-validation.json`，不含会话、笔记正文或来源 ID。
+
+
+### Daily throughput and catch-up (2026-11-11)
+
+现场确认总额度 90/90 已耗尽，67 条 candidate 中 41 条 revision 已审阅；24 个待整理 Effect 是旧快照唤醒，并非 24 批独立工作。本轮将可配置总上限由 100 提升到 10,000，但默认仍为 0；操作员明确选择总计 1000 次/日、其中预留 300 次给整理。`consolidationReservedCalls` 默认 0，旧设置直接读取，不新增 SQL schema。预留包含在总上限中，提取不得花掉未使用的整理预留；整理可使用其他闲余额度，关闭 Dreaming 时释放预留。失败调用仍计费，0 总额仍完全停用模型。当前 Worker、确定性 Host attestation、Policy/Mandate、模型权限及单写者限制不变。
+
+UTC usage 增加可选 capture/consolidation 分类计数，旧的 `{day,calls}` 当日已用额度原样保留并显示为未分类，不能通过升级或改设置清零。单事务同时检查总额/预留并记账，类别不会跨仓库共享。Panel 提供总额、预留、类别使用量和设置修订历史。
+
+整理改为每仓库一个持久唤醒键；快照变化只更新 generation，原有回退/重试语义保留。实际发布 job 标识从本次提供的 revision 集合计算（review-v3），不再信任过时的排队快照标识。完成一页后自动接续，包含合法空提议；新笔记到达 in-flight 阶段不会被旧 generation 删除。旧排队快照原子归并，Note/Evidence/Revision/已审阅标记不删除，归并失败回滚且不能阻断 Runtime。待整理任务数 1 可以覆盖多页笔记，不表示没有积压。
+
+保留证据可用性、strict Schema、revision/CAS 和 verified 人工审核约束，不以提高预算掩盖无效提议或截断证据。有限配额下仍可能积压；本次保证整理可用的预留容量与连续追赶能力，不承诺任意活动量下永久清空队列。部署前备份状态与 profile，旧二进制回滚必须使用可解析旧设置的备份。
+
+
+本轮最终验证：冻结安装、`VITEST_MAX_WORKERS=1 pnpm check`（79 文件 / 1477 测试、typecheck、build）及 `git diff --check` 全部通过。首轮遗漏新增模块的架构目录条目，补齐后文档与全量重新通过，没有跳过或弱化断言。经操作员明确授权，临时部署并 CAS 设置为 1000/300；当日旧 90 次仍作为未分类记账。真实积压从 67 条候选、41 条已审阅、24 个整理任务，推进到 73 条候选全部已审阅、0 个整理任务，仅新增 6 次提取和 5 次整理调用（总计 101）。没有无 Evidence 的笔记，SQLite quick_check 为 ok，处理保持开启。仍有 2 个提取 Effect 被同检查点三次失败保护暂停，属于模型提议校验问题，未清空或伪装完成；reviewed 不等于 verified。仅计数/状态的脱敏验证记录见 `memory-throughput-live-validation.json`。原主工作树的用户修改保持原样，PR 未自动合并。
+
+
+### Equivalent publication must not create catch-up work (PR #14 review)
+
+审阅复现：对已经 stale 的 Note 再提合法 stale，旧 Publisher 会无条件写新 revision；自动接续看到前一 revision 的 review marker，便再次调用模型，直至花完四次测试预算。仅放宽预算或限制接续页数都不能修复这个因果循环。
+
+Publisher 在完成 Scope/CAS、来源可用性及 Evidence 关联检查后，只在目标状态确实变化时执行状态更新；claim 更新先经过与持久化相同的 cleanNote 脱敏/规范化，再判断是否改变。等价发布不会新建 Note revision、刷新 updatedAt 或移动 stale 失效边界；本次已经发生的模型调用仍计账一次，并正常提交 review marker，从而结束当前页。Store 的通用 update/Evidence 审计保持原样，真实新增证据、外部内容变更和后续页面仍可形成新工作。
+
+新增回归覆盖重复 stale、等价 update、脱敏后等价 update；均断言仅一次调用、仍余三次预算、无待整理任务、Note/Evidence/revisions 完全不变。随后分别注入外部内容变更和新增 Evidence，验证仍会审阅且只保留实质修订。Publisher 另测等价操作仍拒绝旧 revision、伪造和未关联 Evidence，不得以幂等为由跳过授权/证据校验。

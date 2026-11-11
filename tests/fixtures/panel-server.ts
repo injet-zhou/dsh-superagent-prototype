@@ -312,6 +312,8 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
       retrieval: server.settings.memory.retrieval, autoCapture: server.settings.memory.autoCapture, dreaming: server.settings.memory.dreaming,
       analyzerAvailable: !!server.settings.memory.analyzerModel,
       dailyCallBudget: server.settings.memory.dailyCallBudget, usedCalls: 0, remainingCalls: server.settings.memory.dailyCallBudget,
+      captureCalls: 0, consolidationCalls: 0, unclassifiedCalls: 0, consolidationReservedCalls: server.settings.memory.consolidationReservedCalls,
+      captureRemainingCalls: Math.max(0, server.settings.memory.dailyCallBudget - (server.settings.memory.dreaming ? server.settings.memory.consolidationReservedCalls : 0)),
       capturePending: 0, consolidationPending: 0, partialCaptures: 0, lastCaptureAt: null, lastConsolidationAt: null } }
   } },
   'GET memory/:id': { answer: ({ params }) => server.memory[params.id] ?? refuse(404, 'Memory note not found') },

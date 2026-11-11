@@ -1,0 +1,47 @@
+{
+  "at": "2026-11-11T12:38:03.880420+00:00",
+  "scope": "Operator-authorized metadata-only live validation",
+  "code": "70e2523",
+  "budget": 1000,
+  "consolidationReservation": 300,
+  "usage": {
+    "day": "2026-11-11",
+    "calls": 101,
+    "captureCalls": 6,
+    "consolidationCalls": 5
+  },
+  "legacyUnclassifiedCalls": 90,
+  "before": {
+    "notes": {
+      "candidate": 67
+    },
+    "reviewed": 41,
+    "consolidationTasks": 24
+  },
+  "after": {
+    "notes": {
+      "candidate": 73
+    },
+    "reviewed": 73,
+    "unreviewed": 0,
+    "consolidationTasks": 0,
+    "captureTasks": 2,
+    "notesWithoutEvidence": 0,
+    "captureFailureCounts": [
+      3
+    ]
+  },
+  "runtime": "ready",
+  "memoryProblem": "memory_capture_retry_limit",
+  "processingPaused": false,
+  "schema": 12,
+  "quickCheck": "ok",
+  "checks": {
+    "frozenInstall": "passed",
+    "typecheck": "passed",
+    "testFiles": 79,
+    "tests": 1477,
+    "build": "passed",
+    "diffCheck": "passed"
+  }
+}

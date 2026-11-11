@@ -89,10 +89,14 @@ export function publish(memory: MemoryStore, job: string, raw: unknown, offered:
         if (proposal.evidenceIds.some(id => !before.evidence.some(item => item.id === id))) throw new Error('memory_evidence_not_attached')
         if (proposal.action === 'update') {
           const prior = { kind: before.note.kind, title: before.note.title, body: before.note.body, scope: before.note.scope }
-          if (JSON.stringify(prior) !== JSON.stringify(proposal.note) || before.note.status !== proposal.status) {
-            memory.update(proposal.id, proposal.expectedRevision, { ...proposal.note, status: proposal.status }, proposal.evidenceIds, reason, job)
+          const replacement = cleanNote(proposal.note)
+          if (JSON.stringify(prior) !== JSON.stringify(replacement) || before.note.status !== proposal.status) {
+            memory.update(proposal.id, proposal.expectedRevision, { ...replacement, status: proposal.status }, proposal.evidenceIds, reason, job)
           }
-        } else memory.update(proposal.id, proposal.expectedRevision, { status: proposal.action === 'retract' ? 'retracted' : 'stale' }, proposal.evidenceIds, reason, job)
+        } else {
+          const status = proposal.action === 'retract' ? 'retracted' : 'stale'
+          if (before.note.status !== status) memory.update(proposal.id, proposal.expectedRevision, { status }, proposal.evidenceIds, reason, job)
+        }
       }
     }
     memory.store.set(KV.memory.published(fingerprint(job)), true)
@@ -102,8 +106,18 @@ export function publish(memory: MemoryStore, job: string, raw: unknown, offered:
 /** Runs one bounded analyzer/publisher at a time per repository, with a shared process-wide model reservation. */
 export class MemoryDreaming {
   private timer?: ReturnType<typeof setInterval>
+  private readonly wakeup = 'repository-memory'
   constructor(private readonly host: CaptureHost) {
-    host.effects.handle('memory-consolidate', ({ batchId }) => this.run(batchId), {
+    // Legacy rows are snapshot wakeups, not independent work. Review progress remains authoritative.
+    try {
+      host.store.atomic(() => {
+        const head = host.store.db.prepare("SELECT key FROM effect WHERE kind='memory-consolidate' ORDER BY seq LIMIT 1").get()
+        if (!head) return
+        host.store.db.prepare("DELETE FROM effect WHERE kind='memory-consolidate' AND key<>?").run(String(head.key))
+        host.store.db.prepare("UPDATE effect SET key=? WHERE kind='memory-consolidate'").run(this.wakeup)
+      })
+    } catch { host.memory.degraded('memory_maintenance_unavailable') }
+    host.effects.handle('memory-consolidate', () => this.run(), {
       ordered: true, limit: () => host.memory.dreamingEnabled() && !host.paused() && !host.lifetime.aborted ? 1 : 0,
     })
     const schedule = () => {
@@ -123,15 +137,19 @@ export class MemoryDreaming {
       if (!threshold || this.host.memory.publisher().list('candidate', 5).length >= 5) this.enqueue()
     } catch { this.host.memory.degraded('memory_maintenance_unavailable') }
   }
-  /** Manual Host entrypoint; the stable snapshot key also coalesces repeated scheduling. */
+  /** One durable wakeup; changed work advances its generation without dropping an in-flight successor. */
   enqueue(): boolean {
     if (!this.host.memory.dreamingEnabled()) return false
     const snapshot = this.input()
     if (!snapshot.notes.length) return false
-    // A new key version permits an initial review of pages published before durable rotation existed.
-    const batchId = fingerprint(['memory-review-v2', snapshot.notes.map(item => [item.note.id, item.note.revision, item.note.importance?.revision])])
+    const batchId = this.batch(snapshot)
     if (this.host.store.get(KV.memory.published(fingerprint(batchId)))) return false
-    this.host.effects.enqueue('memory-consolidate', batchId, { batchId }); return true
+    const pending = this.host.store.db.prepare("SELECT json_extract(value,'$.batchId') AS batch FROM effect WHERE kind='memory-consolidate' AND key=?").get(this.wakeup)
+    if (pending?.batch === batchId) return false
+    this.host.effects.enqueue('memory-consolidate', this.wakeup, { batchId }); return true
+  }
+  private batch(input: MemoryAnalysisInput): string {
+    return fingerprint(['memory-review-v3', input.notes.map(item => [item.note.id, item.note.revision, item.note.importance?.revision])])
   }
   private input(): MemoryAnalysisInput {
     const memory = this.host.memory.publisher()
@@ -146,12 +164,13 @@ export class MemoryDreaming {
     }
     return { mode: 'consolidate', events: [], notes }
   }
-  private async run(batchId: string): Promise<void> {
+  private async run(): Promise<void> {
     const { host } = this
-    if (host.store.get(KV.memory.published(fingerprint(batchId)))) return
     try {
       let input = this.input()
       if (!input.notes.length) return
+      const batchId = this.batch(input)
+      if (host.store.get(KV.memory.published(fingerprint(batchId)))) return
       if (!host.analyzer || !host.memory.status().remainingCalls) {
         const code = !host.analyzer ? 'memory_analyzer_unavailable' : 'memory_budget_exhausted'
         host.memory.degraded(code); throw new Later(code)
@@ -188,6 +207,7 @@ export class MemoryDreaming {
         host.store.set(KV.memory.lastConsolidatedAt, new Date().toISOString())
       })
       host.memory.refresh()
+      this.enqueue()
     } catch (error) {
       if (error instanceof Later) throw error
       const code = error instanceof MemoryConflict ? 'memory_revision_conflict' : 'memory_consolidation_failed'

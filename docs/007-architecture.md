@@ -337,6 +337,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/memory/store.ts` | Repository binding, evidence-backed writes, revision CAS and bounded FTS5 retrieval |
 | `src/app/memory/service.ts` | Failure isolation, health, read/search facade and precomputed prompt index |
 | `src/app/memory/analyzer.ts` | Restricted JSON proposal contract, without tool execution or publishing access |
+| `src/app/memory/budget.ts` | Shared daily allowance, per-mode usage and consolidation reservations |
 | `src/app/memory/capture.ts` | Settled-turn capture effects, raw-log continuity checks, atomic cursors, redaction and call budgets |
 | `src/app/memory/evidence.ts` | Host-controlled scoped Transcript replay, source integrity checks and bounded redacted evidence packages |
 | `src/app/memory/attestation.ts` | Bounded Host-observed test execution receipts, exact facts and replay-safe publication |
@@ -479,6 +480,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/memory-runtime.spec.ts` | Cross-Ticket reads, worker authorization, versioned settings and three-repository isolation |
 | `tests/memory-management.spec.ts` | Scoped browsing, explicit human confirmation, revision conflicts, invalidation and atomic audit rollback |
 | `tests/panel-memory.spec.tsx` | Memory settings, source review, safe text rendering, CAS conflicts, manual maintenance and repository selection |
+| `tests/memory-budget.spec.ts` | Consolidation reservations, shared finite totals, legacy usage, UTC rollover and repository isolation |
 | `tests/memory-capture.spec.ts` | Capture idempotence, cursor atomicity, retention gaps, budgets and Worker lifecycle |
 | `tests/memory-evidence.spec.ts` | Missing/changed/foreign source history and complete evidence-package bounds |
 | `tests/memory-attestation.spec.ts` | Actual ToolRuntime and Node test execution facts, zero-model reuse, rejection and atomic rollback |
@@ -537,7 +539,7 @@ A generated column is computed from its row's JSON and is empty outside its set,
 | Session prompt history | `session-prompts:<session id>` |
 | Source state | Read positions such as `github-cursor:<number>`, PR CI fingerprints and seen Feishu-topic messages; keys begin with the kind or `thread-` plus a Thread key |
 | Display names | `source-labels:<source id>` |
-| Memory | Immutable repository identity, UTC daily call reservations, durable per-Session/cursor capture retry holds, published-job replay markers, reviewed note revisions and durable rotation sequence |
+| Memory | Immutable repository identity, UTC total/per-mode call reservations (legacy usage remains unclassified), durable per-Session/cursor capture retry holds, published-job replay markers, reviewed note revisions and durable rotation sequence |
 
 Dismissal is stored on its Decision. Input text is rendered from the Ticket when read, so neither needs a separate key-value record.
 
@@ -677,3 +679,6 @@ Point `DSH_HOME` at a temporary directory and create a new profile there. Copy t
 
 - Trust: which Trigger fields are trusted, such as the Source's actor and Thread membership, and which are not, such as the body and quotes.
 - Deployment isolation: the agent's profile on its own pinned DeepSeek Harness installation, so upgrading DeepSeek Harness elsewhere does not break it.
+
+
+Memory consolidation uses one repository-local Effect key. Its payload fingerprints pending work, but publication fingerprints the freshly offered Note revisions. Repeated unchanged scheduling keeps the existing generation/backoff; changed work upserts a successor generation. Legacy queued snapshots are atomically coalesced at assembly without changing Notes, evidence or review markers, and a failed coalescing transaction is isolated to Memory. The publisher commits review progress before requesting the next page.

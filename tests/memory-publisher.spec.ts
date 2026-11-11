@@ -40,6 +40,25 @@ it.each(scenarios)('preserves verified knowledge for $action with source state $
   expect(f.memory.get(note.id)!.pendingReview).toEqual(after.pendingReview)
 })
 
+it.each(['stale', 'update'] as const)('keeps equivalent %s publication idempotent after CAS and evidence checks', action => {
+  const f = memoryFixture(), note = f.memory.create(exampleNote, [exampleEvidence], 'stale-source', 'verified')
+  f.memory.update(note.id, 1, { status: 'stale' }, [], 'Changed checkout', 'operator')
+  const before = f.memory.get(note.id)!
+  const other = f.memory.create(exampleNote, [{ ...exampleEvidence, eventRef: `seq:4:${fingerprint('other proof')}` }], 'other', 'verified')
+  const offered = [before, f.memory.get(other.id)!]
+  const checks = offered.flatMap(item => item.evidence.map(item => ({ evidenceId: item.id, status: 'available' as const })))
+  const proposal = { action, id: note.id, expectedRevision: before.note.revision, evidenceIds: before.evidence.map(item => item.id),
+    ...action === 'update' ? { note: exampleNote, status: 'stale' } : {}, ...audit }
+  publish(f.memory, 'equivalent-1', [proposal], offered, checks)
+  publish(f.memory, 'equivalent-2', [proposal], offered, checks)
+  expect(f.memory.get(note.id)).toEqual(before)
+  expect(() => publish(f.memory, 'old-revision', [{ ...proposal, expectedRevision: 1 }], offered, checks)).toThrow('revision_conflict')
+  expect(() => publish(f.memory, 'unknown-proof', [{ ...proposal, evidenceIds: ['invented'] }], offered, checks)).toThrow('unknown_evidence')
+  expect(() => publish(f.memory, 'detached-proof', [{ ...proposal, evidenceIds: offered[1]!.evidence.map(item => item.id) }], offered, checks))
+    .toThrow('evidence_not_attached')
+  expect(f.memory.get(note.id)).toEqual(before)
+})
+
 it.each(['missing', 'changed', 'truncated'] as const)('carries actual resolver state %s into Publisher instead of trusting a hostile analyzer', async status => {
   const f = memoryFixture(), context = new Context(), effects = new Effects(f.store, f.board), lifetime = new AbortController()
   f.store.saveSettings({ ...f.store.settings(), memory: MemoryConfigSchema.parse({ enabled: true, dreaming: true, dailyCallBudget: 2 }) })
