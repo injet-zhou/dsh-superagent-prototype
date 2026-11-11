@@ -689,3 +689,6 @@ Analyzer failures use fixed codes for deadline, incomplete response, invalid JSO
 Capture remains a single writer per Repository, but a delayed/held Session no longer blocks other Tickets. Every batch rechecks the same Session's current cursor before publication; a later settled turn can cover an earlier boundary and the old effect then becomes a no-op. Failed analysis never advances the checkpoint or publishes partial proposals. All state remains in the existing private SQLite database; this change needs no schema migration.
 
 现场诊断只确认原始历史完整、锚点匹配、旧版首批约 83 KB，旧错误码不能区分模型失败原因；不能据此声称现场一定超时。真实会话的外部诊断调用被自动审批阻止，未执行。隔离模型验证仅使用合成的公开 fixture，且必须等待 credentials 服务就绪。真实积压的恢复结果须另行核验，不得以合成样本通过替代。
+
+
+最终验证：`pnpm install --frozen-lockfile`、独立 build、`VITEST_MAX_WORKERS=1 pnpm check`（typecheck、76 文件 / 1416 测试、build）及 `git diff --check` 通过。首轮全量仅飞书状态覆盖断言失败，已在未修改的 main 独立复现；另一个独立提交保留本次 consumer 的解析/告警错误，防止迟到的 readiness 信号覆盖，并覆盖两种管道到达顺序。原断言均保留，未提高超时或跳过测试。现场服务仍使用 main，自动模型预算暂设 0 以停止重复记账；队列/历史完整保留，恢复原 90 次/日及真实会话采集须待外发授权与部署后另验。

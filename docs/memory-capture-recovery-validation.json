@@ -34,5 +34,13 @@
     "provider": "opencode-go",
     "model": "deepseek-v4.1-flash",
     "reasoningEffort": "low"
+  },
+  "checks": {
+    "installFrozenLockfile": "passed",
+    "typecheck": "passed via pnpm check",
+    "test": "76 files / 1416 tests passed via pnpm check",
+    "build": "passed standalone and via pnpm check",
+    "check": "passed with VITEST_MAX_WORKERS=1",
+    "diffCheck": "passed"
   }
 }
