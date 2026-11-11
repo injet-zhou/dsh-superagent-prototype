@@ -19,6 +19,8 @@ export class MemoryService {
   private summary = ''
   private remainingCalls = 0
   private retrieving = false
+  private readonly retrievalWaiters = new Set<() => void>()
+  private retrievalProblem?: string
   private readonly listeners = new Set<() => void>()
   private projectionProblem?: string
   private analysisController = new AbortController()
@@ -31,7 +33,7 @@ export class MemoryService {
     if (JSON.stringify(config) === JSON.stringify(this.config)) return false
     const enabled = this.enabled()
     this.analysisController.abort(); this.analysisController = new AbortController()
-    this.config = config; this.refresh()
+    this.config = config; this.retrievalProblem = undefined; this.refresh()
     return enabled !== this.enabled()
   }
   analyzerAvailable(available: boolean): void { this.analyzer = available; this.report() }
@@ -117,16 +119,38 @@ export class MemoryService {
       remainingCalls: Math.max(0, this.config.dailyCallBudget - usedCalls), capturePending: pending('memory-capture'), consolidationPending: pending('memory-consolidate'),
       partialCaptures: Number(this.store.db.prepare("SELECT count(*) AS n FROM memory_capture_checkpoint WHERE json_extract(cursor_json,'$.partial')=1").get()?.n ?? 0),
       lastCaptureAt: this.store.get(KV.memory.lastCapturedAt) ?? null, lastConsolidationAt: this.store.get(KV.memory.lastConsolidatedAt) ?? null,
-      ...this.problem || this.projectionProblem ? { problem: this.problem ?? this.projectionProblem } : {} }
+      ...this.problem || this.projectionProblem || this.retrievalProblem ? { problem: this.problem ?? this.projectionProblem ?? this.retrievalProblem } : {} }
+  }
+  /** One reader per repository, with eight FIFO waiters and a bounded wait independent of SQL's deadline. */
+  private acquireRetrieval(signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted()
+    if (!this.retrieving) { this.retrieving = true; return Promise.resolve() }
+    if (this.retrievalWaiters.size >= 8) return Promise.reject(new Error('memory_retrieval_busy'))
+    return new Promise((resolve, reject) => {
+      const cleanup = () => { this.retrievalWaiters.delete(grant); clearTimeout(timer); signal.removeEventListener('abort', abort) }
+      const grant = () => { cleanup(); resolve() }
+      const abort = () => { cleanup(); reject(new Error('memory_retrieval_unavailable')) }
+      const timer = setTimeout(() => { cleanup(); reject(new Error('memory_retrieval_timeout')) }, 1500)
+      this.retrievalWaiters.add(grant)
+      signal.addEventListener('abort', abort, { once: true })
+      if (signal.aborted) abort()
+    })
+  }
+  private releaseRetrieval(): void {
+    const grant = this.retrievalWaiters.values().next().value
+    if (grant) grant()
+    else this.retrieving = false
   }
   async search(input: Query, signal?: AbortSignal) {
     const parsed = MemoryQuery.parse(input)
     if (!this.enabled() || signal?.aborted) return { boundary: MEMORY_BOUNDARY, items: [], degraded: this.problem ?? 'memory_disabled' }
-    if (this.retrieving) return { boundary: MEMORY_BOUNDARY, items: [], degraded: 'memory_retrieval_busy' }
-    this.retrieving = true
+    const stop = AbortSignal.any([this.analysisSignal(), ...signal ? [signal] : []])
+    let acquired = false
     try {
+      await this.acquireRetrieval(stop); acquired = true
+      stop.throwIfAborted()
       const memory = this.publisher()
-      const matches = await readMatches(this.store.db, searchPlan(memory.repository, memory.fts, parsed), AbortSignal.any([this.analysisSignal(), ...signal ? [signal] : []]))
+      const matches = await readMatches(this.store.db, searchPlan(memory.repository, memory.fts, parsed), stop)
       const items = matches.flatMap(match => {
         const details = memory.get(match.id), note = details?.note
         return note?.status === 'verified' && note.revision === match.revision ? [details!] : []
@@ -134,9 +158,13 @@ export class MemoryService {
         kind: note.kind, status: note.status, revision: note.revision, scope: note.scope, verifiedAt: note.verifiedAt,
         ...pendingReview ? { reviewRequired: true } : {},
         evidenceCount: this.publisher().evidenceCount(note.id), read: `memory/${note.id}` }))
+      this.retrievalProblem = undefined; this.report()
       return { boundary: MEMORY_BOUNDARY, items }
-    } catch { this.degraded('memory_retrieval_unavailable'); return { boundary: MEMORY_BOUNDARY, items: [], degraded: 'memory_retrieval_unavailable' } }
-    finally { this.retrieving = false }
+    } catch (error) {
+      const code = error instanceof Error && ['memory_retrieval_busy', 'memory_retrieval_timeout'].includes(error.message) ? error.message : 'memory_retrieval_unavailable'
+      if (!stop.aborted) { this.retrievalProblem = code; this.report() }
+      return { boundary: MEMORY_BOUNDARY, items: [], degraded: code }
+    } finally { if (acquired) this.releaseRetrieval() }
   }
   read(id: string): string {
     if (!this.enabled()) return JSON.stringify({ boundary: MEMORY_BOUNDARY, degraded: this.problem ?? 'memory_disabled' })
@@ -156,7 +184,7 @@ export class MemoryService {
   degraded(code: string): void { this.problem = code; this.report() }
   private report(): void {
     const automatic = this.config.enabled && (this.config.autoCapture || this.config.dreaming)
-    const problem = this.problem ?? this.projectionProblem ?? (automatic && !this.analyzer ? 'memory_analyzer_unavailable'
+    const problem = this.problem ?? this.projectionProblem ?? this.retrievalProblem ?? (automatic && !this.analyzer ? 'memory_analyzer_unavailable'
       : automatic && !this.remainingCalls ? 'memory_budget_exhausted' : undefined)
     this.health.set({ state: !this.config.enabled ? 'paused' : problem ? 'error' : 'ready',
       detail: !this.config.enabled ? 'Memory disabled; automatic model budget defaults to 0' : problem

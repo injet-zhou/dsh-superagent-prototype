@@ -11,7 +11,7 @@ import { exampleEvidence, exampleNote, memoryFixture } from './fixtures/memory.t
 
 const audit = { reason: 'Analyzer proposes invalidation; token=must-not-persist', uncertainty: 'The model may be wrong' }
 const states = ['missing', 'changed', 'truncated', 'unavailable', 'available', 'host-attested', undefined] as const
-const scenarios = states.flatMap(status => ['stale', 'retract', 'update', 'merge'].map(action => ({ status, action })))
+const scenarios = states.flatMap(status => ['stale', 'retract', 'update', 'replace', 'merge'].map(action => ({ status, action })))
 
 it.each(scenarios)('preserves verified knowledge for $action with source state $status and records an idempotent review request', async ({ status, action }) => {
   const f = memoryFixture()
@@ -21,6 +21,7 @@ it.each(scenarios)('preserves verified knowledge for $action with source state $
   const before = f.memory.get(note.id)!, offered = [before, ...target ? [f.memory.get(target.id)!] : []]
   const evidenceIds = before.evidence.map(item => item.id)
   const proposal = action === 'merge' ? { action, sourceId: note.id, sourceRevision: 1, targetId: target!.id, targetRevision: 1, ...audit }
+    : action === 'replace' ? { action: 'update', id: note.id, expectedRevision: 1, note: { ...exampleNote, body: 'Replacement requires a person' }, status: 'verified', evidenceIds, ...audit }
     : action === 'update' ? { action, id: note.id, expectedRevision: 1, note: exampleNote, status: 'stale', evidenceIds, ...audit }
     : { action, id: note.id, expectedRevision: 1, evidenceIds, ...audit }
   const checks = status ? offered.flatMap(item => item.evidence.map(evidence => ({ evidenceId: evidence.id, status }))) : undefined
@@ -30,7 +31,7 @@ it.each(scenarios)('preserves verified knowledge for $action with source state $
   expect(after.evidence).toEqual(before.evidence)
   expect(after.revisions).toEqual(before.revisions)
   expect(after.pendingReview).toMatchObject({ revision: 1, noteRevision: 1,
-    action: action === 'update' ? 'stale' : action, sources: expect.arrayContaining([expect.objectContaining({ status: status ?? 'unavailable' })]) })
+    action: action === 'update' ? 'stale' : action === 'replace' ? 'update' : action, sources: expect.arrayContaining([expect.objectContaining({ status: status ?? 'unavailable' })]) })
   expect(JSON.stringify(after)).not.toContain('must-not-persist')
   expect((await f.service.search({ query: 'SQLite' })).items).toMatchObject([{ id: note.id, reviewRequired: true }])
   expect(f.memory.browse({ status: 'verified' }).items).toMatchObject([{ id: note.id, reviewRequired: true }])
@@ -94,4 +95,18 @@ it('rejects forged analyzer source checks and rolls pending-review writes back w
   expect(f.memory.get(note.id)).toEqual(before)
   expect(() => publish(f.memory, 'bad-batch', [proposal, { ...proposal, expectedRevision: 2 }], [before])).toThrow('revision_conflict')
   expect(f.memory.get(note.id)).toEqual(before)
+})
+
+it('cannot replace a verified claim by first copying another claim attestation into its evidence', () => {
+  const f = memoryFixture()
+  const old = f.memory.create(exampleNote, [exampleEvidence], 'old', 'verified')
+  const replacement = { ...exampleNote, body: 'A different fact can be true without disproving the old procedure.' }
+  const proof = f.memory.create(replacement, [{ ...exampleEvidence, eventRef: 'seq:4:' + fingerprint('different verified fact') }], 'other', 'verified')
+  publish(f.memory, 'copy-attestation', [{ action: 'create', note: exampleNote,
+    evidenceIds: f.memory.get(proof.id)!.evidence.map(item => item.id), ...audit }], [f.memory.get(old.id)!, f.memory.get(proof.id)!])
+  const before = f.memory.get(old.id)!
+  expect(before.note).toMatchObject({ status: 'verified', revision: 2, body: exampleNote.body })
+  publish(f.memory, 'replace-old-knowledge', [{ action: 'update', id: old.id, expectedRevision: 2, status: 'verified', note: replacement,
+    evidenceIds: before.evidence.map(item => item.id), ...audit }], [before])
+  expect(f.memory.get(old.id)!).toMatchObject({ note: before.note, pendingReview: { action: 'update', replacement } })
 })

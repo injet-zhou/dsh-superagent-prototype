@@ -1,6 +1,6 @@
 # dsh-superagent：Repository-scoped Agent Memory 技术设计
 
-> 状态：Phase 1–4 均已实现；真实受限模型 Capture/Dreaming、持久发布与 Wiki 烟测已通过。第二轮审阅增加全库检索、原始证据回溯、历史对照、限定的自动执行认证及主题文章/重要性。以文末最新记录为当前能力，之前的阶段记录保留其当时限制；原始 RFC 与验收约束保留。
+> 状态：Phase 1–4 已实现；最新代码的验收结果、人工失效边界和真实模型限制以文末第三轮记录为准。原始 RFC 与历次阶段记录保留。
 > 基线：`injet-zhou/dsh-superagent-prototype`，`main`，commit `86271f435e8130a25ff4bc9ade3b4077143c8532`（2026-11-08）。实际实施前重新核对 HEAD。
 > 依据：Anthropic《The components of agent memory》（https://www.anthropic.com/research/components-of-agent-memory）所讨论的 Transcripts、Memory Notes、Memory Representations、Injected Context 和 Dreaming；下述 API、Schema、默认参数为**本项目的设计建议**，并非 Anthropic 官方实现。
 
@@ -638,3 +638,32 @@ DSH 0.2.2-rc.1 的真实 Session 烟测发现 `sessionController.inspect` 已删
 本轮基线：VITEST_MAX_WORKERS=2 时 1356 项通过，52 条记忆的真实子进程轮转集成测试超过其 5 秒测试期限；保持源码与断言不变，以 VITEST_MAX_WORKERS=1 完整重跑 pnpm check，75 文件/1357 项以及 typecheck/build 全通过。新增 Publisher/管理 API 测试先复现 32 项失败，再实现保护；保留两次基线记录，没有延长测试超时或跳过断言。
 
 第三轮 P1 阶段：定向 68 项与完整 pnpm check 均通过，76 文件、1395 项测试全通过，typecheck/build 成功；使用 VITEST_MAX_WORKERS=1 保留原测试超时及所有断言。
+
+
+第三轮复查还确认了 Verified 正文替换的间接移除路径：先通过 duplicate-create 复制另一个 claim 的认证，再用复制后的证据把原 claim 改成新的 verified claim。即便两条事实分别都是真的，也不能证明旧知识应被覆盖。新增两轮回归先复现失败，再将 Verified claim 的 body/title/kind/scope 替换统一转人工待审，并保存建议内容；原 claim 保持不变。
+
+### 第三轮审阅：有界检索等待
+
+将忙时立即丢弃改为每仓库单读者 + FIFO，最多 8 个等待者。等待 1500ms，拿到名额后仍受原 500ms SQLite 硬截止隔离；容量超限才返回 memory_retrieval_busy，等待过期返回 memory_retrieval_timeout。取消、设置变更会移除等待者并释放资源，旧配置下的请求不能借新配置继续查询。检索健康独立于证据/投影错误，恢复后清除自身临时错误，不掩盖其他故障。未增加模型调用或 WorkerSlot。
+
+新增 5 项公共 search API 集成回归，使用真实 Node SQLite 读进程：普通并发 FIFO、等待取消不影响其他 Worker、队列容量、用真实慢 SQL 视图与受控时钟验证等待截止及恢复、关闭后再开启。旧实现先出现 4 项失败；修复后目标 14 项通过。没有模拟内部检索器，也没有通过扩大测试超时来掩盖故障。
+
+
+### 第三轮最终验收与现实限制
+
+冻结后的实现依次运行以下命令，全部退出码为 0。VITEST_MAX_WORKERS=1 仅限制测试文件并发；并发检索用例仍在一个测试内同时发起请求，真实 DSH 也另行验证 4 路并发。保留全部原断言和测试超时。
+
+| 命令 | 第三轮最终结果 |
+| --- | --- |
+| pnpm install --frozen-lockfile | 通过；lockfile 未改变 |
+| pnpm typecheck | 通过 |
+| pnpm test | 76 文件、1408 项全部通过 |
+| pnpm build | 通过 |
+| pnpm check | typecheck、76 文件/1408 测试、build 全部通过 |
+| git diff --check | 通过；另检查完整 main 差异 |
+
+第三轮共新增 51 项测试，包括 missing/changed/truncated/unavailable/遗漏检查、可用与 Host 核证来源下的错误状态及正文替换提案、合并绕过、两轮认证证据复制、待审幂等/回滚、证据追加不清除待审、人工双版本 CAS、轮询期间确认绑定、并发 FIFO/容量/取消/截止/恢复。
+
+本轮真实模型烟测见 memory-live-validation-round3-model.json：Capture 成功且原始证据包可读，Dreaming 未在既有 15 秒截止内生成结果，整次模型烟测失败；共占用 2 次应用调用预算，超时流的完整 token 用量不可得。没有放宽截止、证据门槛或反复调用模型追求通过。旧版 round-2 的模型成功记录保留其历史含义，不能冒充本轮成功。实际 provider 延迟/模型选择仍需要运营验证，本轮不宣称真实模型 Dreaming 已通过。
+
+独立 host-only 测试见 memory-live-validation-round3-host.json：真实 DSH 0.2.2-rc.1 / SQLite 3.51.3+FTS5，以预算 0、不发起任何模型调用验证来源回放、Host Publisher 待审保护、4 个并发查询全部成功/0 busy、原生 Bash 的限定执行认证及 Wiki 重建。普通 fixture Agent 明确采用 workspace-write、无模型请求；Memory 分析未创建 Agent。该模式明确跳过 Capture/Dreaming 模型分析和主题生成，不把 Host 测试冒充模型提取。用户数据库与配置未用于任何夹具。

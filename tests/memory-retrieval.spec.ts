@@ -89,3 +89,75 @@ it('redacts before persistence and render, keeps prompt lookup free of I/O, and 
   expect((await pending).items).toEqual([])
   expect((await service.search({ query: 'Policy' })).items).toHaveLength(1)
 })
+
+it('queues ordinary concurrent Worker searches in FIFO order instead of returning empty busy results', async () => {
+  const f = memoryFixture(), completed: string[] = []
+  for (const id of ['alpha', 'bravo', 'charlie', 'delta']) f.memory.create({ ...exampleNote, title: id, body: 'A scoped repository fact' }, [exampleEvidence], id, 'verified', id)
+  f.service.configure(MemoryConfigSchema.parse({ enabled: true }))
+  const results = await Promise.all(['alpha', 'bravo', 'charlie', 'delta'].map(async id => {
+    const result = await f.service.search({ query: id }); completed.push(id); return result
+  }))
+  expect(results.map(result => result.items.map(item => item.id))).toEqual([['alpha'], ['bravo'], ['charlie'], ['delta']])
+  expect(completed).toEqual(['alpha', 'bravo', 'charlie', 'delta'])
+  expect(results.every(result => !('degraded' in result))).toBe(true)
+})
+
+it('removes an aborted queued search without cancelling other Workers or leaking the permit', async () => {
+  const f = memoryFixture(), cancelled = new AbortController()
+  f.memory.create(exampleNote, [exampleEvidence], 'shared', 'verified', 'shared')
+  f.service.configure(MemoryConfigSchema.parse({ enabled: true }))
+  const first = f.service.search({ query: 'SQLite' }), pending = f.service.search({ query: 'SQLite' }, cancelled.signal), third = f.service.search({ query: 'SQLite' })
+  cancelled.abort()
+  const [a, b, c] = await Promise.all([first, pending, third])
+  expect(a.items).toHaveLength(1); expect(c.items).toHaveLength(1)
+  expect(b.items).toEqual([]); expect(b.degraded).not.toBe('memory_retrieval_busy')
+  expect((await f.service.search({ query: 'SQLite' })).items).toHaveLength(1)
+})
+
+it('bounds the search queue to eight waiters and reports only excess load as busy', async () => {
+  const f = memoryFixture()
+  f.memory.create(exampleNote, [exampleEvidence], 'shared', 'verified', 'shared')
+  f.service.configure(MemoryConfigSchema.parse({ enabled: true }))
+  const results = await Promise.all(Array.from({ length: 10 }, () => f.service.search({ query: 'SQLite' })))
+  expect(results.filter(result => result.degraded === 'memory_retrieval_busy')).toHaveLength(1)
+  expect(results.slice(0, 9).every(result => result.items.length === 1)).toBe(true)
+  expect(f.service.status().problem).toBeUndefined()
+})
+
+it('expires queued searches at their wait deadline and recovers after a real slow SQLite read', async () => {
+  const f = memoryFixture()
+  f.memory.create(exampleNote, [exampleEvidence], 'shared', 'verified', 'shared')
+  f.store.db.exec('DROP TABLE memory_note_fts')
+  const service = new MemoryService(f.store, f.board.claim('queued-fallback'))
+  service.bind(f.memory.repository); service.configure(MemoryConfigSchema.parse({ enabled: true }))
+  // Real slow read through the public search API. Sorting the expanded view prevents early LIMIT completion.
+  f.store.db.exec(`ALTER TABLE memory_note RENAME TO fast_note;
+    CREATE VIEW memory_note AS WITH RECURSIVE counter(v) AS (VALUES(0) UNION ALL SELECT v+1 FROM counter WHERE v<100000000)
+    SELECT n.id,n.repository,n.kind,n.title,n.body,n.status,n.scope_json,n.source_fingerprint,n.revision,n.created_at,
+      n.updated_at||counter.v AS updated_at,n.verified_at FROM fast_note n CROSS JOIN counter`)
+  let first: ReturnType<MemoryService['search']> | undefined
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  try {
+    first = service.search({ query: 'SQLite' }); await Promise.resolve()
+    const queued = service.search({ query: 'SQLite' })
+    await vi.advanceTimersByTimeAsync(1500)
+    expect(await queued).toMatchObject({ items: [], degraded: 'memory_retrieval_timeout' })
+  } finally {
+    vi.useRealTimers(); await first
+    f.store.db.exec('DROP VIEW memory_note; ALTER TABLE fast_note RENAME TO memory_note')
+  }
+  expect((await service.search({ query: 'SQLite' })).items).toHaveLength(1)
+  expect(service.status().problem).toBeUndefined()
+})
+
+it('cancels the active search and all waiters when Memory changes, then admits fresh requests', async () => {
+  const f = memoryFixture()
+  f.memory.create(exampleNote, [exampleEvidence], 'shared', 'verified', 'shared')
+  f.service.configure(MemoryConfigSchema.parse({ enabled: true }))
+  const requests = Array.from({ length: 4 }, () => f.service.search({ query: 'SQLite' }))
+  f.service.configure(MemoryConfigSchema.parse({ enabled: false }))
+  expect((await Promise.all(requests)).every(result => result.items.length === 0)).toBe(true)
+  f.service.configure(MemoryConfigSchema.parse({ enabled: true }))
+  expect((await f.service.search({ query: 'SQLite' })).items).toHaveLength(1)
+  expect(f.service.status().problem).toBeUndefined()
+})

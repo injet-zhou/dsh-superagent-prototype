@@ -24,9 +24,9 @@ export class DshMemoryAnalyzer implements MemoryAnalyzer {
       + 'Label causal interpretations as inference, link related Notes/topics, and revise existing topics when sources change. '
       + 'Within the short response budget, propose at most two small changes. Prefer one concise topic when verified sources support it; '
       + 'use at most two sections with at most 80 words each. Keep reasons brief. Do not mutate its cited Notes in the same batch. ' : '')
-      + 'Verified note invalidation or a merge removing a verified source is always a request for operator review. '
+      + 'Verified note replacement, invalidation or a merge removing a verified source is always a request for operator review. '
       + 'Original evidence availability is not proof of a contradiction; cite new counterevidence when available. '
-      + 'Keep pending review requests unchanged unless the sources change. Non-verified cleanup requires available sourceChecks. '
+      + 'Entries with reviewRequired already await an operator; do not repeat the request on unchanged sources. Non-verified cleanup requires available sourceChecks. '
       + 'Leave conflicting candidates for review. You have no tools or execution authority. Schema: ' + JSON.stringify(schema)
     const text = serializeAnalysisInput(input)
     if (Buffer.byteLength(text) > MEMORY_INPUT_BYTES) throw new Error('memory_input_too_large')

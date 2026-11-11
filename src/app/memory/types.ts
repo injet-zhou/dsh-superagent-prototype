@@ -60,7 +60,7 @@ export interface MemoryRevision { revision: number; action: string; reason: stri
 export type MemorySourceStatus = 'available' | 'changed' | 'missing' | 'unavailable' | 'host-attested' | 'truncated'
 export interface MemorySourceCheck { evidenceId: string; status: MemorySourceStatus }
 export interface MemoryReviewRequest {
-  repository: string; noteRevision: number; revision: number; action: 'stale' | 'retract' | 'merge'; relatedNoteId?: string
+  repository: string; noteRevision: number; revision: number; action: 'stale' | 'retract' | 'merge' | 'update'; relatedNoteId?: string; replacement?: NoteInput
   sources: (Pick<MemoryEvidence, 'id' | 'noteId' | 'ticketId' | 'sessionId' | 'eventRef'> & { status: MemorySourceStatus })[]
   reason: string; at: string; job: string; signature: string; claimFingerprint: string
   resolvedAt?: string; resolution?: MemoryReview['action']

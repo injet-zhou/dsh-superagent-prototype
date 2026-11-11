@@ -117,6 +117,10 @@ export function MemoryNotePage({ id }: { id: string }) {
         <div className="dt-row-meta"><LabelValue label={t('memoryProposedAction')} value={valueLabel(t, 'memoryProposed', data.pendingReview.action)} />
           <span>{when(data.pendingReview.at, t('lang'))}</span></div>
         <p>{data.pendingReview.reason}</p>
+        {data.pendingReview.replacement && <><p>{data.pendingReview.replacement.title}</p>
+          <pre className="dt-memory-body">{data.pendingReview.replacement.body}</pre>
+          <span>{data.pendingReview.replacement.scope.paths.join(', ') || t('memoryWholeRepository')}
+            {data.pendingReview.replacement.scope.version && ' · ' + data.pendingReview.replacement.scope.version}</span></>}
         {relatedNoteId && <Button variant="ghost" onClick={() => navigate({ page: 'memory', id: relatedNoteId })}>{t('memoryCompareNote')}</Button>}
         <ul className="dt-list">{data.pendingReview.sources.map(source => <li key={source.id} className="dt-row"><div className="dt-row-main">
           <span>{valueLabel(t, 'memorySourceState', source.status)}</span><code className="dt-memory-ref">{source.eventRef}</code>

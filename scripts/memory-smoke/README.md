@@ -37,3 +37,7 @@ pnpm exec vitest run tests/memory-evaluation.spec.ts
 ```
 
 Topic proposals are optional model output; the report records their actual count rather than claiming article generation when none was proposed. Publisher/article reconstruction and cross-round duplicate/conflict behavior have deterministic integration tests. A provider can exceed the 15-second deadline, legitimately decline a proposal or propose an invalid merge. The Host rejects unsupported publication; such a smoke run fails and leaves its isolated retryable effect for diagnosis. Never relax evidence, exact-merge or CAS checks to force a successful model result.
+
+The fixture also submits a deliberately unsafe retraction against actual available source checks. The Publisher must keep the verified claim and create a pending review without another model call. Four simultaneous public Memory searches must all find that claim with its review flag, without a busy result. These assertions exercise the current Host gate and FIFO using the real DSH/SQLite environment.
+
+For a model-independent check on the installed DSH, set `DSH_MEMORY_SMOKE_HOST_ONLY=1` alongside the variables above. This uses a zero-call budget, explicitly skips Capture/Dreaming analysis, and runs source replay, native execution attestation, Publisher protection, concurrent retrieval and projection checks. Its report is labeled `host-only`; success must not be reported as real model extraction/consolidation success.

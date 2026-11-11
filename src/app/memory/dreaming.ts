@@ -7,7 +7,7 @@ import { MemoryConflict } from './store.ts'
 import { MemoryProposal, serializeAnalysisInput, type MemoryAnalysisInput } from './analyzer.ts'
 import { analyze, type CaptureHost } from './capture.ts'
 import { cleanNote, fingerprint, safeText } from './security.ts'
-import type { MemoryDetails, MemoryEvidence, MemorySourceCheck, MemoryReviewRequest } from './types.ts'
+import type { MemoryDetails, MemoryEvidence, MemorySourceCheck, MemoryReviewRequest, NoteInput } from './types.ts'
 import { readMatches } from './retrieval.ts'
 import { resolveEvidence } from './evidence.ts'
 import { MemoryKnowledge } from './knowledge.ts'
@@ -37,15 +37,15 @@ export function publish(memory: MemoryStore, job: string, raw: unknown, offered:
       return checks.length === 1 ? checks[0]!.status : 'unavailable'
     }
     const usable = (sources: readonly MemoryEvidence[]) => sources.length > 0 && sources.every(source => ['available', 'host-attested'].includes(sourceState(source.id)))
-    const requestReview = (before: MemoryDetails, action: MemoryReviewRequest['action'], references: readonly MemoryEvidence[], reason: string, relatedNoteId?: string) => {
+    const requestReview = (before: MemoryDetails, action: MemoryReviewRequest['action'], references: readonly MemoryEvidence[], reason: string, relatedNoteId?: string, replacement?: NoteInput) => {
       const note = before.note
       const sources = references.map(({ id, noteId, ticketId, sessionId, eventRef }) => ({ id, noteId, ticketId, sessionId, eventRef, status: sourceState(id) }))
       const claimFingerprint = fingerprint({ kind: note.kind, title: note.title, body: note.body, scope: note.scope })
-      const signature = fingerprint([claimFingerprint, action, relatedNoteId, sources.map(source => [source.sessionId, source.eventRef, source.status]).sort()])
+      const signature = fingerprint([claimFingerprint, action, relatedNoteId, replacement, sources.map(source => [source.sessionId, source.eventRef, source.status]).sort()])
       const previous = memory.store.get(KV.memory.reviewRequest(note.id))
       if (previous?.signature === signature) return
       const record: MemoryReviewRequest = { repository: memory.repository, noteRevision: note.revision, revision: (previous?.revision ?? 0) + 1,
-        action, ...relatedNoteId ? { relatedNoteId } : {}, sources, reason: safeText(reason, 500),
+        action, ...relatedNoteId ? { relatedNoteId } : {}, ...replacement ? { replacement } : {}, sources, reason: safeText(reason, 500),
         at: new Date().toISOString(), job: fingerprint(job), signature, claimFingerprint }
       memory.store.set(KV.memory.reviewRequest(note.id), record)
       memory.store.set(KV.memory.reviewRequestVersion(note.id, record.revision), record)
@@ -78,8 +78,13 @@ export function publish(memory: MemoryStore, job: string, raw: unknown, offered:
         const before = current(proposal.id, proposal.expectedRevision)
         const references = evidence(proposal.evidenceIds)
         const invalidation = proposal.action === 'stale' || proposal.action === 'retract' || proposal.action === 'update' && proposal.status === 'stale'
+        // Readable history is not deterministic counterproof against an already verified claim.
         if (invalidation && (before.note.status === 'verified' || !usable(references))) {
           requestReview(before, proposal.action === 'retract' ? 'retract' : 'stale', references, reason); continue
+        }
+        if (proposal.action === 'update' && before.note.status === 'verified') {
+          const prior = { kind: before.note.kind, title: before.note.title, body: before.note.body, scope: before.note.scope }, replacement = cleanNote(proposal.note)
+          if (fingerprint(prior) !== fingerprint(replacement)) { requestReview(before, 'update', references, reason, undefined, replacement); continue }
         }
         if (proposal.evidenceIds.some(id => !before.evidence.some(item => item.id === id))) throw new Error('memory_evidence_not_attached')
         if (proposal.action === 'update') {
@@ -135,7 +140,7 @@ export class MemoryDreaming {
     for (const note of [...candidates, ...verified, ...stale]) {
       const details = memory.get(note.id)!
       const entry = { note: details.note, evidence: details.evidence.slice(0, 5).map(item => ({ ...item, excerpt: safeText(item.excerpt, 500) })), revisions: [],
-        ...details.pendingReview ? { pendingReview: details.pendingReview } : {} }
+        ...details.pendingReview ? { reviewRequired: true } : {} }
       if (Buffer.byteLength(serializeAnalysisInput({ mode: 'consolidate', events: [], notes: [...notes, entry] })) > 40_000) break
       notes.push(entry)
     }
@@ -158,7 +163,8 @@ export class MemoryDreaming {
           if (seen.has(match.id)) continue
           const found = memory.get(match.id)
           if (!found || found.note.revision !== match.revision) continue
-          const details = { ...found, evidence: found.evidence.slice(0, 5).map(item => ({ ...item, excerpt: safeText(item.excerpt, 500) })), revisions: [] }
+          const details = { note: found.note, evidence: found.evidence.slice(0, 5).map(item => ({ ...item, excerpt: safeText(item.excerpt, 500) })), revisions: [],
+            ...found.pendingReview ? { reviewRequired: true } : {} }
           if (Buffer.byteLength(serializeAnalysisInput({ ...input, relatedNotes: [...relatedNotes, details] })) > 50_000) continue
           relatedNotes.push(details); seen.add(match.id)
         }

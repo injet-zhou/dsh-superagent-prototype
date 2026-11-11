@@ -12,11 +12,12 @@ import { MemoryService } from '../../src/app/memory/service.ts'
 import { MemoryCapture } from '../../src/app/memory/capture.ts'
 import { MemoryAttestor } from '../../src/app/memory/attestation.ts'
 import { MemoryKnowledge } from '../../src/app/memory/knowledge.ts'
-import { MemoryDreaming } from '../../src/app/memory/dreaming.ts'
+import { MemoryDreaming, publish } from '../../src/app/memory/dreaming.ts'
 import { MemoryProjection } from '../../src/app/memory/projection.ts'
 import { Effects } from '../../src/app/effects.ts'
 import { fingerprint } from '../../src/app/memory/security.ts'
 import { KV } from '../../src/kv.ts'
+import { resolveEvidence } from '../../src/app/memory/evidence.ts'
 import { sessionHistory } from '../../src/app/session-history.ts'
 
 export const name = 'dsh-superagent-memory-smoke'
@@ -26,10 +27,11 @@ export async function apply(ctx) {
   if (!provider || !model) throw new Error('Set DSH_MEMORY_SMOKE_PROVIDER and DSH_MEMORY_SMOKE_MODEL in an isolated profile')
   const directory = await mkdtemp(join(tmpdir(), 'dsh-memory-live-'))
   await mkdir(join(directory, 'fixture'), { mode: 0o700 })
-  const report = { provider, model, directory, calls: [], stages: {}, success: false }
+  const hostOnly = process.env.DSH_MEMORY_SMOKE_HOST_ONLY === '1'
+  const report = { provider, model, mode: hostOnly ? 'host-only' : 'live-model', directory, calls: [], stages: {}, success: false }
   const store = new Store(join(directory, 'memory.sqlite')), board = new HealthBoard(), lifetime = new AbortController()
   const memory = new MemoryService(store, board.claim('memory')), effects = new Effects(store, board)
-  const config = { enabled: true, retrieval: true, autoCapture: true, dreaming: true, dailyCallBudget: 4,
+  const config = { enabled: true, retrieval: true, autoCapture: true, dreaming: true, dailyCallBudget: hostOnly ? 0 : 4,
     analyzerModel: { provider, model, reasoningEffort: 'low' } }
   store.saveSettings({ ...store.settings(), memory: config }); memory.configure(store.settings().memory)
   memory.bind('live-smoke:isolated-fixture')
@@ -79,14 +81,17 @@ export async function apply(ctx) {
     await ctx.sessionPersistence.flush()
     const inspected = await sessionHistory(ctx, sessionId, lifetime.signal)
     assert.deepEqual(inspected.find(event => event.seq === source.seq), source)
-    effects.start(); capture.enqueue(ticketId, 'assignmentA', end); await effects.idle('memory-capture')
-    const cursor = JSON.parse(String(store.db.prepare('SELECT cursor_json FROM memory_capture_checkpoint').get()?.cursor_json))
-    assert.equal(cursor.seq, Number(end.seq)); assert.equal(cursor.partial, false)
-    assert.ok(memory.publisher().list('candidate').length > 0); assert.equal(memory.publisher().list('verified').length, 0)
-    const callsAfterCapture = report.calls.length
-    capture.enqueue(ticketId, 'assignmentA', end); await effects.idle('memory-capture')
-    assert.equal(report.calls.length, callsAfterCapture)
-    report.stages.capture = { candidates: memory.publisher().list('candidate').length, checkpoint: cursor.seq, replayCalls: 0 }
+    effects.start()
+    if (!hostOnly) {
+      capture.enqueue(ticketId, 'assignmentA', end); await effects.idle('memory-capture')
+      const cursor = JSON.parse(String(store.db.prepare('SELECT cursor_json FROM memory_capture_checkpoint').get()?.cursor_json))
+      assert.equal(cursor.seq, Number(end.seq)); assert.equal(cursor.partial, false)
+      assert.ok(memory.publisher().list('candidate').length > 0); assert.equal(memory.publisher().list('verified').length, 0)
+      const callsAfterCapture = report.calls.length
+      capture.enqueue(ticketId, 'assignmentA', end); await effects.idle('memory-capture')
+      assert.equal(report.calls.length, callsAfterCapture)
+      report.stages.capture = { candidates: memory.publisher().list('candidate').length, checkpoint: cursor.seq, replayCalls: 0 }
+    } else report.stages.capture = { ran: false, reason: 'host-only' }
     session.append('user/message', { id: MessageId('fixture-summary'), role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'Compacted fixture observation' }] },
       { surfaceOp: { op: 'replace', startSeq: source.seq, endSeq: source.seq }, sourceEventSeqs: [source.seq] })
     const snapshot = session.snapshotEvents(), restored = session.constructor.create(sessionId, snapshot, session.header)
@@ -102,9 +107,11 @@ export async function apply(ctx) {
     memory.configure(config)
     assert.ok((await memory.search({ query: 'schemaVersion', path: 'config.json' })).items.some(item => item.id === verified.id))
     report.stages.retrievalAB = { disabledHits: 0, enabledVerifiedHits: 1, modelCalls: 0 }
-    assert.equal(dreaming.enqueue(), true); await effects.idle('memory-consolidate')
-    assert.equal(effects.pending('memory-consolidate'), false); assert.ok(memory.status().lastConsolidationAt)
-    report.stages.dreaming = { published: true, lastConsolidationAt: memory.status().lastConsolidationAt }
+    if (!hostOnly) {
+      assert.equal(dreaming.enqueue(), true); await effects.idle('memory-consolidate')
+      assert.equal(effects.pending('memory-consolidate'), false); assert.ok(memory.status().lastConsolidationAt)
+      report.stages.dreaming = { published: true, lastConsolidationAt: memory.status().lastConsolidationAt }
+    } else report.stages.dreaming = { ran: false, reason: 'host-only' }
     // One ordinary test Agent invokes a fixed fixture test without prompting a model.
     // It is separate from the tool-free Memory analyzer and has workspace-write permissions.
     const fixtureDirectory = join(directory, 'fixture')
@@ -129,6 +136,20 @@ export async function apply(ctx) {
     const executionFact = memory.publisher().list('verified').find(note => note.id !== verified.id)
     assert.ok(executionFact); assert.equal(executionFact.importance.level, 'incidental')
     report.stages.attestation = { receipts: 1, autoVerified: true, explicitFixtureTool: 'bash', permissionPreset: 'workspace-write', extraModelCalls: 0 }
+    const current = memory.publisher().get(verified.id)
+    const resolved = await resolveEvidence(host, { mode: 'consolidate', events: [], notes: [current] }, lifetime.signal)
+    const checks = resolved.sourceChecks
+    if (hostOnly) report.stages.evidence = { events: resolved.events.length, checks }
+    const checkedIds = checks.filter(check => check.status === 'available').map(check => check.evidenceId)
+    assert.ok(checkedIds.length)
+    publish(memory.publisher(), 'smoke-hostile-invalidation', [{ action: 'retract', id: verified.id, expectedRevision: current.note.revision,
+      evidenceIds: checkedIds, reason: 'An analyzer request is not proof of invalidity', uncertainty: 'The original claim may remain true' }], [current], checks)
+    const protectedNote = memory.publisher().get(verified.id)
+    assert.deepEqual(protectedNote.note, current.note); assert.equal(protectedNote.pendingReview.action, 'retract')
+    report.stages.publisherSafety = { keptVerified: true, pendingReview: true, sourceState: 'available', extraModelCalls: 0 }
+    const concurrent = await Promise.all(Array.from({ length: 4 }, () => memory.search({ query: 'schemaVersion', path: 'config.json' })))
+    assert.ok(concurrent.every(result => result.items.some(note => note.id === verified.id && note.reviewRequired)))
+    report.stages.concurrentRetrieval = { requests: 4, successful: 4, busy: 0, extraModelCalls: 0 }
     await projection.rebuild()
     const wiki = await readFile(join(directory, 'memory/wiki', verified.id + '.md'), 'utf8')
     assert.ok(wiki.includes('schemaVersion')); assert.ok(!wiki.includes('fixture-never-persist-this-secret'))
@@ -140,7 +161,7 @@ export async function apply(ctx) {
     report.ordinaryTestAgents = ctx.agents.list().length - agentsBefore; assert.equal(report.ordinaryTestAgents, 1)
     report.analyzerCreatedAgents = report.calls.reduce((sum, call) => sum + (call.agentsCreated ?? 0), 0); assert.equal(report.analyzerCreatedAgents, 0)
     report.budget = store.get(KV.memory.usage); report.fts5 = memory.publisher().fts
-    assert.equal(report.budget.calls, report.calls.length)
+    assert.equal(report.budget?.calls ?? 0, report.calls.length)
     report.success = true
   } catch (error) {
     // No provider response text, transcript or credential is written to this diagnostic.

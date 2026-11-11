@@ -42,7 +42,7 @@ export class MemoryStore {
   pendingReview(note: MemoryNote) {
     const request = this.store.get(KV.memory.reviewRequest(note.id))
     const claim = { kind: note.kind, title: note.title, body: note.body, scope: note.scope }
-    return request?.repository === this.repository && !request.resolvedAt && request.claimFingerprint === fingerprint(claim) ? request : undefined
+    return note.status !== 'retracted' && request?.repository === this.repository && !request.resolvedAt && request.claimFingerprint === fingerprint(claim) ? request : undefined
   }
   private note(row: Record<string, SQLInputValue>): MemoryNote {
     const importance = this.store.get(KV.memory.importance(String(row.id)))
