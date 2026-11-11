@@ -713,3 +713,6 @@ UTC usage 增加可选 capture/consolidation 分类计数，旧的 `{day,calls}`
 整理改为每仓库一个持久唤醒键；快照变化只更新 generation，原有回退/重试语义保留。实际发布 job 标识从本次提供的 revision 集合计算（review-v3），不再信任过时的排队快照标识。完成一页后自动接续，包含合法空提议；新笔记到达 in-flight 阶段不会被旧 generation 删除。旧排队快照原子归并，Note/Evidence/Revision/已审阅标记不删除，归并失败回滚且不能阻断 Runtime。待整理任务数 1 可以覆盖多页笔记，不表示没有积压。
 
 保留证据可用性、strict Schema、revision/CAS 和 verified 人工审核约束，不以提高预算掩盖无效提议或截断证据。有限配额下仍可能积压；本次保证整理可用的预留容量与连续追赶能力，不承诺任意活动量下永久清空队列。部署前备份状态与 profile，旧二进制回滚必须使用可解析旧设置的备份。
+
+
+本轮最终验证：冻结安装、`VITEST_MAX_WORKERS=1 pnpm check`（79 文件 / 1477 测试、typecheck、build）及 `git diff --check` 全部通过。首轮遗漏新增模块的架构目录条目，补齐后文档与全量重新通过，没有跳过或弱化断言。经操作员明确授权，临时部署并 CAS 设置为 1000/300；当日旧 90 次仍作为未分类记账。真实积压从 67 条候选、41 条已审阅、24 个整理任务，推进到 73 条候选全部已审阅、0 个整理任务，仅新增 6 次提取和 5 次整理调用（总计 101）。没有无 Evidence 的笔记，SQLite quick_check 为 ok，处理保持开启。仍有 2 个提取 Effect 被同检查点三次失败保护暂停，属于模型提议校验问题，未清空或伪装完成；reviewed 不等于 verified。仅计数/状态的脱敏验证记录见 `memory-throughput-live-validation.json`。原主工作树的用户修改保持原样，PR 未自动合并。
