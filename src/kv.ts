@@ -6,7 +6,7 @@ import type { PromptVersion } from './app/prompts.ts'
 import type { SettingsVersion } from './app/store.ts'
 import type { SettingsSave } from './policy.ts'
 import type { Retry } from './sources/github.ts'
-import type { MemoryExecutionReceipt, MemoryImportanceRecord, MemoryTopic } from './app/memory/types.ts'
+import type { MemoryExecutionReceipt, MemoryImportanceRecord, MemoryTopic, MemoryReviewRequest } from './app/memory/types.ts'
 
 /** Key of a KV record whose value has type `V`; a plain string represents an untyped key. */
 export type Key<V> = string & { readonly __value?: V }
@@ -27,6 +27,8 @@ export const KV = {
     reviewed: family<{ revision: number; sequence: number; epoch?: number }, [note: string]>('memory-reviewed:'),
     evidenceAudit: record<{ at: string; job: string; checks: { evidenceId: string; status: string }[] }>('memory-evidence-audit'),
     execution: family<MemoryExecutionReceipt, [id: string]>('memory-execution:'),
+    reviewRequest: family<MemoryReviewRequest, [note: string]>('memory-review-request:'),
+    reviewRequestVersion: family<MemoryReviewRequest, [note: string, revision: number]>('memory-review-request-version:'),
     importance: family<MemoryImportanceRecord, [note: string]>('memory-importance:'),
     importanceVersion: family<MemoryImportanceRecord, [note: string, revision: number]>('memory-importance-version:'),
     topic: family<MemoryTopic, [id: string]>('memory-topic:'),

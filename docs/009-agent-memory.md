@@ -625,3 +625,16 @@ DSH 0.2.2-rc.1 的真实 Session 烟测发现 `sessionController.inspect` 已删
 `superagent-test status` 实测 Runtime、Memory、Capture、Consolidate、GitHub、Discord 均 ready，无错误；可选 Feishu/history 保持 paused。当前用户先前启用的 Memory 配置仍是 OpenCode Go / DeepSeek V4.1 Flash、low、每日 90 次；发布默认仍 disabled/预算 0。通过 SSH 转发 3085 后使用现有面板；设置 → Memory 可开关及修改模型/每日调用上限。后续合适的 foreground 测试可以自动沉淀限定执行事实；一般模型经验仍先生成候选，需有效 Host 证据或人工核验后才能进入 verified 搜索。
 
 本次更新前的私有备份目录：`~/.dsh/state/superagent/backups/before-memory-review-20261110-190734/`，包含在线一致 SQLite 备份、profile package/patch、启动助手及更新前后检查记录。功能回滚可在设置中关闭 Memory，保留现有数据；需要恢复 Schema 11 的旧二进制时先停止服务并恢复升级前完整数据库，不能只切分支。若仅回退本轮代码，保留的旧 Schema 12 工作树及 profile/助手备份可用于恢复链接，无需丢弃用户状态；不要用过期 DB 备份覆盖后来新增的任务数据。
+
+
+### 第三轮审阅：Verified 失效必须人工核验（2026-11-11）
+
+确认原 Publisher 没有消费 Resolver 的 sourceChecks，且可仅凭旧 Evidence ID 自动 stale/retract Verified Note；合并也能通过撤销 Verified 源笔记移走已验证知识。新增 Host 门槛：Verified 的 stale/retract、update→stale、移除 Verified 源的 merge 均变成待审提案，不直接改变状态。其他自动撤销/合并必须具备完整可用的 Host sourceChecks，缺失、变化、截断、重复/遗漏检查项均保守转待审。模型输出不能伪造 Host 检查字段。
+
+**ADR-08 / 自由文本的自动失效边界**：原始记录可读只能证明记录存在，不能确定性证明任意自由文本知识应当被否定；本版没有可信的结构化反证认证器。因此不把“available”或另一个 Candidate 升格成 Verified 失效授权。此处主动收紧此前自动纠错的行为，保留核查、冲突发现与人工修订，避免不可靠模型永久撤销已有经验。将来如需自动失效，需要另行定义可由 Host 检验的明确反证类型。
+
+待审元数据存放在现有 SQLite KV，独立单调 revision、幂等签名、历史版本及人工处理结果均保留，与 Effects 进度同事务提交。标记绑定具体 claim fingerprint；不改变原 Note revision、verifiedAt、重要性或 Wiki 来源版本。证据追加和去重不能清除标记。管理端对 Note revision 与 reviewRevision 做联合 CAS；可显式确认原知识仍有效，也可标为 stale/retracted，提交与标记处理原子完成。面板列表和详情显示待审提案、建议操作与来源状态，轮询更新不会悄悄替换操作者确认过的版本。Schema 继续为 12，无需人工搬迁，Engine 和 Worker 授权不变。
+
+本轮基线：VITEST_MAX_WORKERS=2 时 1356 项通过，52 条记忆的真实子进程轮转集成测试超过其 5 秒测试期限；保持源码与断言不变，以 VITEST_MAX_WORKERS=1 完整重跑 pnpm check，75 文件/1357 项以及 typecheck/build 全通过。新增 Publisher/管理 API 测试先复现 32 项失败，再实现保护；保留两次基线记录，没有延长测试超时或跳过断言。
+
+第三轮 P1 阶段：定向 68 项与完整 pnpm check 均通过，76 文件、1395 项测试全通过，typecheck/build 成功；使用 VITEST_MAX_WORKERS=1 保留原测试超时及所有断言。

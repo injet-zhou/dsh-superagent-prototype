@@ -20,7 +20,7 @@ export const EvidenceInput = z.object({
 }).strict()
 export const MemoryBrowse = z.object({ query: z.string().trim().max(200).default(''), status: MemoryStatus.or(z.literal('all')).default('all'),
   offset: z.coerce.number().int().min(0).max(1_000_000).default(0), limit: z.coerce.number().int().min(1).max(100).default(20) }).strict()
-const reviewFields = { revision: z.number().int().positive(), reason: z.string().trim().min(1).max(500) }
+const reviewFields = { revision: z.number().int().positive(), reviewRevision: z.number().int().positive().optional(), reason: z.string().trim().min(1).max(500) }
 export const MemoryReview = z.discriminatedUnion('action', [
   z.object({ action: z.literal('confirm'), ...reviewFields, confirmed: z.literal(true) }).strict(),
   z.object({ action: z.enum(['stale', 'retract']), ...reviewFields }).strict(),
@@ -57,9 +57,17 @@ export interface MemoryExecutionReceipt {
   head: string; at: string; environment: string; resultFingerprint: string
 }
 export interface MemoryRevision { revision: number; action: string; reason: string; at: string; source_job_id: string; before_json: string | null; after_json: string }
-export interface MemoryDetails { note: MemoryNote; evidence: MemoryEvidence[]; revisions: MemoryRevision[]; executions?: MemoryExecutionReceipt[] }
+export type MemorySourceStatus = 'available' | 'changed' | 'missing' | 'unavailable' | 'host-attested' | 'truncated'
+export interface MemorySourceCheck { evidenceId: string; status: MemorySourceStatus }
+export interface MemoryReviewRequest {
+  repository: string; noteRevision: number; revision: number; action: 'stale' | 'retract' | 'merge'; relatedNoteId?: string
+  sources: (Pick<MemoryEvidence, 'id' | 'noteId' | 'ticketId' | 'sessionId' | 'eventRef'> & { status: MemorySourceStatus })[]
+  reason: string; at: string; job: string; signature: string; claimFingerprint: string
+  resolvedAt?: string; resolution?: MemoryReview['action']
+}
+export interface MemoryDetails { note: MemoryNote; evidence: MemoryEvidence[]; revisions: MemoryRevision[]; executions?: MemoryExecutionReceipt[]; pendingReview?: MemoryReviewRequest }
 export interface MemoryPage {
-  items: (Omit<MemoryNote, 'body' | 'repository'> & { snippet: string; evidenceCount: number })[]
+  items: (Omit<MemoryNote, 'body' | 'repository'> & { snippet: string; evidenceCount: number; reviewRequired?: boolean })[]
   counts: Record<MemoryNote['status'], number>; total: number; next_offset: number | null
 }
 export interface MemoryHealth {

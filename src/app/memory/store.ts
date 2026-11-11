@@ -26,7 +26,8 @@ export class MemoryStore {
     const evidence = this.store.db.prepare('SELECT * FROM memory_evidence WHERE note_id=? ORDER BY id LIMIT 100').all(id).map(row => this.evidence(row))
     const revisions = this.store.db.prepare('SELECT revision,action,before_json,after_json,reason,source_job_id,at FROM memory_revision WHERE note_id=? ORDER BY revision DESC LIMIT 100').all(id)
     const executions = evidence.flatMap(item => { const receipt = executionReceipt(this.store, this.repository, item); return receipt ? [receipt] : [] })
-    return { note, evidence, ...executions.length ? { executions } : {}, revisions: revisions.map(row => ({ revision: Number(row.revision), action: String(row.action), reason: String(row.reason),
+    const pendingReview = this.pendingReview(note)
+    return { note, evidence, ...executions.length ? { executions } : {}, ...pendingReview ? { pendingReview } : {}, revisions: revisions.map(row => ({ revision: Number(row.revision), action: String(row.action), reason: String(row.reason),
       at: String(row.at), source_job_id: String(row.source_job_id), before_json: row.before_json === null ? null : String(row.before_json), after_json: String(row.after_json) })) }
   }
   private evidence(row: Record<string, SQLInputValue>): MemoryEvidence {
@@ -37,6 +38,11 @@ export class MemoryStore {
       ...row.claim_fingerprint ? { claimFingerprint: String(row.claim_fingerprint) } : {},
       ...row.source_commit ? { sourceCommit: String(row.source_commit) } : {},
     }
+  }
+  pendingReview(note: MemoryNote) {
+    const request = this.store.get(KV.memory.reviewRequest(note.id))
+    const claim = { kind: note.kind, title: note.title, body: note.body, scope: note.scope }
+    return request?.repository === this.repository && !request.resolvedAt && request.claimFingerprint === fingerprint(claim) ? request : undefined
   }
   private note(row: Record<string, SQLInputValue>): MemoryNote {
     const importance = this.store.get(KV.memory.importance(String(row.id)))
@@ -69,8 +75,9 @@ export class MemoryStore {
     const total = Number(this.store.db.prepare(`SELECT count(*) AS n FROM memory_note WHERE ${where}`).get(...params)?.n ?? 0)
     const items = this.store.db.prepare(`SELECT n.*,(SELECT count(*) FROM memory_evidence e WHERE e.note_id=n.id) AS evidence_count
       FROM memory_note n WHERE ${where} ORDER BY updated_at DESC,id LIMIT ? OFFSET ?`).all(...params, limit, offset).map(row => {
-      const { body, repository: _repository, ...note } = this.note(row)
-      return { ...note, snippet: body.slice(0, 300), evidenceCount: Number(row.evidence_count) }
+      const current = this.note(row), { body, repository: _repository, ...note } = current
+      return { ...note, snippet: body.slice(0, 300), evidenceCount: Number(row.evidence_count),
+        ...this.pendingReview(current) ? { reviewRequired: true } : {} }
     })
     const counts = { candidate: 0, verified: 0, stale: 0, retracted: 0 }
     for (const row of this.store.db.prepare('SELECT status,count(*) AS n FROM memory_note WHERE repository=? GROUP BY status').all(this.repository)) {
@@ -84,7 +91,7 @@ export class MemoryStore {
       const details = this.get(id)
       if (!details || details.note.revision !== revision) throw new MemoryConflict('memory_revision_conflict')
       const before = details.note, anchor = details.evidence[0]
-      if (!anchor || !['candidate', 'stale'].includes(before.status)) throw new MemoryConflict('memory_review_conflict')
+      if (!anchor || !['candidate', 'stale'].includes(before.status) && !(before.status === 'verified' && details.pendingReview)) throw new MemoryConflict('memory_review_conflict')
       const at = new Date().toISOString()
       const note: MemoryNote = { ...before, revision: revision + 1, status: 'verified', updatedAt: at, verifiedAt: at }
       const claim = { kind: note.kind, title: note.title, body: note.body, scope: note.scope }

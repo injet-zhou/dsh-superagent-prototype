@@ -478,6 +478,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/memory-evidence.spec.ts` | Missing/changed/foreign source history and complete evidence-package bounds |
 | `tests/memory-attestation.spec.ts` | Actual ToolRuntime and Node test execution facts, zero-model reuse, rejection and atomic rollback |
 | `tests/memory-knowledge.spec.ts` | Core context selection, cross-Ticket article synthesis, source revision invalidation and rebuild |
+| `tests/memory-publisher.spec.ts` | Verified invalidation review requests, source checks, merge/update bypasses, idempotence and rollback |
 | `tests/memory-dreaming.spec.ts` | Publisher CAS/merge/retract, model capability isolation, global budgets and projection recovery |
 | `tests/memory-evaluation.spec.ts` | Fixed 20-case offline A/B retrieval fixture, without live model quality/cost claims |
 | `tests/prompts.spec.ts` | Prompt validation, assembly and versions |

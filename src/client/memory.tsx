@@ -51,7 +51,8 @@ export function MemoryStatusPage({ status, query }: { status: typeof FILTERS[num
     {data && (data.items.length ? <ul className="dt-list">{data.items.map(note => <li key={note.id} className="dt-row">
       <div className="dt-row-main">
         <div className="dt-row-title"><button className="dt-textlink" type="button" onClick={() => navigate({ page: 'memory', id: note.id })}>
-          {note.title}</button><Tag tone={TONES[note.status]}>{t(`memoryStatus.${note.status}`)}</Tag></div>
+          {note.title}</button><Tag tone={TONES[note.status]}>{t(`memoryStatus.${note.status}`)}</Tag>
+          {note.reviewRequired && <Tag tone="warning">{t('memoryPendingReview')}</Tag>}</div>
         <p className="dt-hint dt-clamp">{note.snippet}</p>
         <div className="dt-row-meta"><span>{note.scope.paths.join(', ') || t('memoryWholeRepository')}</span>
           <LabelValue label={t('memoryEvidenceCount')} value={note.evidenceCount} /><span>{when(note.updatedAt, t('lang'))}</span></div>
@@ -63,25 +64,29 @@ export function MemoryStatusPage({ status, query }: { status: typeof FILTERS[num
 }
 
 export function MemoryNotePage({ id }: { id: string }) {
-  const { t, call, openSession } = usePanel()
+  const { t, call, openSession, navigate } = usePanel()
   const { data, error, reload } = usePoll(() => call('GET memory/:id', { id }), [id])
   const [action, setAction] = useState<MemoryReview['action']>()
   const [reason, setReason] = useState(''), [confirmed, setConfirmed] = useState(false)
+  const [reviewed, setReviewed] = useState<{ id: string; revision: number; reviewRevision?: number }>()
   const review = useAction(async () => {
-    if (!action || !data || !reason.trim() || action === 'confirm' && !confirmed) return
+    if (!action || !data || !reviewed || reviewed.id !== id || !reason.trim() || action === 'confirm' && !confirmed) return
     try {
       await call('POST memory/:id/review', { id, body: action === 'confirm'
-        ? { action, revision: data.note.revision, reason, confirmed: true }
-        : { action, revision: data.note.revision, reason } })
+        ? { action, revision: reviewed.revision, reviewRevision: reviewed.reviewRevision, reason, confirmed: true }
+        : { action, revision: reviewed.revision, reviewRevision: reviewed.reviewRevision, reason } })
       setAction(undefined); setReason(''); setConfirmed(false)
     } catch (failure) {
       if (failure instanceof ApiError && failure.status === 409) {
-        setConfirmed(false); await reload(); throw new Error(t('memoryConflict'))
+        setConfirmed(false); setReviewed(undefined); if (action !== 'confirm') setAction(undefined)
+        await reload(); throw new Error(t('memoryConflict'))
       }
       throw failure
     }
   }, { reload })
-  const start = (next: MemoryReview['action']) => { setAction(next); setReason(''); setConfirmed(false) }
+  const relatedNoteId = data?.pendingReview?.relatedNoteId
+  const snapshot = () => data ? { id, revision: data.note.revision, reviewRevision: data.pendingReview?.revision } : undefined
+  const start = (next: MemoryReview['action']) => { setAction(next); setReviewed(snapshot()); setReason(''); setConfirmed(false) }
   return <>
     <PageHead title={data?.note.title ?? t('memoryNote')} />
     <LoadState error={error} loading={!data} />
@@ -93,7 +98,7 @@ export function MemoryNotePage({ id }: { id: string }) {
       <pre className="dt-memory-body">{data.note.body}</pre>
       <Hint>{t('memoryBoundary')}</Hint>
       {data.note.status !== 'retracted' && <div className="dt-row-buttons">
-        {['candidate', 'stale'].includes(data.note.status) && <Button variant="outline" disabled={review.busy} onClick={() => start('confirm')}>{t('memoryConfirm')}</Button>}
+        {(['candidate', 'stale'].includes(data.note.status) || data.pendingReview) && <Button variant="outline" disabled={review.busy} onClick={() => start('confirm')}>{t('memoryConfirm')}</Button>}
         {data.note.status === 'verified' && <Button variant="outline" disabled={review.busy} onClick={() => start('stale')}>{t('memoryStale')}</Button>}
         <Button variant="ghost" disabled={review.busy} onClick={() => start('retract')}>{t('memoryRetract')}</Button>
       </div>}
@@ -102,12 +107,22 @@ export function MemoryNotePage({ id }: { id: string }) {
         <Field label={t('memoryReviewReason')}><textarea className="dt-textarea" rows={3} required maxLength={500} value={reason}
           onChange={event => setReason(event.target.value)} /></Field>
         {action === 'confirm' && <label className="dt-memory-confirm"><input type="checkbox" checked={confirmed}
-          onChange={event => setConfirmed(event.target.checked)} />{t('memoryReviewDeclaration')}</label>}
-        <div className="dt-row-buttons"><Button type="submit" variant="primary" disabled={review.busy || !reason.trim() || action === 'confirm' && !confirmed}>
+          onChange={event => { setConfirmed(event.target.checked); setReviewed(event.target.checked ? snapshot() : undefined) }} />{t('memoryReviewDeclaration')}</label>}
+        <div className="dt-row-buttons"><Button type="submit" variant="primary" disabled={review.busy || !reason.trim() || reviewed?.id !== id || action === 'confirm' && !confirmed}>
           {t(action === 'confirm' ? 'memorySubmitConfirmation' : 'memorySaveReview')}</Button>
           <Button disabled={review.busy} onClick={() => setAction(undefined)}>{t('cancel')}</Button></div>
         </Fields>
       </form>}
+      {data.pendingReview && <Section title={t('memoryPendingReview')}>
+        <div className="dt-row-meta"><LabelValue label={t('memoryProposedAction')} value={valueLabel(t, 'memoryProposed', data.pendingReview.action)} />
+          <span>{when(data.pendingReview.at, t('lang'))}</span></div>
+        <p>{data.pendingReview.reason}</p>
+        {relatedNoteId && <Button variant="ghost" onClick={() => navigate({ page: 'memory', id: relatedNoteId })}>{t('memoryCompareNote')}</Button>}
+        <ul className="dt-list">{data.pendingReview.sources.map(source => <li key={source.id} className="dt-row"><div className="dt-row-main">
+          <span>{valueLabel(t, 'memorySourceState', source.status)}</span><code className="dt-memory-ref">{source.eventRef}</code>
+          <Button variant="ghost" size="sm" onClick={() => { void openSession(source.sessionId) }}>{t('memoryOpenSession')}</Button>
+        </div></li>)}</ul>
+      </Section>}
       <Section title={t('memorySources')}>
         <ul className="dt-list">{data.evidence.map(item => <li key={item.id} className="dt-row"><div className="dt-row-main">
           <div className="dt-row-title"><span>{valueLabel(t, 'memoryEvidence', item.kind)}</span>

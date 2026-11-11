@@ -4,7 +4,8 @@ import type { HealthEntry } from '../../infra/health.ts'
 import type { Store } from '../store.ts'
 import { KV } from '../../kv.ts'
 import { MEMORY_BOUNDARY, MemoryQuery, MemoryReview, type MemoryBrowse, type MemoryHealth, type MemoryQuery as Query } from './types.ts'
-import { MemoryStore } from './store.ts'
+import { MemoryConflict, MemoryStore } from './store.ts'
+import { fingerprint } from './security.ts'
 import { readMatches, searchPlan } from './retrieval.ts'
 import { importanceOf, MemoryKnowledge } from './knowledge.ts'
 
@@ -92,9 +93,20 @@ export class MemoryService {
   details(id: string) { return this.publisher().get(id) }
   review(id: string, input: MemoryReview) {
     const review = MemoryReview.parse(input), memory = this.publisher()
-    if (review.action === 'confirm') return memory.confirm(id, review.revision, review.reason)
-    memory.update(id, review.revision, { status: review.action === 'stale' ? 'stale' : 'retracted' }, [], review.reason, `human-review:${id}:${review.revision + 1}`)
-    return memory.get(id)!
+    return this.store.atomic(() => {
+      const before = memory.get(id)
+      if (!before || before.note.revision !== review.revision || before.pendingReview?.revision !== review.reviewRevision) throw new MemoryConflict('memory_review_conflict')
+      if (review.action === 'confirm') memory.confirm(id, review.revision, review.reason)
+      else memory.update(id, review.revision, { status: review.action === 'stale' ? 'stale' : 'retracted' }, [], review.reason, 'human-review:' + id + ':' + (review.revision + 1))
+      if (before.pendingReview) {
+        const resolved = { ...before.pendingReview, revision: before.pendingReview.revision + 1, resolvedAt: new Date().toISOString(),
+          resolution: review.action, job: fingerprint(['human-review', id, review.revision + 1]) }
+        this.store.set(KV.memory.reviewRequest(id), resolved)
+        this.store.set(KV.memory.reviewRequestVersion(id, resolved.revision), resolved)
+        memory.notify()
+      }
+      return memory.get(id)!
+    })
   }
   status(): MemoryHealth {
     const day = new Date().toISOString().slice(0, 10), usage = this.store.get(KV.memory.usage)
@@ -116,10 +128,11 @@ export class MemoryService {
       const memory = this.publisher()
       const matches = await readMatches(this.store.db, searchPlan(memory.repository, memory.fts, parsed), AbortSignal.any([this.analysisSignal(), ...signal ? [signal] : []]))
       const items = matches.flatMap(match => {
-        const note = memory.get(match.id)?.note
-        return note?.status === 'verified' && note.revision === match.revision ? [note] : []
-      }).map(note => ({ id: note.id, title: note.title, snippet: note.body.slice(0, 300),
+        const details = memory.get(match.id), note = details?.note
+        return note?.status === 'verified' && note.revision === match.revision ? [details!] : []
+      }).map(({ note, pendingReview }) => ({ id: note.id, title: note.title, snippet: note.body.slice(0, 300),
         kind: note.kind, status: note.status, revision: note.revision, scope: note.scope, verifiedAt: note.verifiedAt,
+        ...pendingReview ? { reviewRequired: true } : {},
         evidenceCount: this.publisher().evidenceCount(note.id), read: `memory/${note.id}` }))
       return { boundary: MEMORY_BOUNDARY, items }
     } catch { this.degraded('memory_retrieval_unavailable'); return { boundary: MEMORY_BOUNDARY, items: [], degraded: 'memory_retrieval_unavailable' } }

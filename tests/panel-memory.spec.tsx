@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
+import { act } from 'react'
 import { expect, it, vi } from 'vitest'
-import { usePanel, mount, at, click, type, field, text, find, tab } from './fixtures/panel.tsx'
+import { usePanel, mount, at, click, type, field, text, find, tab, settle } from './fixtures/panel.tsx'
 import { server } from './fixtures/panel-server.ts'
 import { zh } from '../src/client/locales.ts'
 import { exampleNote } from './fixtures/memory.ts'
@@ -118,4 +119,34 @@ it('reviews candidate sources and changes status only after explicit confirmatio
   await type(field<HTMLTextAreaElement>('说明'), 'This claim is no longer useful')
   await click('保存变更')
   expect(server.memory.note.note).toMatchObject({ status: 'retracted', revision: 4 })
+})
+
+it.each([false, true])('keeps verified memory visible and binds confirmation to the reviewed request, polled=%s', async polled => {
+  const details = seed('protected', 'Protected knowledge', 'verified')
+  details.pendingReview = { repository: details.note.repository, revision: 1, noteRevision: 1, action: 'retract',
+    sources: [{ id: 'proof', noteId: 'protected', ticketId: 't1', sessionId: 'worker-t1', eventRef: 'seq:3:' + 'a'.repeat(64), status: 'missing' }],
+    reason: 'The analyzer may be wrong; original source is missing.', at: '2026-11-11T00:00:00Z', job: 'fixture', signature: 'fixture', claimFingerprint: 'fixture' }
+  at({ page: 'memory' }); await mount()
+  expect(text()).toContain('待审提案')
+  await click('Protected knowledge')
+  expect(text()).toContain('The analyzer may be wrong; original source is missing.')
+  expect(text()).toContain('来源缺失')
+  await click('确认有效'); await type(field<HTMLTextAreaElement>('说明'), 'I checked the exact claim and its sources')
+  await click(find('我已核对原始来源和适用范围', 'label'))
+  details.pendingReview.revision = 2
+  details.pendingReview.reason = 'A newer request needs an explicit decision'
+  if (polled) {
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')) }); await settle()
+    expect(text()).toContain('A newer request needs an explicit decision')
+  }
+  await click('提交确认')
+  expect(server.requests.filter(request => request.path === 'memory/protected/review').at(-1)?.body).toMatchObject({ revision: 1, reviewRevision: 1 })
+  expect(details.note).toMatchObject({ status: 'verified', revision: 1 })
+  expect(text()).toContain('这条记忆已被修改，已刷新内容。请重新核对后再提交。')
+  expect((find('提交确认') as HTMLButtonElement).disabled).toBe(true)
+  await click(find('我已核对原始来源和适用范围', 'label')); await click('提交确认')
+  expect(server.requests.filter(request => request.path === 'memory/protected/review').at(-1)?.body).toMatchObject({ revision: 1, reviewRevision: 2 })
+  expect(details.note).toMatchObject({ status: 'verified', revision: 2 })
+  expect(text()).not.toContain('待审提案')
 })

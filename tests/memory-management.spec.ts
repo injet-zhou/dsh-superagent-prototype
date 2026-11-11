@@ -1,5 +1,6 @@
 import { expect, it, onTestFinished, vi } from 'vitest'
 import { startRuntime, feishu } from './fixtures/host.ts'
+import { publish } from '../src/app/memory/dreaming.ts'
 import { exampleEvidence, exampleNote } from './fixtures/memory.ts'
 import type { MemoryPage } from '../src/app/memory/types.ts'
 import type { ApiResponse } from '../src/app/api.ts'
@@ -84,4 +85,27 @@ it('rolls back human proof and note publication together and requires fresh conf
       .toMatchObject({ status: 'verified', revision: 4 })
     expect(memory.get('atomic-review')!.evidence.filter(item => item.kind === 'human')).toHaveLength(2)
   } finally { vi.useRealTimers() }
+})
+
+it('requires explicit review of the current invalidation request and permits reaffirming verified knowledge', async () => {
+  const h = await startRuntime(store => { store.saveSettings({ ...store.settings(), memory: { enabled: true } }) })
+  onTestFinished(() => h.stop())
+  const memory = h.runtime.memory.publisher()
+  memory.create(exampleNote, [exampleEvidence], 'protected', 'verified', 'protected')
+  const offered = [memory.get('protected')!]
+  const proposal = { action: 'retract', id: 'protected', expectedRevision: 1,
+    evidenceIds: offered[0]!.evidence.map(item => item.id), reason: 'Check conflicting evidence', uncertainty: 'No verified contradiction' }
+  publish(memory, 'first-request', [proposal], offered)
+  expect((await h.api('GET', 'memory?status=verified')).body.items).toMatchObject([{ id: 'protected', reviewRequired: true }])
+  const request = { action: 'confirm', revision: 1, confirmed: true, reason: 'Original knowledge is still correct' }
+  expect((await h.api('POST', 'memory/protected/review', request)).status).toBe(409)
+  publish(memory, 'changed-source', [proposal], offered, offered[0]!.evidence.map(item => ({ evidenceId: item.id, status: 'changed' as const })))
+  expect((await h.api('GET', 'memory/protected')).body.pendingReview).toMatchObject({ revision: 2 })
+  expect((await h.api('POST', 'memory/protected/review', { ...request, reviewRevision: 1 })).status).toBe(409)
+  const confirmed = await h.api('POST', 'memory/protected/review', { ...request, reviewRevision: 2 })
+  expect(confirmed.status).toBe(200)
+  expect(confirmed.body.note).toMatchObject({ status: 'verified', revision: 2 })
+  expect(confirmed.body.pendingReview).toBeUndefined()
+  expect(confirmed.body.evidence).toContainEqual(expect.objectContaining({ kind: 'human', supportsVerification: true }))
+  expect((await h.api('POST', 'memory/protected/review', { ...request, revision: 2 })).status).toBe(409)
 })

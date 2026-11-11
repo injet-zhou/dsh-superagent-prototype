@@ -1,6 +1,6 @@
 /** Capability-limited analysis contract. An analyzer proposes JSON; it has no publisher, tools or Engine. */
 import { z } from 'zod'
-import { MemoryId, MemoryImportance, MemoryTopicInput, NoteInput, type MemoryDetails, type MemoryTopic } from './types.ts'
+import { MemoryId, MemoryImportance, MemoryTopicInput, NoteInput, type MemoryDetails, type MemoryTopic, type MemorySourceCheck } from './types.ts'
 import { redact } from './security.ts'
 
 export const MEMORY_INPUT_BYTES = 100_000
@@ -29,7 +29,7 @@ export interface MemoryAnalysisInput {
   events: readonly { ref: string; type: string; text: string; sessionId?: string; evidenceId?: string }[]
   notes: readonly MemoryDetails[]
   relatedNotes?: readonly MemoryDetails[]
-  sourceChecks?: readonly { evidenceId: string; status: 'available' | 'changed' | 'missing' | 'unavailable' | 'host-attested' | 'truncated' }[]
+  sourceChecks?: readonly MemorySourceCheck[]
   topics?: readonly MemoryTopic[]
 }
 export interface MemoryAnalyzer {

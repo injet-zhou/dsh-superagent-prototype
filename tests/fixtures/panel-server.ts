@@ -302,9 +302,9 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     const all = Object.values(server.memory), counts = { candidate: 0, verified: 0, stale: 0, retracted: 0 }
     for (const { note } of all) counts[note.status]++
     const items = all.filter(({ note }) => (!query.status || query.status === 'all' || note.status === query.status)
-      && (!query.query || `${note.title} ${note.body}`.includes(query.query))).map(({ note, evidence }) => {
+      && (!query.query || `${note.title} ${note.body}`.includes(query.query))).map(({ note, evidence, pendingReview }) => {
       const { body, repository: _repository, ...fields } = note
-      return { ...fields, snippet: body.slice(0, 300), evidenceCount: evidence.length }
+      return { ...fields, snippet: body.slice(0, 300), evidenceCount: evidence.length, ...pendingReview ? { reviewRequired: true } : {} }
     })
     return { items, total: items.length, next_offset: null, counts, health: { enabled: server.settings.memory.enabled, fts: true,
       retrieval: server.settings.memory.retrieval, autoCapture: server.settings.memory.autoCapture, dreaming: server.settings.memory.dreaming,
@@ -316,9 +316,10 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
   'POST memory/:id/review': { body: true, answer: ({ params, body }) => {
     const details = server.memory[params.id]
     if (!details) return refuse(404, 'Memory note not found')
-    if (body.revision !== details.note.revision) return refuse(409, 'memory_revision_conflict')
+    if (body.revision !== details.note.revision || body.reviewRevision !== details.pendingReview?.revision) return refuse(409, 'memory_revision_conflict')
     details.note = { ...details.note, status: body.action === 'confirm' ? 'verified' : body.action === 'retract' ? 'retracted' : 'stale',
       revision: details.note.revision + 1 }
+    delete details.pendingReview
     return details
   } },
   'GET repositories': { answer: () => [{ id: 'default', name: 'Default', repository: 'acme/widgets', configured: true }] },

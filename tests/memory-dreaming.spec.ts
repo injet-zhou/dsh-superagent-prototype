@@ -47,6 +47,7 @@ it('CAS rejects stale snapshots and atomically rolls back earlier proposals in t
     evidenceIds: details.evidence.map(item => item.id), ...audit }))
   expect(() => publish(memory, 'conflict', proposals, offered)).toThrow(MemoryConflict)
   expect(memory.get(one.id)!.note.status).toBe('verified')
+  expect(memory.get(one.id)!.pendingReview).toBeUndefined()
   expect(store.get(KV.memory.published(fingerprint('conflict')))).toBeUndefined()
 })
 
@@ -56,8 +57,8 @@ it('merges exact duplicates with both provenance chains, refuses contradictions,
   const source = memory.create(exampleNote, [{ ...exampleEvidence, eventRef: `seq:8:${fingerprint('second event')}`, supportsVerification: false }], 'source')
   const offered = [memory.get(target.id)!, memory.get(source.id)!]
   const merge = { action: 'merge', sourceId: source.id, sourceRevision: 1, targetId: target.id, targetRevision: 1, ...audit }
-  publish(memory, 'merge', [merge], offered)
-  publish(memory, 'merge', [merge], offered)
+  publish(memory, 'merge', [merge], offered, offered.flatMap(item => item.evidence.map(source => ({ evidenceId: source.id, status: 'available' }))))
+  publish(memory, 'merge', [merge], offered, offered.flatMap(item => item.evidence.map(source => ({ evidenceId: source.id, status: 'available' }))))
   expect(memory.get(target.id)!.note.revision).toBe(2)
   expect(memory.get(target.id)!.evidence).toHaveLength(2)
   expect(memory.get(source.id)!.note.status).toBe('retracted')
@@ -211,7 +212,7 @@ it('retries a consolidation CAS conflict against a fresh snapshot and keeps the 
   propose.mockResolvedValueOnce([{ action: 'retract', id: note.id, expectedRevision: 2, evidenceIds: details.evidence.map(item => item.id), ...audit }])
   f.store.db.exec('UPDATE effect SET due=0')
   await effects.idle('memory-consolidate')
-  expect(f.memory.get(note.id)!.note.status).toBe('retracted')
+  expect(f.memory.get(note.id)!).toMatchObject({ note: { status: 'stale', revision: 2 }, pendingReview: { action: 'retract', sources: [{ status: 'unavailable' }] } })
   expect(effects.pending('memory-consolidate')).toBe(false)
   expect(propose).toHaveBeenCalledTimes(2)
 })
@@ -313,14 +314,15 @@ it('rolls back proposals and review progress together when a review checkpoint c
   f.store.db.prepare(`CREATE TRIGGER reject_review BEFORE INSERT ON kv WHEN NEW.key LIKE '${KV.memory.reviewed.prefix}%' BEGIN SELECT RAISE(ABORT,'review unavailable'); END`).run()
   dreaming.enqueue(); effects.start(); await effects.idle('memory-consolidate')
   expect(f.memory.get(note.id)!.note).toMatchObject({ status: 'verified', revision: 1 })
+  expect(f.memory.get(note.id)!.pendingReview).toBeUndefined()
   expect(f.store.get(KV.memory.reviewed(note.id))).toBeUndefined()
   expect(f.store.keys(KV.memory.published)).toEqual([])
   expect(effects.pending('memory-consolidate')).toBe(true)
   f.store.db.exec('DROP TRIGGER reject_review; UPDATE effect SET due=0')
   await effects.idle('memory-consolidate')
-  expect(f.memory.get(note.id)!.note).toMatchObject({ status: 'stale', revision: 2 })
+  expect(f.memory.get(note.id)!).toMatchObject({ note: { status: 'verified', revision: 1 }, pendingReview: { revision: 1, action: 'stale' } })
   expect(f.store.get(KV.memory.reviewed(note.id))).toMatchObject({ revision: 1 })
-  expect(f.memory.reviewable('stale', 5)).toMatchObject([{ id: note.id, revision: 2 }])
+  expect(f.memory.reviewable('verified', 5)).toEqual([])
   expect(propose).toHaveBeenCalledTimes(2)
   expect(effects.pending('memory-consolidate')).toBe(false)
 })
@@ -381,7 +383,22 @@ it.each(['duplicate', 'contradiction'])('compares a new %s with unchanged histor
   const f = memoryFixture(), effects = new Effects(f.store, f.board), lifetime = new AbortController()
   const config = MemoryConfigSchema.parse({ enabled: true, dreaming: true, dailyCallBudget: 5 })
   f.store.saveSettings({ ...f.store.settings(), memory: config }); f.service.configure(config)
-  const a = f.memory.create(exampleNote, [exampleEvidence], 'ticketA', 'verified', 'history-a')
+  const context = new Context(), histories = new Map<string, Session>()
+  context.reflect.provide('sessionController', { inspect: async (id: string) => {
+    const session = histories.get(id)
+    if (!session) throw new Error('Missing fixture source')
+    return { meta: session.header, events: session.snapshotEvents() }
+  } })
+  const sourceFor = (ticketId: string, body: string) => {
+    f.store.tickets.save({ id: ticketId, title: ticketId, decisionId: 'd', mandate: { scope: 'migration', strength: 'explicit', policyVersion: 'v',
+      actor: { source: 'github', id: 'alice' }, basis: { via: 'listed' } }, assignments: [], origin: { triggerId: 't', triggerIds: ['t'] },
+      channels: [], inputs: [], undelivered: [], createdAt: '', updatedAt: '', execution: { name: 'fixture', directory: f.directory, assignment: 'a' } })
+    const base = Session.create(SessionId('worker-' + ticketId)), session = Session.create(base.id, [], { ...base.header, cwd: f.directory })
+    const event = session.append('user/message', { id: MessageId(ticketId), role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: body }] }, { surfaceOp: 'append' })
+    histories.set(String(session.id), session)
+    return { ...exampleEvidence, ticketId, sessionId: String(session.id), eventRef: 'seq:' + event.seq + ':' + fingerprint(event) }
+  }
+  const a = f.memory.create(exampleNote, [sourceFor('ticketA', exampleNote.body)], 'ticketA', 'verified', 'history-a')
   let rounds = 0
   const propose = vi.fn(async (input: Readonly<MemoryAnalysisInput>) => {
     if (++rounds === 1) return []
@@ -391,7 +408,7 @@ it.each(['duplicate', 'contradiction'])('compares a new %s with unchanged histor
       targetId: old.note.id, targetRevision: old.note.revision, ...audit }] : [{ action: 'stale', id: old.note.id,
       expectedRevision: old.note.revision, evidenceIds: old.evidence.map(item => item.id), ...audit }]
   })
-  const dreaming = new MemoryDreaming({ store: f.store, memory: f.service, effects, context: new Context(), lifetime: lifetime.signal,
+  const dreaming = new MemoryDreaming({ store: f.store, memory: f.service, effects, context, lifetime: lifetime.signal,
     analyzer: { propose }, paused: () => false })
   onTestFinished(async () => { lifetime.abort(); await effects.drain() })
   effects.start(); dreaming.enqueue(); await effects.idle('memory-consolidate')
@@ -399,14 +416,15 @@ it.each(['duplicate', 'contradiction'])('compares a new %s with unchanged histor
   for (let index = 0; index < 6; index++) f.memory.create({ ...exampleNote, title: `Unrelated observation ${index}`, body: `Independent fixture ${index}`,
     scope: { paths: [`unrelated-${index}.txt`] } }, [{ ...exampleEvidence, supportsVerification: false }], `filler-${index}`, 'candidate', `filler-${index}`)
   f.memory.create(mode === 'duplicate' ? exampleNote : { ...exampleNote, body: 'The old migration workflow fails with the new API.' },
-    [{ ...exampleEvidence, ticketId: 'ticketB', sessionId: 'worker-ticketB', supportsVerification: false }], 'ticketB', 'candidate', 'new-b')
+    [{ ...sourceFor('ticketB', 'New execution observation'), supportsVerification: false }], 'ticketB', 'candidate', 'new-b')
   dreaming.enqueue(); await effects.idle('memory-consolidate')
   expect(propose.mock.calls[1]![0].relatedNotes).toEqual(expect.arrayContaining([expect.objectContaining({ note: expect.objectContaining({ id: a.id }) })]))
-  expect(f.memory.get(a.id)!.note.status).toBe(mode === 'duplicate' ? 'verified' : 'stale')
+  expect(f.memory.get(a.id)!.note.status).toBe('verified')
+  if (mode === 'contradiction') expect(f.memory.get(a.id)!.pendingReview).toMatchObject({ action: 'stale', sources: [{ status: 'available' }] })
   expect(f.memory.get('new-b')!.note.status).toBe(mode === 'duplicate' ? 'retracted' : 'candidate')
 })
 
-it('corrects misleading evidence summaries against the original scoped Transcript and neighboring context', async () => {
+it('flags misleading summaries for review using the original Transcript without automatically invalidating verified knowledge', async () => {
   const f = memoryFixture(), effects = new Effects(f.store, f.board), lifetime = new AbortController(), context = new Context()
   const config = MemoryConfigSchema.parse({ enabled: true, dreaming: true, dailyCallBudget: 2 })
   f.store.saveSettings({ ...f.store.settings(), memory: config }); f.service.configure(config)
@@ -426,7 +444,7 @@ it('corrects misleading evidence summaries against the original scoped Transcrip
   const dreaming = new MemoryDreaming({ store: f.store, memory: f.service, effects, context, lifetime: lifetime.signal, analyzer: { propose }, paused: () => false })
   onTestFinished(async () => { lifetime.abort(); await effects.drain() })
   effects.start(); dreaming.enqueue(); await effects.idle('memory-consolidate')
-  expect(f.memory.get(note.id)!.note.status).toBe('stale')
+  expect(f.memory.get(note.id)!).toMatchObject({ note: { status: 'verified', revision: 1 }, pendingReview: { action: 'stale', sources: [{ status: 'available' }] } })
   expect(inspect).toHaveBeenCalledOnce()
   const offered = propose.mock.calls[0]![0]
   expect(offered.events.some(item => item.text.includes('old procedure'))).toBe(true)
