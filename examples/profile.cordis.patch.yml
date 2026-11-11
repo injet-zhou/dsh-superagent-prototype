@@ -19,3 +19,6 @@
 # Discord is optional: create a private bot token file, then configure channel/thread IDs on the Source.
 # - id: dsh-superagent-discord
 #   disabled: false
+# WeCom is optional: create a private secret file with the intelligent robot's botId and secret, then configure groups on the Source.
+# - id: dsh-superagent-wecom
+#   disabled: false

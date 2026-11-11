@@ -54,6 +54,7 @@ export interface HttpHost {
   readonly setupProblem?: SetupProblem | undefined
   readonly feishuProblem?: SetupProblem | undefined
   readonly discordProblem?: SetupProblem | undefined
+  readonly wecomProblem?: SetupProblem | undefined
   configured(): boolean
   links(): LinkTarget
   ticketEnvironment(ticket: Ticket): Variable[]
@@ -105,8 +106,8 @@ function machineView({ stateDir, promptMaxChars, admissionContextMaxPages, admis
 function setupView(runtime: HttpHost) {
   const resolved = runtime.configured() ? runtime.deployment : undefined
   return {
-    machine: machineView(runtime.machine), problem: runtime.setupProblem ?? null, feishuProblem: runtime.feishuProblem ?? null, ...(runtime.discordProblem ? { discordProblem: runtime.discordProblem } : {}),
-    accounts: resolved ? { repository: resolved.repository, agent: resolved.github.login, ...(resolved.discord ? { discord: { botId: resolved.discord.botId, name: resolved.discord.name } } : {}), feishu: resolved.feishu ? { appId: resolved.feishu.appId, brand: resolved.feishu.brand, botId: resolved.feishu.botId, name: resolved.feishu.name } : null } : null,
+    machine: machineView(runtime.machine), problem: runtime.setupProblem ?? null, feishuProblem: runtime.feishuProblem ?? null, ...(runtime.discordProblem ? { discordProblem: runtime.discordProblem } : {}), ...(runtime.wecomProblem ? { wecomProblem: runtime.wecomProblem } : {}),
+    accounts: resolved ? { repository: resolved.repository, agent: resolved.github.login, ...(resolved.discord ? { discord: { botId: resolved.discord.botId, name: resolved.discord.name } } : {}), ...(resolved.wecom ? { wecom: { botId: resolved.wecom.botId } } : {}), feishu: resolved.feishu ? { appId: resolved.feishu.appId, brand: resolved.feishu.brand, botId: resolved.feishu.botId, name: resolved.feishu.name } : null } : null,
   }
 }
 /** Build the `/orchestrator/api/state` response consumed by the management panel and `scripts/dsh-superagent status` (`docs/006-deployment.md`). */
@@ -119,7 +120,7 @@ export function stateView(runtime: HttpHost) {
 }
 const views = (runtime: HttpHost): ViewHost => ({ store: runtime.store, sources: runtime.sources, links: runtime.links() })
 const setupState = (runtime: HttpHost): SetupState => ({ deployment: runtime.configured() ? runtime.deployment : undefined,
-  problem: runtime.setupProblem, feishuProblem: runtime.feishuProblem, discordProblem: runtime.discordProblem })
+  problem: runtime.setupProblem, feishuProblem: runtime.feishuProblem, discordProblem: runtime.discordProblem, wecomProblem: runtime.wecomProblem })
 export type StateView = ReturnType<typeof stateView>
 /** Builds a ticket's detail view; `environment` is empty while waiting for setup because it requires the resolved deployment. */
 function ticketPage(runtime: HttpHost, id: string) {
@@ -175,7 +176,7 @@ function routes(runtime: HttpHost, catalog: () => ApiResponse<'GET repositories'
     'GET repositories': catalog,
     'GET state': () => stateView(runtime),
     'GET overview': () => overview(views(runtime), runtime.health, policyVersion(store.settings()),
-      executorLoad(store, runtime.executor.activeCount()), runtime.setupProblem ?? runtime.feishuProblem ?? runtime.discordProblem),
+      executorLoad(store, runtime.executor.activeCount()), runtime.setupProblem ?? runtime.feishuProblem ?? runtime.discordProblem ?? runtime.wecomProblem),
     'GET search': ({ query }) => search(views(runtime), query.q ?? '', runtime.sourceLinks),
     'GET sources': () => sourcesStatus(views(runtime), runtime.health, setupState(runtime)),
     'GET settings': () => settingsView(store, runtime.sources, runtime.health, setupState(runtime), runtime.machine.stateDir),
@@ -258,9 +259,11 @@ export function registerHttp(ctx: Context, runtime: HttpHost,
         const settings = host.store.settings(), tickets = host.store.tickets.open()
         const health = Object.fromEntries(Object.entries(host.repositoryHealth ?? host.health).filter(([key]) =>
           settings.sources.feishu?.enabled !== false || !['feishu', 'history', 'sync:feishu'].includes(key))
-          .filter(([key]) => settings.sources.discord?.enabled !== false || !['discord', 'sync:discord'].includes(key)))
+          .filter(([key]) => settings.sources.discord?.enabled !== false || !['discord', 'sync:discord'].includes(key))
+          .filter(([key]) => settings.sources.wecom?.enabled !== false || !['wecom', 'sync:wecom'].includes(key)))
         const problems = [host.setupProblem, settings.sources.feishu?.enabled !== false ? host.feishuProblem : undefined,
-          settings.sources.discord?.enabled !== false ? host.discordProblem : undefined].flatMap(problem => problem ? [problem] : [])
+          settings.sources.discord?.enabled !== false ? host.discordProblem : undefined,
+          settings.sources.wecom?.enabled !== false ? host.wecomProblem : undefined].flatMap(problem => problem ? [problem] : [])
         const state = error || problems.length || Object.values(health).some(item => item.state === 'error' || item.code === 'setupPending') ? 'error'
           : health.runtime?.state === 'starting' ? 'starting' : settings.paused ? 'paused' : health.runtime?.state ?? 'starting'
         let queued = 0, attention = 0

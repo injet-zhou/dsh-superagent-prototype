@@ -8,6 +8,7 @@ import { z } from 'zod'
 import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 import { runAsWorker, sameDirectory, withoutDirectory, workerBin } from './infra/environment.ts'
 import { DiscordApi, DiscordUser } from './infra/discord.ts'
+import { readWecomSecret } from './infra/wecom-secret.ts'
 import { SetupError } from './setup.ts'
 
 const reason = (error: unknown): string => error instanceof Error ? error.message : String(error)
@@ -60,8 +61,13 @@ export const GithubAccountsSchema = z.object({
 })
 export const DiscordBotSchema = z.object({ tokenFile: z.string().trim().refine(value => !value || isAbsolute(value), 'Expected an absolute token file path').default('') })
 export const FeishuBotSchema = z.object({ cli: z.string().trim().default('') })
+/** A WeCom robot's private secret file, and the WebSocket address of a private deployment. */
+export const WecomBotSchema = z.object({
+  secretFile: z.string().trim().refine(value => !value || isAbsolute(value), 'Expected an absolute secret file path').default(''),
+  wsUrl: z.string().trim().refine(value => !value || /^wss:\/\/\S+$/.test(value), 'Expected a wss:// URL').default(''),
+})
 /** Source configuration keys that affect deployment setup and trigger a restart when changed. */
-export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape), discord: Object.keys(DiscordBotSchema.shape) }
+export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape), discord: Object.keys(DiscordBotSchema.shape), wecom: Object.keys(WecomBotSchema.shape) }
 
 export interface Deployment extends Machine {
   repository: string
@@ -69,8 +75,11 @@ export interface Deployment extends Machine {
   github: { cli: string; login: string; noreply: string; provider?: 'github' | 'gitea'; baseUrl?: string }
   feishu?: FeishuBot
   discord?: { tokenFile: string; botId: string; name: string }
+  wecom?: WecomBot
 }
 export interface FeishuBot { cli: string; appId: string; brand: 'feishu' | 'lark'; botId: string; name: string }
+/** The resolved WeCom robot; its secret stays in `secretFile` and is read only when connecting. */
+export interface WecomBot { secretFile: string; botId: string; wsUrl?: string }
 
 /** Validates an instance root, including a reverse-proxy subpath, without accepting credentials or query strings. */
 export function repositoryBaseUrl(value: string): string {
@@ -187,4 +196,14 @@ export async function resolveDiscordBot(config: unknown, signal: AbortSignal): P
     if (!user.bot) throw new Error('Discord account is not a bot')
     return { tokenFile, botId: user.id, name: user.username }
   } catch (error) { throw new SetupError('discordBotFailed', { output: reason(error) }) }
+}
+
+/** Verifies the private secret file and records the robot it names; the secret itself never enters the resolved deployment. */
+export async function resolveWecomBot(config: unknown): Promise<Deployment['wecom']> {
+  const { secretFile, wsUrl } = WecomBotSchema.parse(config ?? {})
+  if (!secretFile) return undefined
+  try {
+    const secret = await readWecomSecret(secretFile)
+    return { secretFile, botId: secret.botId, ...(wsUrl ? { wsUrl } : {}) }
+  } catch (error) { throw new SetupError('wecomBotFailed', { output: reason(error) }) }
 }

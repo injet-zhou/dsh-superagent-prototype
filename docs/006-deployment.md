@@ -6,7 +6,7 @@ Use this guide to install, configure and operate dsh-superagent. It covers accou
 
 - **A dedicated DeepSeek Harness profile**, called `superagent` in this guide. Create it from the Web profile template. It loads the bundle and serves its panel on `127.0.0.1`. Keep it separate from the profile you work in: standalone mode changes process-wide `PATH` and git settings (multi-repository mode uses scoped subprocess environments), and its process needs independent restarts and upgrades.
 - **An agent repository account, on GitHub or Gitea.** The agent comments, pushes branches and opens pull requests through a CLI configured only for that account. Workers run in DeepSeek Harness for both providers.
-- **Optional:** a Feishu bot for chat requests.
+- **Optional:** a Feishu, Discord or WeCom chat bot for chat requests.
 
 Plugin configuration holds the state directory and machine limits. Use the panel for everything else: Sources for the repository and accounts, Policy for allowed lists, and Execution for worker directories and commands.
 
@@ -155,6 +155,28 @@ On first activation of a channel, the host records Discord's last_message_id (or
 
 Replies disable automatic user/role/everyone mentions, use a stable Discord nonce with `enforce_nonce`, and record a private receipt under `<stateDir>/discord-outbox`. Keep that directory with the database across restarts. At most once every five minutes during sends, receipt maintenance removes entries older than 30 days or beyond the newest 1000 only when the canonical Outbox confirms their outgoing ID is sent. Pending, unknown and legacy receipts are retained; deleting the transport file never deletes the canonical sent record. Discord only enforces nonce uniqueness for a few minutes: a crash after the remote send but before the local receipt can still duplicate a reply if recovery occurs after that window. Messages are limited to 100 words and 2000 characters; rewrite longer updates rather than splitting them. The Source skill exposes bounded message/parent/history reads through `orchestrator_read`, and replies through `orchestrator_reply`. Attachment links are preserved, without automatic downloads. Message edits/deletions, reactions other than the bot's own receipt and processing marks, slash commands, thread discovery and DM discovery are outside this adapter's scope. See the official [message endpoints](https://docs.discord.com/developers/resources/message) and [rate-limit rules](https://docs.discord.com/developers/topics/rate-limits).
 
+### WeCom intelligent robot (optional)
+
+A WeCom (企业微信) intelligent robot (智能机器人) works with GitHub or Gitea and can run alongside Feishu and Discord. It uses the robot's official WebSocket long connection through `@wecom/aibot-node-sdk`, so no public callback URL or gateway is needed. The worker remains a DSH Session.
+
+1. In the WeCom admin console, create an intelligent robot and note its **robot ID** and **secret**. Add the robot to each group where people may ask it, and tell people they may message it directly. WeCom delivers only group messages that mention the robot; a direct message is addressed to it.
+2. Outside the repository, create a private JSON file owned by the service's OS user, for example `/srv/agent/wecom.json` with mode `0600` (or stricter) and content `{"botId":"<robot id>","secret":"<secret>"}`. Enter only its absolute path in settings. On POSIX, the host rejects files granting any access to the group or other users, with a chmod 600 remediation message. The host reads the file to verify the robot and again when connecting; the secret never enters settings, worker environment variables or command arguments. Agents still share the operator's OS user, so file permissions are a deployment guardrail, not a process isolation boundary.
+3. Enable `dsh-superagent-wecom` in the profile. After restart, set **Sources → WeCom → Robot secret file**, and optionally **Private deployment WebSocket address** for a deployment whose admin console shows a different `wss://` address. Enter only the path, never the secret. A secret-file or WebSocket-address change is panel-only and restarts setup.
+4. Choose the receiving scopes. **Direct messages** receives all single conversations with the robot. Each row under **Groups** gets its own admission row and display name; enable **Other groups → @ only** to receive mentions from groups that are not listed. If you do not know a group's ID, enable **Other groups → @ only** first, then add the group after its first message arrives. A group message is always a mention because WeCom delivers no other group messages.
+5. Under **Eval → On each Source → WeCom**, list the WeCom **UserIDs** allowed to originate work. Display names never grant authorization. An allowed user's direct message, or a mention in a received group, can become an explicit request.
+
+A `source:wecom` settings block is:
+
+```json
+{"enabled":true,"config":{"secretFile":"/srv/agent/wecom.json","wsUrl":"","chats":[{"chatId":"<group id>","name":"Team"}],"otherChats":"mentions","directMessages":true}}
+```
+
+The Policy adds `"wecom":{"allowed":[{"id":"<userid>","name":"Alice"}]}` under `policy.sources`; admission rows are each listed group, `other` for unlisted groups, and `direct`. A secret-file change is panel-only, checked by reading the private file, and restarts setup. An unset secret file or invalid robot check pauses only WeCom and is reported on its Source card; a setup recheck retries an account failure. The service CLI includes `wecomProblem` as the `wecom` field in status JSON and explains WeCom setup failures during start, without treating a paused optional Source as a lasting component error. Worker environment variables contain only `DSH_SUPERAGENT_WECOM_BOT` and, for a WeCom-origin ticket, `DSH_SUPERAGENT_WECOM_CHAT`.
+
+Replies are Markdown sent through the robot's active-send channel to the group chat ID or the person's UserID, and record a private receipt under `<stateDir>/wecom-outbox`. Keep that directory with the database across restarts. WeCom has no server-side idempotency key for active sends: at most once every five minutes, receipt maintenance removes entries older than 30 days or beyond the newest 1000 only when the canonical Outbox confirms their outgoing ID is sent, so a crash after WeCom accepted a message but before its local receipt was written can duplicate that reply. Replies are limited to 100 words. A connection drop is retried by the SDK with exponential backoff; if another process connects with the same robot, WeCom disconnects this one and the Source reports an error that needs the other client stopped and dsh-superagent restarted. Only one service should use a robot.
+
+WeCom's WebSocket channel has no message-history API. The Source stores the callbacks it receives: a direct or group Thread therefore contains only messages received while the Source was connected, and a reconnect or downtime gap is not backfilled. `trigger/<trigger-id>` and `thread/<thread-key>` expose what was stored; there is no `wecom/` original-message resource. Text, voice transcripts, mixed text/image items, and image/file/video labels are kept; attachments are not downloaded, and quoted text is included as context. Enter-chat, template-card and feedback events are not ingested. Message edits, deletions and recalls are not observed.
+
 ## Install
 
 Run this block once, on a machine that has no `superagent` profile yet:
@@ -175,7 +197,7 @@ Run the profile-creation command only for a new installation. If the profile alr
 
 ## Machine configuration
 
-Copy [examples/profile.cordis.patch.yml](../examples/profile.cordis.patch.yml) to `~/.dsh/profiles/superagent/cordis.patch.yml`, replacing that file, and replace every `<placeholder>`. For Feishu or Discord, also enable the corresponding `dsh-superagent-feishu` or `dsh-superagent-discord` entry there. The `webserver` entry sets the panel's port.
+Copy [examples/profile.cordis.patch.yml](../examples/profile.cordis.patch.yml) to `~/.dsh/profiles/superagent/cordis.patch.yml`, replacing that file, and replace every `<placeholder>`. For Feishu, Discord or WeCom, also enable the corresponding `dsh-superagent-feishu`, `dsh-superagent-discord` or `dsh-superagent-wecom` entry there. The `webserver` entry sets the panel's port.
 
 | Key | Required | Meaning |
 | --- | --- | --- |
@@ -259,7 +281,7 @@ Agents may rely on these routes and fields. The other routes in `src/app/api.ts`
 
 | Request | Answer |
 | --- | --- |
-| `GET state` | What every page reads: `setup`, with `problem` and `feishuProblem`, plus optional `discordProblem`, each `null` or a setup problem with `place`, `code`, `values` and `detail`, and `accounts` once setup resolved them; `health`, an entry per part, below, with `state` (`starting`, `ready`, `paused` or `error`), `detail` and `at`; `load`, the Executor Sessions `running`, the Tickets `queued` and `maxWorkers`; `paused`; and `masterId` |
+| `GET state` | What every page reads: `setup`, with `problem` and `feishuProblem`, plus optional `discordProblem` and `wecomProblem`, each `null` or a setup problem with `place`, `code`, `values` and `detail`, and `accounts` once setup resolved them; `health`, an entry per part, below, with `state` (`starting`, `ready`, `paused` or `error`), `detail` and `at`; `load`, the Executor Sessions `running`, the Tickets `queued` and `maxWorkers`; `paused`; and `masterId` |
 | `GET settings` | `blocks`: `policy`, `eval` and `executor`, each with its `value` and its `revision`; `sources`: the Source instances, each with `id`, `kind`, `installed`, its block's `value`, `{"enabled": …, "config": {…}}`, and `revision`, its kind's form, and its setup `problem` when it has one; `policyVersion`; and `environment`, the execution environment's `root` and `variables` |
 | `GET sources` | Each Source's status: `state` (`missing`, `off`, `error`, `setup`, `starting`, `paused` or `ready`), the `health` of its parts, its setup `problem`, the last day's `stats`, the Triggers it `filtered` in that day, and the messages it `dropped` in that day, newest drop first, each with its `channel`, `preview`, `ticket` (`id` and `title`) when it was for one, its `thread` when the store has it, and `dropped.at` and `dropped.reason`, `channelGone` or `channelIgnored` |
 | `PUT settings/<block>` with `{"value": …, "revision": n}` | Saves one block: `saved`, the block's new `revision`, `policy_changed` and `restarting`. `value` is the whole block, as `GET settings` holds it; a missing key takes its default |
@@ -279,7 +301,7 @@ Health entries are grouped by responsibility:
 | `assessment`, `launch`, `delivery`, `relay`, `notice`, `reply` | Stored work described in [003 Execution](003-execution.md); delivery counts waiting work, while reply covers Channel messages |
 | `worker` | Executor Session event handling; appears after its first failure |
 | `memory`, `memory-capture`, `memory-consolidate` | Repository memory degradation, durable capture and consolidation backlog; errors do not change Runtime readiness |
-| `github`, `feishu`, `history`, `discord` | Source polling, events and history recovery |
+| `github`, `feishu`, `history`, `discord`, `wecom` | Source polling, events and history recovery |
 | `sync:<source id>` | Allowed-list synchronization |
 
 A refusal has a status and `error`, its English text:
@@ -299,7 +321,7 @@ To explicitly enable model-backed Capture, also set `autoCapture: true`, `analyz
 
 The same scoped management API provides `GET memory` (status/query filters, bounded limit/offset, counts and health), `GET memory/<id>` (note, evidence and revisions), and `POST memory/<id>/review`. A review carries `action` (`confirm`, `stale` or `retract`), `revision` and `reason`; confirmation additionally requires `confirmed: true`. Invalid fields are rejected and stale revisions return 409. These endpoints are management capabilities and are never Worker tools. `POST memory/consolidate` returns `queued`; `POST memory/rebuild` returns `rebuilt`. Consolidation requires Memory and Dreaming to be enabled and obeys pause, shutdown and budget limits. Repeated manual requests advance through unreviewed pages, including after a model returns no proposals. Reviewed revisions and rotation order persist in the existing KV table; changed revisions become eligible again. Each primary Note also queries related historical Notes regardless of previous review, using exact text, overlapping paths and title terms. The Host resolves original transcript anchors into redacted, bounded evidence packages; missing, changed and truncated sources are explicit and observable. Rebuild regenerates FTS, the prompt snapshot and `stateDir/memory/index.md` plus `wiki/<id>.md` and `topics/<topic-id>.md`, without invoking a model. Source Notes remain the audit layer; topic records hold source-linked architecture summaries, procedures and explicitly labeled inferences, with exact Note revisions and evidence IDs. Host publication checks all sources and links under CAS; invalidated or changed sources withdraw the affected prose until another review. Derived article definitions and their revision audit live in SQLite KV; Markdown can be rebuilt from that state. Re-synthesizing article definitions from Notes requires the analyzer. SQLite is authoritative; editing these Markdown files never changes memory. A missing or unsafe projection path reports `memory_projection_failed` without failing Workers. Health also distinguishes partial history, unavailable analysis and exhausted budget.
 
-- `source:github`, `source:feishu`, `source:discord`: `{"enabled": true, "config": {…}}`. GitHub's config has `repository` and `cli`, and the switches `observeIssues`, `observePulls`, `observeComments` and `observeCi`, off by default, which receive every new Issue, new pull request and comment in the repository and the default branch's CI; Feishu's has `cli`, `chats` as `[{"chatId": "oc_…", "name": "…", "listen": "mentions"}]` (or `"all"`), `directMessages`, and `otherChats` as `"none"` or `"mentions"`.
+- `source:github`, `source:feishu`, `source:discord`, `source:wecom`: `{"enabled": true, "config": {…}}`. GitHub's config has `repository` and `cli`, and the switches `observeIssues`, `observePulls`, `observeComments` and `observeCi`, off by default, which receive every new Issue, new pull request and comment in the repository and the default branch's CI; Feishu's has `cli`, `chats` as `[{"chatId": "oc_…", "name": "…", "listen": "mentions"}]` (or `"all"`), `directMessages`, and `otherChats` as `"none"` or `"mentions"`. WeCom's has `secretFile`, optional `wsUrl`, `chats` as `[{"chatId": "…", "name": "…"}]`, `directMessages`, and `otherChats` as `"none"` or `"mentions"`.
 - `policy`: `{"rules": […], "sources": {"github": {"allowed": [{"id": "<login>"}], "bots": [{"id": "dependabot[bot]"}]}, "feishu": {"allowed": [{"id": "ou_…", "name": "…"}], "syncChat": "oc_…", "admission": {"oc_…": {"unlistedAddressed": "explicit"}}}}}`. `bots` lists the bots whose messages may become inferred candidates. An `admission` row is keyed by chat id, `other` or `direct` for Feishu, and by `issues`, `pulls`, `comments` or `ci` for GitHub; an unset cell takes its default (see [002 Authorization](002-authorization.md)).
 - `eval`: `mode`, `timeoutSeconds` and `model`.
 - `executor`: `model`, `maxWorkers`, `directory`, `prepare` and `blockedCommands`. The processing pause is a setting of its own, `paused`, which `POST executor/pause` sets.
@@ -317,7 +339,7 @@ curl -s -X PUT -H 'x-orchestrator-request: 1' -H 'content-type: application/json
 
 Setup uses the DeepSeek Harness subprocess service, as worker shells do. It removes environment variables whose names contain KEY, PASSWORD, SECRET or TOKEN.
 
-Setup verifies the selected repository and the agent's push access, writes the worker environment, and checks that git uses the selected provider's agent credential helper. A Feishu or Discord setup failure pauses only that Source. Disabled optional Sources are not probed. Changing their enabled state reloads the bundle to update account bindings and worker shims; disabling one with a broken account does not require its account check to pass.
+Setup verifies the selected repository and the agent's push access, writes the worker environment, and checks that git uses the selected provider's agent credential helper. A Feishu, Discord or WeCom setup failure pauses only that Source. Disabled optional Sources are not probed. Changing their enabled state reloads the bundle to update account bindings and worker shims; disabling one with a broken account does not require its account check to pass.
 
 The process environment that setup writes:
 
@@ -328,7 +350,7 @@ A file in `worker-bin` or `worker-gitconfig` that dsh-superagent did not write s
 
 ## Try it
 
-From an allowed repository account, open an Issue or post a comment containing `@<agent login> <request>`. Within a polling interval (one minute by default), Overview should show a Ticket. The agent acknowledges the request, works in its own Session and directory, and delivers in the original conversation. For Feishu, mention the bot in a configured chat.
+From an allowed repository account, open an Issue or post a comment containing `@<agent login> <request>`. Within a polling interval (one minute by default), Overview should show a Ticket. The agent acknowledges the request, works in its own Session and directory, and delivers in the original conversation. For Feishu or WeCom, mention the bot in a configured chat; a WeCom direct message needs no mention.
 
 ## Upgrade
 
