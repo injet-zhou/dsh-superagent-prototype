@@ -1,0 +1,43 @@
+{
+  "at": "2026-11-11T09:34:57.830300+00:00",
+  "scope": "Operator-authorized real-history replay; metadata only",
+  "baseMain": "99b56b9",
+  "temporaryFix": "152888c",
+  "deadlineMs": 45000,
+  "dailyCallBudget": 90,
+  "usedCalls": 56,
+  "notesByStatus": {
+    "candidate": 28
+  },
+  "checkpointBefore": [
+    62,
+    474
+  ],
+  "checkpointAfter": [
+    336,
+    848
+  ],
+  "partialCaptures": 0,
+  "notesWithoutEvidence": 0,
+  "projectionFiles": 28,
+  "health": {
+    "runtime": "ready",
+    "memory": "error",
+    "memory-capture": "ready",
+    "memory-consolidate": "ready"
+  },
+  "evidenceSourceStatuses": {
+    "truncated": 20
+  },
+  "memoryProblem": "memory_invalid_proposals",
+  "schema": 12,
+  "quickCheck": "ok",
+  "processingPaused": false,
+  "checks": {
+    "files": 78,
+    "tests": 1462,
+    "typecheck": "passed",
+    "build": "passed",
+    "diffCheck": "passed"
+  }
+}

@@ -699,3 +699,6 @@ Capture remains a single writer per Repository, but a delayed/held Session no lo
 经操作员明确授权后，在合并的 main 上恢复真实积压。采集已产生有来源的候选并推进两个 Session 的检查点，但随后合法批次触发 `memory_analysis_timeout`，证明固定 15 秒对当前模型/历史不足。仅将 Capture/Dreaming 共用的模型等待上限提高到 45 秒；Session flush/inspection 的 15 秒上限保持不变。12 KB Capture 输入、2,048 输出 Token、单次全局模型租约、UTC 每日调用额度、同检查点三次失败保护及取消/关闭信号均保持原约束。
 
 新增公共分析接口回归：模型在第 20 秒返回严格结果时应成功且仅记账一次（旧 15 秒实现确定失败）；非协作模型仍由 45 秒期限中止等待，保留租约直到真实结束，并禁止迟到发布。测试使用可控时间推进，不提高 Vitest 超时。此修复不迁移数据库，不改变 WorkerSlot 或授权。
+
+
+45 秒后续修复的最终检查：冻结安装与 `VITEST_MAX_WORKERS=1 pnpm check` 通过（78 文件 / 1462 测试，含 typecheck/build），`git diff --check` 通过。经已授权的临时部署，真实检查点由 62、474 推进到 336、848，生成 28 条有 Evidence 的 candidate 与 28 个 Wiki 投影，partial capture 为 0，SQLite quick_check 为 ok；当天已记账 56 次，90 次上限和此前记账均保留。提取/整理队列为 ready，历史继续后台处理。这不等于全部 Memory health 为绿：仍观察到长 turn 证据包 `truncated` 和严格拒绝的 `memory_invalid_proposals`，不能把未复核来源或模型错误升级为 verified。详情仅保存脱敏的计数/状态元数据于 `memory-live-deadline-validation.json`，不含会话、笔记正文或来源 ID。
