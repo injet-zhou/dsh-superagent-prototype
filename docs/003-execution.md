@@ -218,3 +218,6 @@ Automatic Memory invalidation cannot withdraw a verified claim: claim replacemen
 
 
 Memory capture runs after a confirmed stable turn in its own durable queue. A failed capture never holds a WorkerSlot or fails its Ticket. Batches are bounded by their serialized redacted payload (12 KB); failed cursors retain their checkpoint and stop making model attempts after three analysis/publication failures until Memory settings change or the next UTC day. Capture stays single-writer, while a failed Session does not hold back other Tickets.
+
+
+Capture and consolidation share a per-repository finite daily model budget. An explicit consolidation reservation makes Capture yield unused reserved capacity without occupying a WorkerSlot. Consolidation coalesces snapshot wakeups into one durable Effect and continues through all unreviewed pages; changed in-flight work advances its generation, while unchanged scheduling retains retry backoff. Budget exhaustion and restart preserve notes, review progress and queued work.
