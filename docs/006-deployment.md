@@ -5,7 +5,7 @@ Use this guide to install, configure and operate dsh-superagent. It covers accou
 ## What runs
 
 - **A dedicated DeepSeek Harness profile**, called `superagent` in this guide. Create it from the Web profile template. It loads the bundle and serves its panel on `127.0.0.1`. Keep it separate from the profile you work in: standalone mode changes process-wide `PATH` and git settings (multi-repository mode uses scoped subprocess environments), and its process needs independent restarts and upgrades.
-- **An agent repository account, on GitHub or Gitea.** The agent comments, pushes branches and opens pull requests through a CLI configured only for that account. Workers run in DeepSeek Harness for both providers.
+- **An agent repository account, on GitHub, Gitea or self-managed GitLab.** The agent comments, pushes branches and opens pull requests through a CLI configured only for that account. Workers run in DeepSeek Harness for both providers.
 - **Optional:** a Feishu bot for chat requests.
 
 Plugin configuration holds the state directory and machine limits. Use the panel for everything else: Sources for the repository and accounts, Policy for allowed lists, and Execution for worker directories and commands.
@@ -27,7 +27,7 @@ For configuration-file-based deployments, the equivalent `dsh-superagent` profil
         name: Frontend
 ```
 
-Restart the service, open the panel, and select each repository in the header. On its Sources page set its GitHub/Gitea repository and CLI; then configure its allowed users, execution prepare command and optional prompts. Each repository initializes independently. A pending probe or hard failure in an additional repository does not delay configured repositories or hide the panel; its catalog entry shows starting/error and details. State and settings reads do not wait for setup. Mutations during active setup return 503 so a settings write cannot race an old startup snapshot; retry once setup has finished. A context that could not open its Store returns 503 for scoped operations while remaining visible in the catalog. Adding entries does not grant any user access to the new repository.
+Restart the service, open the panel, and select each repository in the header. On its Sources page set its GitHub/Gitea/GitLab repository and CLI; then configure its allowed users, execution prepare command and optional prompts. Each repository initializes independently. A pending probe or hard failure in an additional repository does not delay configured repositories or hide the panel; its catalog entry shows starting/error and details. State and settings reads do not wait for setup. Mutations during active setup return 503 so a settings write cannot race an old startup snapshot; retry once setup has finished. A context that could not open its Store returns 503 for scoped operations while remaining visible in the catalog. Adding entries does not grant any user access to the new repository.
 
 IDs must be unique lowercase identifiers starting with a letter (up to 48 characters); `default` is reserved. Keep IDs stable: each additional repository stores its SQLite database, locks, shims and workspaces under `<stateDir>/repositories/<id>`. The default repository keeps its original state directory, database, history and Sessions. Changing an ID creates a new repository context; removing one stops its runtime but retains its files. Do not copy an existing database into another repository context or repoint a populated context at a different repository/provider. Account changes and configuration changes currently restart the whole bundle, with the existing Assignment recovery behavior.
 
@@ -50,7 +50,7 @@ Both presets run with `danger-full-access` as the operator's OS user and read me
 ## Prerequisites
 
 - Node.js 22.19+ or 24+, pnpm, git 2.32+, Python 3.8+ and tmux
-- For GitHub: GitHub CLI (`gh`) 2.48 or later and a repository on github.com; GitHub Enterprise Server is not supported. For Gitea: Python 3.8+ and the bundled `scripts/dsh-gitea` CLI described below.
+- For GitHub: GitHub CLI (`gh`) 2.48 or later and a repository on github.com; GitHub Enterprise Server is not supported. For GitLab: Python 3.8+ and the bundled `scripts/dsh-gitlab` CLI described below. For Gitea: Python 3.8+ and the bundled `scripts/dsh-gitea` CLI described below.
 - To create a checkout per Ticket, keep a local clone from which the prepare command can add worktrees. With Gitea, use its HTTPS clone URL. Standard SSH URLs for the configured host are rewritten through the instance root (including its reverse-proxy subpath); other SSH transports are disabled rather than using operator keys. Install `git-lfs` if that repository uses Git LFS.
 - A model provider configured for DeepSeek Harness. dsh-superagent uses the profile's default model unless the Eval or Execution settings name another.
 - For Feishu: `lark-cli` (tested with 1.0.90) and a Feishu or Lark app with a bot
@@ -111,6 +111,38 @@ Validated against Gitea 1.24.6 using its [REST API](https://docs.gitea.com/api/)
 - Review feedback is delivered with its file and diff_position. A diff position is explicitly labeled as not a file line number; line is included only when the instance actually returns line or original_line. Replies go to the PR conversation with a reference to the review comment; GitHub inline-reply and GraphQL thread-resolution operations are not emulated. Resolve remaining threads manually or supply instance-specific instructions for supported REST operations.
 - The repository skill gives Gitea REST commands for reading context, creating PRs and closing superseded PRs. Automatic merge and GitHub-specific reviewer coauthor commands are disabled by the default Gitea instructions; people merge. Existing customized prompts must also be reviewed for GitHub-only commands. This does not change the DSH Executor or add another coding-agent runtime.
 
+### Agent GitLab account
+
+Use these steps for self-managed GitLab, including instances behind a reverse-proxy subpath. The repository Source is **GitHub / Gitea / GitLab**; its saved id, Policy namespace `policy.sources.github`, read resources and `DSH_SUPERAGENT_GITHUB_*` variables retain their historical names. Worker execution remains in DSH Sessions. Different repository contexts may select different providers.
+
+1. Create a dedicated agent account with Developer or higher access to the project and permission to push ticket branches. Give it a personal access token with `api` scope (which also permits Git over HTTPS). Do not put the token in chat, the panel or the checkout.
+2. Save `/srv/agent/gitlab.json` outside the checkout, owned by the agent's OS user with mode `0600`:
+
+   ```json
+   { "baseUrl": "https://gitlab.example.com/code", "token": "<agent access token>" }
+   ```
+
+3. Create an executable wrapper `/srv/agent/bin/agent-gitlab` using absolute paths:
+
+   ```sh
+   #!/bin/sh
+   exec python3 /srv/dsh-superagent/scripts/dsh-gitlab --config /srv/agent/gitlab.json "$@"
+   ```
+
+4. In **Sources → GitHub / Gitea / GitLab**, select **GitLab (self-managed)**, enter the instance root, project path (for example `group/subgroup/project`) and wrapper path. Omit `/api/v4` from the instance root. HTTPS is required except on loopback; private certificate authorities can be configured through Python's `SSL_CERT_FILE`. TLS verification stays enabled. CLI and Source URLs must agree. Saving checks the account and project/group access level, and refuses archived or read-only projects. Optional `commitEmail` overrides the account email.
+5. Add allowed GitLab usernames under the repository Source's Policy and configure the ordinary worktree prepare command with the GitLab HTTPS clone URL. Workers receive an isolated `gitlab` CLI and project-scoped Git credential helper; `gh`, `gitea` and `glab` fail with a provider instruction. Standard SSH origins are rewritten through the configured HTTP root; other SSH transports fail without using operator keys.
+
+#### GitLab compatibility
+
+The adapter uses REST v4 [projects](https://docs.gitlab.com/api/projects/), [to-dos](https://docs.gitlab.com/api/todos/), [notes](https://docs.gitlab.com/api/notes/), [discussions](https://docs.gitlab.com/api/discussions/) and [commit statuses](https://docs.gitlab.com/api/commits/). Local integration tests exercise the bundled CLI against a simulated GitLab API; a live self-managed instance has not been tested.
+
+- Pending account to-dos identify mentioned Issue/MR conversations. The adapter leaves them pending and checks the conversations from their own saved cursors; it does not mark account notifications done. Already subscribed conversations are polled independently. Repository-wide Issue/MR and comment observation is optional and starts when enabled. Body edits do not become new requests. System notes never authorize work.
+- GitLab Issue `#1` and MR `!1` have independent IID sequences. Internal Issue thread IDs are `github:issue-1`, while MR thread IDs are `github:1`; replies, subscriptions, retries and cursors stay separate. Model reads use `github/issues/1` and `github/pulls/1`, with `issue-1` also accepted in Issue resources. Worker reports use the native MR IID as `pr_number`; source environment variables expose native IIDs and `refs/merge-requests/<iid>/head`.
+- Discussion notes preserve authors, root/reply IDs and explicit diff file/line information. Host acknowledgements and reports are posted on the Issue/MR conversation with retry markers. Workers can reply directly through the documented Discussions API. Approval rules and automatic merge are left to people; GitHub GraphQL and reviewer coauthor commands do not apply.
+- CI reads published commit statuses, including GitLab pipeline job statuses exposed by that endpoint. It does not fetch raw job logs or implement approval-rule APIs. An empty status list is unavailable, never a successful build.
+- Pagination follows GitLab `Link` or `X-Next-Page` headers, rejects other instances and does not follow redirects with credentials. Reads fail before cursor advancement when incomplete. Each CLI subprocess has a 30-second deadline and 128-request budget, each adapter operation a shared 30-second deadline, and each full polling round a 45-second deadline. Broad observation may require many requests on large projects; narrow observation when repeated deadlines occur. Normalized streams provide ETags without trusting unchanged parent metadata.
+- Keep existing populated contexts bound to their original provider and repository; add a new context to move to GitLab. Review customized prompts for provider-specific commands.
+
 ### Feishu bot (optional)
 
 1. Create a self-built app with the bot capability. Grant it the permissions to receive message events, read and send chat messages, and read chat members, then publish the app version.
@@ -135,7 +167,7 @@ Validated against Gitea 1.24.6 using its [REST API](https://docs.gitea.com/api/)
 
 ### Discord bot (optional)
 
-Discord works with GitHub or Gitea and can run alongside Feishu. The worker remains a DSH Session. This Source uses Discord REST API v10 polling, so no public webhook endpoint or Gateway connection is required.
+Discord works with GitHub, Gitea or GitLab and can run alongside Feishu. The worker remains a DSH Session. This Source uses Discord REST API v10 polling, so no public webhook endpoint or Gateway connection is required.
 
 1. Create an application and bot in the [Discord Developer Portal](https://discord.com/developers/applications). Enable **Message Content Intent** to read non-mention history and receive-all channels. Invite the bot using the `bot` OAuth2 scope with **View Channel**, **Read Message History**, **Send Messages**, **Send Messages in Threads**, and **Add Reactions** where needed. The bot must have access to each configured thread; add it to private threads. Use a dedicated bot token, never a user account token or webhook URL.
 2. Outside the repository, create a private JSON file owned by the service's OS user, for example `/srv/agent/discord.json` with mode `0600` (or stricter) and content `{"token":"<bot token>"}`. Enter only its absolute path in settings. On POSIX, the host rejects token files granting any access to the group or other users, with a chmod 600 remediation message. The host reads the file and sends the token exclusively to `https://discord.com/api/v10` with Bot authentication, refuses redirects, and never exports the token into worker environment variables or command arguments. Agents still share the operator's OS user, so file permissions are a deployment guardrail, not a process isolation boundary.

@@ -1,10 +1,10 @@
-Workers use bash with gh for provider github or gitea for provider gitea (and lark-cli when Feishu is configured) to retrieve ticket-relevant context beyond subscribed objects.
+Workers use bash with gh for provider github, gitea for provider gitea, or gitlab for provider gitlab (and lark-cli when Feishu is configured) to retrieve ticket-relevant context beyond subscribed objects.
 Subscription controls push delivery, not CLI read access.
 The orchestrator uses orchestrator_eval_read for proactive assessment.
 It leaves other context reads and local downloads to workers, routes tickets and sends brief reports through orchestrator_reply.
 Do not alter remote state, authorization, or configuration while reading.
 Use gh for every GitHub call; specify --repo or an explicit API path.
-Use gitea api for every Gitea call, as the repository skill describes; GitHub CLI and GraphQL commands do not apply to Gitea.
+Use gitea api for Gitea and gitlab api for GitLab, as the repository skill describes; GitHub CLI and GraphQL commands do not apply to Gitea or GitLab.
 The watcher remains limited to the deployment's repository; linked context may be read elsewhere.
 Feishu uses --as bot; unavailable content does not authorize switching to the user's identity.
 Start with lark-cli <domain> --help, schema <service.resource.method>, or skills read lark-im.

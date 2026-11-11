@@ -5,7 +5,7 @@ import { sameName } from '../infra/text.ts'
 import { GithubAccountsSchema } from '../deployment.ts'
 import { CliError, validItems, type Tally } from '../infra/commands.ts'
 import { ciCounts, ciFact, ciFailures, ciSummary, githubThreadContext, pullChecks } from './github-read.ts'
-import { branchCiTrigger, ciTrigger, commentTrigger, CommentSchema, githubAddress, issueTrigger, IssueSchema, pullTrigger, SOURCE }
+import { branchCiTrigger, ciTrigger, commentTrigger, CommentSchema, githubAddress, issueTrigger, IssueSchema, pullTrigger, SOURCE, repositoryNumber, displayNumber, type RepositoryNumber }
   from './github-trigger.ts'
 import { githubLink, sendGithub } from './github-channel.ts'
 import type { GithubComment, PullRef } from './github-trigger.ts'
@@ -37,20 +37,20 @@ function scopeOf(meta: Record<string, unknown>): Scope | undefined {
 }
 export const githubKind: SourceKind<GithubConfig> = {
   kind: SOURCE,
-  title: { zh: 'GitHub / Gitea', en: 'GitHub / Gitea' },
-  description: { zh: '代码仓库账号；接收通知、Issue 与 PR 讨论、提交状态变化和 PR 合并关闭。Gitea 配置见部署文档。', en: 'Repository account: notifications, Issue and PR discussion, commit status changes, and PR merge or close. See deployment documentation for Gitea setup.' },
+  title: { zh: 'GitHub / Gitea / GitLab', en: 'GitHub / Gitea / GitLab' },
+  description: { zh: '代码仓库账号；接收通知、Issue 与 PR 讨论、提交状态变化和 PR 合并关闭。Gitea/GitLab 配置见部署文档。', en: 'Repository account: notifications, Issue and PR discussion, commit status changes, and PR merge or close. See deployment documentation for Gitea/GitLab setup.' },
   schema: GithubConfigSchema,
   fields: [
     { key: 'provider', type: 'select', label: { zh: '代码托管平台', en: 'Repository provider' }, options: [
-      { value: 'github', label: { zh: 'GitHub', en: 'GitHub' } }, { value: 'gitea', label: { zh: 'Gitea', en: 'Gitea' } }] },
-    { key: 'baseUrl', type: 'text', label: { zh: 'Gitea 实例地址', en: 'Gitea instance URL' },
+      { value: 'github', label: { zh: 'GitHub', en: 'GitHub' } }, { value: 'gitea', label: { zh: 'Gitea', en: 'Gitea' } }, { value: 'gitlab', label: { zh: 'GitLab（自部署）', en: 'GitLab (self-managed)' } }] },
+    { key: 'baseUrl', type: 'text', label: { zh: 'Gitea / GitLab 实例地址', en: 'Gitea / GitLab instance URL' },
       hint: { zh: '例如 https://git.example.com，可含反向代理子路径。GitHub 留空；必须与智能体 CLI 配置一致。', en: 'For example https://git.example.com, optionally with a reverse-proxy subpath. Leave empty for GitHub; must match the agent CLI configuration.' } },
-    { key: 'commitEmail', type: 'text', advanced: true, label: { zh: 'Gitea 提交邮箱', en: 'Gitea commit email' },
-      hint: { zh: '留空时使用 Gitea 账号返回的邮箱。', en: 'Empty uses the email returned by the Gitea account.' } },
-    { key: 'repository', type: 'text', pattern: '[A-Za-z0-9_.\\-]+/[A-Za-z0-9_.\\-]+', label: { zh: '监听的仓库', en: 'Repository' },
-      hint: { zh: '写作 owner/name。这个来源接收这个仓库的通知和讨论；保存时检查智能体账号能否推送到它，然后重启 dsh-superagent。', en: 'Written owner/name. This Source receives the repository\'s notifications and discussion; saving checks that the agent account can push to it, then restarts dsh-superagent.' } },
+    { key: 'commitEmail', type: 'text', advanced: true, label: { zh: 'Gitea / GitLab 提交邮箱', en: 'Gitea / GitLab commit email' },
+      hint: { zh: '留空时使用仓库账号返回的邮箱。', en: 'Empty uses the email returned by the repository account.' } },
+    { key: 'repository', type: 'text', pattern: '[A-Za-z0-9_.\\-]+(/[A-Za-z0-9_.\\-]+)+', label: { zh: '监听的仓库', en: 'Repository' },
+      hint: { zh: '写作 owner/name；GitLab 支持 group/subgroup/name。这个来源接收这个仓库的通知和讨论；保存时检查智能体账号能否推送到它，然后重启 dsh-superagent。', en: 'Written owner/name; GitLab supports group/subgroup/name. This Source receives the repository\'s notifications and discussion; saving checks that the agent account can push to it, then restarts dsh-superagent.' } },
     { key: 'cli', type: 'text', label: { zh: '智能体的仓库 CLI', en: 'Agent repository CLI' },
-      hint: { zh: 'GitHub 使用独立账号的 gh 包装脚本；Gitea 使用部署文档中的 dsh-gitea 包装脚本。保存时检查身份与推送权限，然后重启。', en: 'Use an account-isolated gh wrapper for GitHub, or a dsh-gitea wrapper as documented for Gitea. Saving checks identity and push access, then restarts.' } },
+      hint: { zh: 'GitHub 使用独立账号的 gh 包装脚本；Gitea/GitLab 使用部署文档中的 dsh-gitea/dsh-gitlab 包装脚本。保存时检查身份与推送权限，然后重启。', en: 'Use an account-isolated gh wrapper for GitHub, or a dsh-gitea/dsh-gitlab wrapper as documented for Gitea/GitLab. Saving checks identity and push access, then restarts.' } },
     { key: 'pollSeconds', type: 'number', advanced: true, min: 60, max: 3600, label: { zh: '轮询间隔 / 秒', en: 'Polling interval / seconds' }, hint: { zh: 'GitHub 要求更长间隔时以 GitHub 为准。', en: 'A longer interval requested by GitHub wins.' } },
     { key: 'failuresBeforeError', type: 'number', advanced: true, min: 1, max: 20, label: { zh: '连续失败几次后报告异常', en: 'Failed polls before reporting an error' }, hint: { zh: '单次网络中断会在下一次轮询时自动重试，不必报告。', en: 'A single network interruption is retried on the next poll and need not be reported.' } },
     { key: 'observeIssues', type: 'switch', label: { zh: '接收仓库里的新 Issue', en: 'Receive new Issues in the repository' },
@@ -70,7 +70,13 @@ export const githubKind: SourceKind<GithubConfig> = {
   channel: { send: sendGithub, link: githubLink },
   threadContext: githubThreadContext,
   // `#12`, `12`, or the page of an Issue or PR, of any repository, names Thread 12.
-  find: query => {
+  find: (query, config) => {
+    const gitlab = /\/-\/(issues|merge_requests)\/(\d+)(?:[#/]|$)/.exec(query)
+    if (gitlab) return { threads: [`${SOURCE}:${gitlab[1] === 'issues' ? 'issue-' : ''}${gitlab[2]}`], terms: [] }
+    if (config?.provider === 'gitlab') {
+      const match = /^([#!]?)([1-9]\d*)$/.exec(query.trim())
+      return { threads: match ? [`${SOURCE}:${match[1] === '#' ? 'issue-' : ''}${match[2]}`] : [], terms: [] }
+    }
     const number = (/^#?(\d+)$/.exec(query.trim()) ?? /https?:\/\/[^\s]+\/(?:pulls?|issues)\/(\d+)(?:[#/]|$)/.exec(query))?.[1]
     return { threads: number ? [`${SOURCE}:${number}`] : [], terms: [] }
   },
@@ -97,20 +103,20 @@ export const githubKind: SourceKind<GithubConfig> = {
   },
   environment: {
     variables: [
-      { key: 'DSH_SUPERAGENT_REPOSITORY_PROVIDER', description: { zh: '代码托管平台。gitea 时使用 gitea api，禁止 gh 或 GitHub GraphQL；自动合并默认关闭', en: 'Repository provider. For gitea use gitea api, never gh or GitHub GraphQL; auto-merge is disabled by default' } },
+      { key: 'DSH_SUPERAGENT_REPOSITORY_PROVIDER', description: { zh: '代码托管平台。gitea/gitlab 时使用对应的 gitea/gitlab api，禁止 gh 或 GitHub GraphQL；自动合并默认关闭', en: 'Repository provider. For gitea/gitlab use the corresponding gitea/gitlab api, never gh or GitHub GraphQL; auto-merge is disabled by default' } },
       { key: 'DSH_SUPERAGENT_REPOSITORY_BASE_URL', description: { zh: '代码托管实例地址', en: 'Repository instance URL' } },
       { key: 'DSH_SUPERAGENT_GITHUB_REPOSITORY', description: { zh: '这个来源监听的仓库，owner/name。智能体在这里开的 PR，分支最后一段是 DSH_SUPERAGENT_NAME 时（例如 agent/$DSH_SUPERAGENT_NAME）会关联到工单', en: 'The repository this Source watches, as owner/name. A PR the agent opens here from a branch whose last path segment is DSH_SUPERAGENT_NAME (for example agent/$DSH_SUPERAGENT_NAME) binds to the ticket' } },
-      { key: 'DSH_SUPERAGENT_GITHUB_ACCOUNT', description: { zh: '智能体的仓库账号；按平台使用 gh 或 gitea，不用其他账号或凭据', en: 'Repository agent account; use gh or gitea according to the provider, never another account or credential' } },
+      { key: 'DSH_SUPERAGENT_GITHUB_ACCOUNT', description: { zh: '智能体的仓库账号；按平台使用 gh、gitea 或 gitlab，不用其他账号或凭据', en: 'Repository agent account; use gh, gitea or gitlab according to the provider, never another account or credential' } },
       { key: 'DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL', description: { zh: '智能体账号的提交邮箱。这里的 git 没有身份：按提示词写明的作者提交，没有写明时用智能体账号和这个邮箱', en: 'Commit email of the agent\'s account. git has no identity here: commit as the author these instructions name, or as the agent\'s account with this email when they name none' } },
-      { key: 'DSH_SUPERAGENT_GITHUB_NUMBER', description: { zh: '接下工单的 Issue 或 PR 编号；工单不是从 GitHub 来的时为空', en: 'Number of the Issue or PR that started the ticket; empty when the ticket did not start on GitHub' } },
-      { key: 'DSH_SUPERAGENT_GITHUB_PR_HEAD', description: { zh: '接下工单的 PR 的 head 引用 refs/pull/<编号>/head；不是 PR 时为空', en: 'Head ref refs/pull/<number>/head of the PR that started the ticket; empty when it was not a PR' } },
+      { key: 'DSH_SUPERAGENT_GITHUB_NUMBER', description: { zh: '接下工单的 Issue、PR 或 MR 的原生编号；工单不来自代码仓库时为空', en: 'Native number of the Issue, PR or MR that started the ticket; empty for other Sources' } },
+      { key: 'DSH_SUPERAGENT_GITHUB_PR_HEAD', description: { zh: '来源 PR 的 refs/pull/<编号>/head，GitLab MR 为 refs/merge-requests/<iid>/head；Issue 时为空', en: 'Source PR head ref refs/pull/<number>/head, or refs/merge-requests/<iid>/head for GitLab; empty for Issues' } },
     ],
     values: ({ deployment, trigger }) => {
-      const number = trigger?.threads[0]?.source === SOURCE ? Number(trigger.meta.number) || 0 : 0
+      const number = trigger?.threads[0]?.source === SOURCE ? Number(String(trigger.meta.number ?? '').replace(/^issue-/, '')) || 0 : 0
       return { DSH_SUPERAGENT_REPOSITORY_PROVIDER: deployment.github.provider ?? 'github',
         DSH_SUPERAGENT_REPOSITORY_BASE_URL: deployment.github.baseUrl ?? 'https://github.com',
         DSH_SUPERAGENT_GITHUB_REPOSITORY: deployment.repository, DSH_SUPERAGENT_GITHUB_ACCOUNT: deployment.github.login, DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL: deployment.github.noreply, DSH_SUPERAGENT_GITHUB_NUMBER: number ? String(number) : '',
-        DSH_SUPERAGENT_GITHUB_PR_HEAD: number && trigger?.meta.isPr === true ? `refs/pull/${number}/head` : '' }
+        DSH_SUPERAGENT_GITHUB_PR_HEAD: number && trigger?.meta.isPr === true ? `refs/${deployment.github.provider === 'gitlab' ? 'merge-requests' : 'pull'}/${number}/head` : '' }
     },
   },
   facts: (deployment): Record<string, Localized | string> => deployment ? {
@@ -148,7 +154,7 @@ async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
 }
 interface Round {
   started: string; signal?: AbortSignal | undefined
-  pulls: Map<number, Promise<Pull>>; read: Set<number>; failures: string[]; dropped: number[]; abandoned: number[]
+  pulls: Map<number, Promise<Pull>>; read: Set<RepositoryNumber>; failures: string[]; dropped: RepositoryNumber[]; abandoned: RepositoryNumber[]
   tally: Tally
 }
 const newRound = (signal?: AbortSignal): Round => ({ started: new Date().toISOString(), signal, pulls: new Map(), read: new Set(),
@@ -159,7 +165,7 @@ const RETRY_WINDOW_MS = 24 * 3600_000
 /** True when GitHub returns HTTP 410 (Gone); HTTP 404 is retried because it can indicate revoked access to a private repository. */
 const deleted = (error: unknown): boolean => error instanceof CliError && error.code === 410
 /** Records a failed read on the Thread and in the round; deleted (410) or abandoned (24h+) threads do not fail the round. */
-function failed(ctx: SourceContext, round: Round, number: number, error: unknown, abandoned = false): void {
+function failed(ctx: SourceContext, round: Round, number: RepositoryNumber, error: unknown, abandoned = false): void {
   if (deleted(error)) round.dropped.push(number)
   else if (abandoned) round.abandoned.push(number)
   else round.failures.push(`#${number}: ${String(error)}`)
@@ -235,9 +241,11 @@ async function readStream(ctx: SourceContext, round: Round, id: string, path: st
       nameThread(ctx, issue.data.number, issue.data.title)
       continue
     }
-    const number = Number(/\/(?:issues|pulls)\/(\d+)$/.exec((id === 'comments' ? item.issue_url : item.pull_request_url) ?? '')?.[1])
+    const target = (id === 'comments' ? item.issue_url : item.pull_request_url) ?? ''
+    const address = ctx.deployment.github.provider === 'gitlab' ? githubAddress(target, ctx.deployment.repository, ctx.deployment.github.baseUrl, 'gitlab') : undefined
+    const number = address?.number ?? Number(/\/(?:issues|pulls)\/(\d+)$/.exec(target)?.[1])
     if (!number || !fresh(item.updated_at ?? item.created_at, 'comments')) continue
-    const isPr = id === 'review-comments' || /\/pulls?\//.test(item.html_url ?? '')
+    const isPr = address?.pr || id === 'review-comments' || /\/pulls?\//.test(item.html_url ?? '')
     const ref = { number, isPr, ...item.html_url ? { url: item.html_url } : {} }
     const trigger = commentTrigger(item, ref, id === 'comments' ? 'conversation' : 'inline', login)
     if (trigger.text) await ctx.receive(trigger)
@@ -266,7 +274,7 @@ async function pollBranchCi(ctx: SourceContext, round: Round): Promise<void> {
   if (known && JSON.stringify(now) !== JSON.stringify(known)) {
     revision += 1
     const summary = ciSummary(snapshot, branch, `github/commits/${head.sha}/checks`)
-    const url = `${ctx.deployment.github.baseUrl ?? 'https://github.com'}/${ctx.deployment.repository}/commit/${head.sha}`
+    const url = `${ctx.deployment.github.baseUrl ?? 'https://github.com'}/${ctx.deployment.repository}/${ctx.deployment.github.provider === 'gitlab' ? '-/' : ''}commit/${head.sha}`
     await ctx.receive(branchCiTrigger(branch, head.sha, revision, summary, url))
     ctx.threads.describe(`github:ci:${branch}`, { label: `CI on ${branch}`, facts: { ci: ciFact(counts) } })
   }
@@ -280,15 +288,15 @@ async function pollBranchCi(ctx: SourceContext, round: Round): Promise<void> {
  * @returns the polling interval requested by GitHub, in seconds.
  */
 export async function pollRound(ctx: SourceContext, signal?: AbortSignal): Promise<number> {
-  if (ctx.deployment.github.provider !== 'gitea') return runPollRound(ctx, signal)
+  if (!ctx.deployment.github.provider || ctx.deployment.github.provider === 'github') return runPollRound(ctx, signal)
   const deadline = AbortSignal.timeout(45_000)
   const bounded = AbortSignal.any([deadline, ...signal ? [signal] : []])
   try {
     const result = await runPollRound(ctx, bounded)
-    if (deadline.aborted && !signal?.aborted) throw new Error('Gitea polling round exceeded 45 seconds; unread work will retry')
+    if (deadline.aborted && !signal?.aborted) throw new Error('Repository polling round exceeded 45 seconds; unread work will retry')
     return result
   } catch (error) {
-    if (deadline.aborted && !signal?.aborted) throw new Error('Gitea polling round exceeded 45 seconds; unread work will retry', { cause: error })
+    if (deadline.aborted && !signal?.aborted) throw new Error('Repository polling round exceeded 45 seconds; unread work will retry', { cause: error })
     throw error
   }
 }
@@ -302,7 +310,7 @@ async function runPollRound(ctx: SourceContext, signal?: AbortSignal): Promise<n
   const { count, interval } = notified.value
   if (signal?.aborted) return interval
   if (round.failures.length) throw new Error(`${round.failures.length} GitHub reads failed: ${round.failures.slice(0, 3).join('; ')}`)
-  const named = (numbers: number[]) => [...new Set(numbers)].sort((a, b) => a - b).map(number => `#${number}`).join(', ')
+  const named = (numbers: RepositoryNumber[]) => [...new Set(numbers)].map(displayNumber).sort().join(', ')
   const dropped = (round.dropped.length ? `; deleted on GitHub: ${named(round.dropped)}` : '')
     + (round.abandoned.length ? `; dropped after their reads kept failing: ${named(round.abandoned)}` : '')
     + (round.tally.skipped ? `; ${round.tally.skipped} unreadable items skipped` : '')
@@ -329,10 +337,10 @@ async function pollNotifications(ctx: SourceContext, round: Round): Promise<{ co
     : validItems(NotificationSchema, z.array(z.unknown()).parse(JSON.parse(body)), round.tally)
   const retries = { ...state.get(KV.github.retries) }
   // Failed items from the previous round run first, followed by newly notified items in chronological order; each is read once.
-  const items = new Map(Object.entries(retries).map(([number, retry]) => [Number(number), retry]))
+  const items = new Map(Object.entries(retries).map(([number, retry]) => [repositoryNumber(number), retry]))
   for (const notification of notifications.reverse()) {
     if (!sameName(notification.repository.full_name, repository)) continue
-    const address = githubAddress(notification.subject.url ?? '', repository, ctx.deployment.github.baseUrl)
+    const address = githubAddress(notification.subject.url ?? '', repository, ctx.deployment.github.baseUrl, ctx.deployment.github.provider)
     if (!address || address.discussion || items.has(address.number)) continue
     const { number, pr } = address
     items.set(number, { since: [state.get(KV.github.cursor(number)) ?? since, since].sort().at(-1)!, pr })
@@ -356,7 +364,7 @@ async function pollNotifications(ctx: SourceContext, round: Round): Promise<{ co
   ctx.atomic(() => { state.set(KV.github.since, cursorAt(round.started)); state.set(KV.github.retries, retries) })
   return { count: notifications.length, interval }
 }
-async function readNotified(ctx: SourceContext, round: Round, number: number, item: Retry): Promise<void> {
+async function readNotified(ctx: SourceContext, round: Round, number: RepositoryNumber, item: Retry): Promise<void> {
   const { since } = item
   let isPr = item.pr
   if (!isPr) {
@@ -374,7 +382,7 @@ async function readNotified(ctx: SourceContext, round: Round, number: number, it
     }
   }
   if (isPr) {
-    const pr = await pull(ctx, round, number)
+    const pr = await pull(ctx, round, Number(number))
     // Emit a PR description trigger for PRs opened since the cursor; its ID is the same as the one produced by the repository PR stream.
     const { login } = ctx.deployment.github
     if (pr.created_at && Date.parse(pr.created_at) >= Date.parse(since) && !sameName(pr.user.login, login)) {
@@ -437,9 +445,10 @@ async function pollChecks(ctx: SourceContext, round: Round, number: number, pr: 
   ctx.state.set(KV.github.ci(number), { fingerprint, revision })
   ctx.threads.describe(`github:${number}`, { facts: { ci: ciFact(ciCounts(snapshot)) } })
 }
-function nameThread(ctx: SourceContext, number: number, title: string): void {
+function nameThread(ctx: SourceContext, number: RepositoryNumber, title: string): void {
+  const label = typeof number === 'number' && ctx.deployment.github.provider === 'gitlab' ? `!${number}` : displayNumber(number)
   ctx.threads.patch(`github:${number}`, { title })
-  ctx.threads.describe(`github:${number}`, { label: `#${number} ${title}`, facts: { number: { value: `#${number}` } } })
+  ctx.threads.describe(`github:${number}`, { label: `${label} ${title}`, facts: { number: { value: label } } })
 }
 /** Polls subscribed Issue and PR Threads not already read in this round; a deleted (410) Issue is still polled within the horizon (costing one read) and does not fail the round. */
 export async function pollThreads(ctx: SourceContext, signal?: AbortSignal, round = newRound(signal)): Promise<void> {
@@ -447,15 +456,15 @@ export async function pollThreads(ctx: SourceContext, signal?: AbortSignal, roun
     try { await pollThread(ctx, round, thread) }
     catch (error) {
       if (stopped(ctx, round)) throw error
-      if (deleted(error)) round.dropped.push(Number(thread.ref.id)); else round.failures.push(`${thread.key}: ${String(error)}`)
+      if (deleted(error)) round.dropped.push(repositoryNumber(thread.ref.id)); else round.failures.push(`${thread.key}: ${String(error)}`)
       throw error
     }
-  }, thread => round.read.has(Number(thread.ref.id)))
+  }, thread => round.read.has(repositoryNumber(thread.ref.id)))
 }
 async function pollThread(ctx: SourceContext, round: Round, thread: Thread): Promise<void> {
   // The default branch's CI Thread has no Issue or PR to read; its CI arrives as Triggers.
   if (thread.ref.id.startsWith('ci:')) return
-  const number = Number(thread.ref.id)
+  const number = repositoryNumber(thread.ref.id)
   if (!number) throw new Error('Subscribed thread has no GitHub issue or PR number')
   round.read.add(number)
   if (typeof thread.meta.isPr !== 'boolean' || typeof thread.meta.title !== 'string') {
@@ -467,7 +476,7 @@ async function pollThread(ctx: SourceContext, round: Round, thread: Thread): Pro
   const checkpoint = KV.github.cursor(number)
   const since = ctx.state.get(checkpoint) ?? thread.createdAt
   if (thread.meta.isPr === true) {
-    const pr = await pull(ctx, round, number)
+    const pr = await pull(ctx, round, Number(number))
     await intakeComments(ctx, { number, isPr: true, url: pr.html_url, prAuthor: pr.user.login }, since, round)
   } else await intakeComments(ctx, { number, isPr: false }, since, round)
   ctx.state.set(checkpoint, cursorAt(round.started))

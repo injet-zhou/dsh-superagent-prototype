@@ -16,14 +16,14 @@ it('points an invalid Gitea instance URL at Source settings instead of reporting
   expect(text()).toContain(zh['setup.baseUrlInvalid'])
   expect(text()).not.toContain(zh['setup.agentCliSignedOut'])
   await click(zh.sourceOpenSettings)
-  expect(field<HTMLInputElement>('Gitea 实例地址')).toBeDefined()
+  expect(field<HTMLInputElement>('Gitea / GitLab 实例地址')).toBeDefined()
 })
 
 it('saves a Gitea provider, instance and isolated CLI in the existing repository Source', async () => {
   await mount()
   await click(tab(zh['tab.settings']))
   await click(find('Gitea', '[role="tab"]'))
-  await type(field<HTMLInputElement>('Gitea 实例地址'), 'https://git.example.test/code')
+  await type(field<HTMLInputElement>('Gitea / GitLab 实例地址'), 'https://git.example.test/code')
   await type(field<HTMLInputElement>('智能体的仓库 CLI'), '/srv/agent/bin/agent-gitea')
   const repository = all('.dt-card')[1]!
   await act(async () => { repository.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) })
@@ -32,11 +32,25 @@ it('saves a Gitea provider, instance and isolated CLI in the existing repository
     repository: 'acme/widgets', cli: '/srv/agent/bin/agent-gitea' })
 })
 
+it('saves a self-managed GitLab instance and subgroup project in the repository Source', async () => {
+  await mount()
+  await click(tab(zh['tab.settings']))
+  await click(find('GitLab（自部署）', '[role="tab"]'))
+  await type(field<HTMLInputElement>('Gitea / GitLab 实例地址'), 'https://gitlab.example.test/code')
+  await type(field<HTMLInputElement>('监听的仓库'), 'group/subgroup/project')
+  await type(field<HTMLInputElement>('智能体的仓库 CLI'), '/srv/agent/bin/agent-gitlab')
+  const repository = all('.dt-card')[1]!
+  await act(async () => { repository.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) })
+  await settle()
+  expect(server.settings.sources.github?.config).toMatchObject({ provider: 'gitlab', baseUrl: 'https://gitlab.example.test/code',
+    repository: 'group/subgroup/project', cli: '/srv/agent/bin/agent-gitlab' })
+})
+
 it('shows each Source\'s state on the Source status and opens its settings from a setup problem', async () => {
   await mount()
   await click(zh['tab.source'])
   expect(document.querySelector('.dt-status-title')?.textContent).toBe(zh.statusTitle)
-  expect(all('.dt-form > .dt-list > .dt-row .dt-row-name').map(title => title.textContent)).toEqual(['飞书', 'GitHub / Gitea'])
+  expect(all('.dt-form > .dt-list > .dt-row .dt-row-name').map(title => title.textContent)).toEqual(['飞书', 'GitHub / Gitea / GitLab'])
   expect(all('.dt-form > .dt-list > .dt-row')[0]!.querySelector('.dt-row-meta')?.textContent).toBe('24 小时到达 12被过滤 2最近 ' + document.querySelector('.dt-row-meta time, .dt-row-meta .dt-lv:last-child .dt-lv-value')?.textContent)
   expect(text()).toContain(zh['sourceState.error'])
   expect(text()).toContain('socket closed')
@@ -89,7 +103,7 @@ it('renders each Source\'s settings from its kind\'s fields and saves one Source
   await click(zh['tab.source'])
   await click(find(zh['tab.settings'], '.dt-status-head button'))
   const cards = all('.dt-card')
-  expect(cards.map(card => card.querySelector('.dt-row-title')?.firstChild?.textContent)).toEqual(['飞书', 'GitHub / Gitea'])
+  expect(cards.map(card => card.querySelector('.dt-row-title')?.firstChild?.textContent)).toEqual(['飞书', 'GitHub / Gitea / GitLab'])
   const feishu = cards[0]!
   expect(feishu.textContent).toContain('接收的群')
   await click([...feishu.querySelectorAll('button')].find(button => button.textContent === '添加')!)
@@ -108,7 +122,7 @@ it('renders each Source\'s settings from its kind\'s fields and saves one Source
       directMessages: false } } } })
   expect(server.settings.sources.feishu!.config).toMatchObject({ directMessages: false })
   const github = all('.dt-card')[1]!
-  await click('运行来源：GitHub / Gitea')
+  await click('运行来源：GitHub / Gitea / GitLab')
   server.revisions['source:github'] = 5
   await act(async () => { github.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) }); await settle()
   // Another save changed nothing this draft changed, so the draft moves onto the newer revision and saves from there.
@@ -124,7 +138,7 @@ it('shows the account each CLI signs in as, and keeps a saved CLI on screen whil
   const github = all('.dt-card')[1]!
   expect(github.textContent).toContain('当前账号 @agent-bot')
   const labels = () => [...github.querySelectorAll('label')].map(label => label.textContent)
-  expect(labels()).toEqual(['代码托管平台', 'Gitea 实例地址', '监听的仓库', '智能体的仓库 CLI'])
+  expect(labels()).toEqual(['代码托管平台', 'Gitea / GitLab 实例地址', '监听的仓库', '智能体的仓库 CLI'])
   expect(field<HTMLInputElement>('监听的仓库').value).toBe('acme/widgets')
   // A fact describes the saved value, so an edited CLI shows none until it is saved.
   await type(field<HTMLInputElement>('智能体的仓库 CLI'), 'gh-other')
@@ -132,7 +146,7 @@ it('shows the account each CLI signs in as, and keeps a saved CLI on screen whil
   await click(zh.discard)
   expect(github.textContent).toContain('当前账号 @agent-bot')
   await click([...github.querySelectorAll<HTMLElement>('[data-disclosure-row]')].find(row => row.textContent?.includes('高级'))!)
-  expect(labels()).toEqual(['代码托管平台', 'Gitea 实例地址', '监听的仓库', '智能体的仓库 CLI', 'Gitea 提交邮箱', '轮询间隔 / 秒', '连续失败几次后报告异常'])
+  expect(labels()).toEqual(['代码托管平台', 'Gitea / GitLab 实例地址', '监听的仓库', '智能体的仓库 CLI', 'Gitea / GitLab 提交邮箱', '轮询间隔 / 秒', '连续失败几次后报告异常'])
   expect(all('.dt-card')[0]!.textContent).toContain('当前机器人 Widgets Bot')
   await type(field<HTMLInputElement>('智能体的仓库 CLI'), '/opt/bin/gh-agent')
   expect(github.textContent).toContain('保存会重启 dsh-superagent：2 个进行中的派工会中断，并带恢复说明重新开始。')
@@ -156,7 +170,7 @@ it('points a setup problem at the settings that fix it', async () => {
   // Nothing runs while setup waits, so the Executor says so instead of counting.
   expect(text()).toContain(zh.executorWaitingSetup)
   expect(all('.dt-stat').map(stat => stat.textContent)).not.toContain('执行中2 / 3')
-  expect(text()).toContain('在设置 › 来源的 GitHub / Gitea 卡片修正后保存，会重新检查')
+  expect(text()).toContain('在设置 › 来源的 GitHub / Gitea / GitLab 卡片修正后保存，会重新检查')
   await click(find(zh.problemSetup, 'button, a, [role="button"]'))
   expect(tab(zh['tab.settings']).getAttribute('aria-selected')).toBe('true')
   expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['term.source'])
@@ -225,7 +239,7 @@ it('shows a Source\'s health in the interface language, and a diagnostic as repo
     error: 'EOF' } } }
   await mount()
   await click(zh['tab.source'])
-  const github = all('.dt-form > .dt-list > .dt-row').find(row => row.querySelector('.dt-row-name')?.textContent === 'GitHub / Gitea')!
+  const github = all('.dt-form > .dt-list > .dt-row').find(row => row.querySelector('.dt-row-name')?.textContent === 'GitHub / Gitea / GitLab')!
   expect(github.textContent).toContain('仓库来源：连续 3 次轮询失败，最近一次：EOF')
   expect(github.textContent).not.toContain('consecutive')
   const feishu = all('.dt-form > .dt-list > .dt-row').find(row => row.querySelector('.dt-row-name')?.textContent === '飞书')!

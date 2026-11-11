@@ -199,7 +199,7 @@ export class Runtime extends Service implements SourceHost {
           const ended = event.type === 'ticket.ended' ? store.tickets.get(event.data.ticketId) : undefined
           if (ended && setup.configured()) {
             const request = store.triggers.get(ended.origin.triggerId)?.text ?? ''
-            for (const message of pullEndNotices(ended, request, setup.deployment.repository, setup.deployment.github.baseUrl)) outbox.send(message)
+            for (const message of pullEndNotices(ended, request, setup.deployment.repository, setup.deployment.github.baseUrl, setup.deployment.github.provider)) outbox.send(message)
           }
           // A Source may show its own receipt once a Ticket is dispatched; a cosmetic follow-up runs after the commit.
           if (event.type === 'ticket.created') {

@@ -382,6 +382,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/infra/errors.ts` | Shared `CliError` transport failure type, re-exported from Commands for compatibility |
 | `src/infra/discord.ts` | Bot-only Discord REST transport, shared rate-limit queue, fixed HTTPS origin and sanitized errors |
 | `src/infra/commands.ts` | `Commands`, the CLI transport: `run`; `api` and `pages`, limited to the configured repository and validated; `lark` as the bot; `git`. `CliError` carries the code a command's output reports, such as a GitHub HTTP status, and a command that prints nothing fails with how it ended, never with its arguments; `validItems` skips and counts the malformed items of a list |
+| `src/infra/gitlab.ts` | GitLab REST v4 normalization, separate Issue/MR identifiers, to-dos, discussions, repository reads and commit statuses through the account-isolated Python CLI |
 | `src/infra/gitea.ts` | Gitea REST normalization behind the existing repository Source: notifications, Issues, PRs, reviews and pagination; uses the account-isolated Python CLI, without changing the DSH Executor |
 | `src/infra/environment.ts` | The agent's process environment: command shims, the git configuration and credential helper, `runAsWorker`, and the checks of the environment and of a Ticket's directory |
 | `src/infra/scoped-environment.ts` | Async-local execution environments and reference-counted subprocess adaptation for local repositories sharing a DSH host |
@@ -486,6 +487,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/model-surface.spec.ts` | Everything models read: tools, prompts, skills and inputs, checked against the tool schemas, the execution environment and the glossary, within a size budget per role |
 | `tests/deployment.spec.ts`, `tests/environment.spec.ts`, `tests/index.spec.ts` | The plugin configuration and setup, the agent's process environment, the plugin entry |
 | `tests/discord.spec.ts` | Bot-only setup, rate-limit sharing and cancellation, channel scope and Engine authorization, snowflake pagination/restart recovery, bounded context, reply deduplication, permission errors and mention receipt/processing reactions |
+| `tests/gitlab.spec.ts` | GitLab account and subgroup setup, CLI pagination, independent Issue/MR intake, discussions, ticket lifecycle, reply deduplication, credentials and instance-scoped links |
 | `tests/gitea.spec.ts` | Gitea account setup, real CLI and HTTP pagination, Source intake and authorization, PR binding and closure, status checks, reply deduplication and instance-scoped links |
 | `tests/service-script.spec.ts` | `scripts/dsh-superagent` against fake `ps`, `tmux` and `dsh` |
 | `tests/client.spec.tsx`, `tests/navigation.spec.ts`, `tests/controls.spec.tsx` | The client plugin's registration and polling, Session navigation and route memory, the local controls, and the panel's imports, which have no cycle |

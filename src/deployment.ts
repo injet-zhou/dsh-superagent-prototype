@@ -52,10 +52,10 @@ export function machineOf(config: DeploymentConfig): Machine {
 }
 
 export const GithubAccountsSchema = z.object({
-  provider: z.enum(['github', 'gitea']).default('github'),
+  provider: z.enum(['github', 'gitea', 'gitlab']).default('github'),
   baseUrl: z.string().trim().default(''),
   commitEmail: z.string().trim().default(''),
-  repository: z.string().trim().regex(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?$/, 'owner/name').default(''),
+  repository: z.string().trim().regex(/^([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+)?$/, 'namespace/name').default(''),
   cli: z.string().trim().default(''),
 })
 export const DiscordBotSchema = z.object({ tokenFile: z.string().trim().refine(value => !value || isAbsolute(value), 'Expected an absolute token file path').default('') })
@@ -66,7 +66,7 @@ export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { githu
 export interface Deployment extends Machine {
   repository: string
   /** Repository account. The legacy `github` key is retained for saved settings and Source identifiers. */
-  github: { cli: string; login: string; noreply: string; provider?: 'github' | 'gitea'; baseUrl?: string }
+  github: { cli: string; login: string; noreply: string; provider?: 'github' | 'gitea' | 'gitlab'; baseUrl?: string }
   feishu?: FeishuBot
   discord?: { tokenFile: string; botId: string; name: string }
 }
@@ -75,12 +75,12 @@ export interface FeishuBot { cli: string; appId: string; brand: 'feishu' | 'lark
 /** Validates an instance root, including a reverse-proxy subpath, without accepting credentials or query strings. */
 export function repositoryBaseUrl(value: string): string {
   let url: URL
-  try { url = new URL(value) } catch { throw new Error('Set a valid Gitea instance root URL') }
+  try { url = new URL(value) } catch { throw new Error('Set a valid repository instance root URL') }
   if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash
     || url.pathname.split('/').some(part => /%2f|%5c|%2e/i.test(part))) throw new Error('Expected an instance URL without credentials, query or fragment')
   const loopback = url.hostname === 'localhost' || url.hostname === '[::1]' || /^127\.(?:\d{1,3}\.){2}\d{1,3}$/.test(url.hostname)
-  if (url.protocol !== 'https:' && !loopback) throw new Error('Gitea requires HTTPS; HTTP is allowed only on loopback hosts')
-  if (/\/api\/v1\/?$/i.test(url.pathname)) throw new Error('Use the Gitea instance root without /api/v1')
+  if (url.protocol !== 'https:' && !loopback) throw new Error('Repository access requires HTTPS; HTTP is allowed only on loopback hosts')
+  if (/\/api\/v[14]\/?$/i.test(url.pathname)) throw new Error('Use the instance root without /api/v1 or /api/v4')
   return url.href.replace(/\/$/, '')
 }
 
@@ -115,21 +115,38 @@ export async function resolveDeployment(machine: Machine, github: unknown, probe
   const { stateDir } = machine
   const accounts = GithubAccountsSchema.parse(github ?? {})
   let baseUrl: string | undefined
-  if (accounts.provider === 'gitea') {
+  if (accounts.provider !== 'github') {
     try { baseUrl = repositoryBaseUrl(accounts.baseUrl) }
     catch (error) { throw new SetupError('baseUrlInvalid', { output: reason(error) }) }
   }
   const remote = accounts.repository
   if (!remote) throw new SetupError('repositoryUnset')
+  if (remote.split('/').some(part => part === '.' || part === '..') || (accounts.provider !== 'gitlab' && remote.split('/').length !== 2)) {
+    throw new SetupError('repositoryUnreported', { repository: remote })
+  }
   if (!accounts.cli) throw new SetupError('agentCliUnset')
   let cli: string
   try { cli = executable(accounts.cli, path, workerBin(stateDir)) } catch (error) { throw new SetupError('agentCliMissing', { output: reason(error) }) }
   if (baseUrl !== undefined) {
     try {
       const configured = parsed(z.object({ baseUrl: z.string() }), await probe([cli, 'config']))
-      if (!configured || repositoryBaseUrl(configured.baseUrl) !== baseUrl) throw new Error('Gitea CLI configuration must use the same baseUrl as the Source')
+      if (!configured || repositoryBaseUrl(configured.baseUrl) !== baseUrl) throw new Error('Repository CLI configuration must use the same baseUrl as the Source')
     } catch (error) { throw new SetupError('agentCliSignedOut', { output: reason(error) }) }
     const text = await probe([cli, 'api', 'user']).catch((error: unknown) => { throw new SetupError('agentCliSignedOut', { output: reason(error) }) })
+    if (accounts.provider === 'gitlab') {
+      const agent = parsed(z.object({ username: z.string().regex(/^[A-Za-z0-9_.-]+$/), email: z.string().nullish() }), text)
+      if (!agent) throw new SetupError('agentCliNoAccount')
+      const access = parsed(z.object({ path_with_namespace: z.string().regex(/^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+$/), archived: z.boolean().optional(),
+        permissions: z.object({ project_access: z.object({ access_level: z.number() }).nullish(), group_access: z.object({ access_level: z.number() }).nullish() }) }),
+      await probe([cli, 'api', `projects/${encodeURIComponent(remote)}`])
+        .catch((error: unknown) => { throw new SetupError('repositoryUnreadable', { account: agent.username, repository: remote, output: reason(error) }) }))
+      if (!access) throw new SetupError('repositoryUnreported', { repository: remote })
+      if (access.archived || Math.max(access.permissions.project_access?.access_level ?? 0, access.permissions.group_access?.access_level ?? 0) < 30) {
+        throw new SetupError('repositoryReadOnly', { account: agent.username, repository: access.path_with_namespace })
+      }
+      return { ...machine, repository: access.path_with_namespace, github: { cli, login: agent.username,
+        noreply: accounts.commitEmail || agent.email || `${agent.username}@noreply.${new URL(baseUrl).hostname}`, provider: 'gitlab', baseUrl } }
+    }
     const agent = parsed(z.object({ login: z.string().regex(/^[A-Za-z0-9_.-]+$/), email: z.string().nullish() }), text)
     if (!agent) throw new SetupError('agentCliNoAccount')
     const access = parsed(z.object({ full_name: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),

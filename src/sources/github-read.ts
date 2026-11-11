@@ -2,7 +2,7 @@
 import { z } from 'zod'
 import type { ThreadFact } from '../core/index.ts'
 import { validItems, type Commands, type Tally } from '../infra/commands.ts'
-import { CommentSchema, IssueSchema, isHumanLogin, reviewPlace, type GithubComment } from './github-trigger.ts'
+import { CommentSchema, IssueSchema, isHumanLogin, reviewPlace, repositoryNumber, type RepositoryNumber, type GithubComment } from './github-trigger.ts'
 import type { ContextMessage, ThreadContext } from './kind.ts'
 
 const CheckSchema = z.looseObject({ name: z.string(), status: z.string(), conclusion: z.string().nullable() })
@@ -62,14 +62,14 @@ export async function readRepositoryPath(commands: Commands, path: string, kind:
 /** Reads check runs and commit statuses for a commit without emitting a trigger. */
 export async function pullChecks(commands: Commands, head: string, tally?: Tally): Promise<CiSnapshot> {
   const page = z.looseObject({ check_runs: z.array(z.unknown()) })
-  const pages = commands.deployment.github.provider === 'gitea' ? []
+  const pages = commands.deployment.github.provider && commands.deployment.github.provider !== 'github' ? []
     : await commands.api(z.array(page), `commits/${head}/check-runs?per_page=100`, '--paginate', '--slurp')
   const runs = validItems(CheckSchema, pages.flatMap(page => page.check_runs), tally)
   const statuses = await commands.pages(StatusSchema, `commits/${head}/statuses?per_page=100`, tally)
   const latest = new Map<string, string>()
   for (const status of statuses) if (!latest.has(status.context)) latest.set(status.context, status.state)
   const checks = runs.map(({ name, status, conclusion }) => ({ name, status, conclusion }))
-  return { head, ...commands.deployment.github.provider === 'gitea' && !statuses.length ? { available: false } : {},
+  return { head, ...commands.deployment.github.provider && commands.deployment.github.provider !== 'github' && !statuses.length ? { available: false } : {},
     checks: checks.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
     statuses: [...latest].map(([context, state]) => ({ context, state })).sort((a, b) => a.context.localeCompare(b.context)) }
 }
@@ -110,7 +110,7 @@ export async function readGithub(commands: Commands, resource: string): Promise<
   // A commit's CI, such as the default branch's, which no PR names.
   const commit = /^github\/commits\/([0-9a-f]{7,40})\/checks$/.exec(resource)
   if (commit) return pullChecks(commands, commit[1]!)
-  const match = /^github\/(issues|pulls)\/([1-9]\d*)(?:\/(comments|reviews|checks|thread)(?:\/([1-9]\d*))?)?$/.exec(resource)
+  const match = /^github\/(issues|pulls)\/((?:issue-)?[1-9]\d*)(?:\/(comments|reviews|checks|thread)(?:\/([1-9]\d*))?)?$/.exec(resource)
   if (!match) {
     throw new Error('Use github/issues/<number>, github/pulls/<number>, or append /comments/<page>, /reviews/<page>, /thread/<comment-id> or /checks; or github/commits/<sha>/checks')
   }
@@ -118,7 +118,9 @@ export async function readGithub(commands: Commands, resource: string): Promise<
   if (kind === 'issues' && (section === 'reviews' || section === 'checks' || section === 'thread')) {
     throw new Error('Reviews, review threads and checks require a pull request')
   }
-  const path = `${kind}/${number}`
+  const pathNumber = commands.deployment.github.provider === 'gitlab' && kind === 'issues' && !number!.startsWith('issue-') ? `issue-${number}` : number
+  if (kind === 'pulls' && number!.startsWith('issue-')) throw new Error('Pull requests require an MR number')
+  const path = `${kind}/${pathNumber}`
   if (section === 'checks') {
     if (match[4]) throw new Error('Checks do not take a page number')
     const pr = await commands.api(z.looseObject({ head: z.looseObject({ sha: z.string() }) }), path)
@@ -147,7 +149,7 @@ export async function readGithub(commands: Commands, resource: string): Promise<
     ...listed.length === 20 ? { next_resource: `github/${kind}/${number}/${section}/${Number(page) + 1}` } : {} }
 }
 /** Reads one page of an Issue or PR conversation (with the Issue/PR description first on page 1), using comment URLs as message IDs. */
-async function conversationPage(commands: Commands, number: number, page: number) {
+async function conversationPage(commands: Commands, number: RepositoryNumber, page: number) {
   const messages: ContextMessage[] = []
   if (page === 1) {
     const issue = await commands.api(IssueSchema, `issues/${number}`)
@@ -171,9 +173,9 @@ export const githubThreadContext: ThreadContext<unknown> = {
       const message = { id: trigger.url ?? trigger.id, from: 'CI', at: trigger.at, text: trigger.text, bot: true as const }
       return { messages: [message], body: { status: 'branch_ci', messages: [message] }, status: 'branch_ci' }
     }
-    const number = Number(trigger.meta.number)
+    const number = repositoryNumber(String(trigger.meta.number))
     if (trigger.meta.kind === 'inline' && typeof trigger.meta.commentId === 'number') {
-      const thread = await reviewThread(commands, number, trigger.meta.commentId)
+      const thread = await reviewThread(commands, Number(number), trigger.meta.commentId)
       const messages = threadMessages(thread, item => item.html_url ?? String(item.id))
       const read = part === 'thread' ? messages : messages.slice(0, 1)
       return { messages: read, body: { status: 'review_thread', messages: read }, status: 'review_thread' }

@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Superagent",
-    "description": "管理多个本地 GitHub/Gitea 仓库，隔离状态与账号，并在 DSH 会话中执行获授权的 Ticket。"
+    "description": "管理多个本地 GitHub/Gitea/GitLab 仓库，隔离状态与账号，并在 DSH 会话中执行获授权的 Ticket。"
   }
 }

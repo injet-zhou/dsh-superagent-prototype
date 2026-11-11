@@ -7,6 +7,7 @@ import type { Deployment } from '../deployment.ts'
 import { DiscordApi } from './discord.ts'
 import { CliError } from './errors.ts'
 import { giteaApi } from './gitea.ts'
+import { gitlabApi } from './gitlab.ts'
 
 const exec = promisify(execFile)
 const TIMEOUT_MS = 90_000
@@ -80,14 +81,15 @@ export class Commands {
   async api<T>(schema: z.ZodType<T>, path: string, ...flags: string[]): Promise<T>
   async api(path: string, ...flags: string[]): Promise<string>
   async api<T>(schema: z.ZodType<T> | string, ...rest: string[]): Promise<T | string> {
-    if (this.deployment.github.provider === 'gitea') {
+    if (this.deployment.github.provider === 'gitea' || this.deployment.github.provider === 'gitlab') {
       const path = typeof schema === 'string' ? schema : rest[0] ?? ''
       this.path(path)
       // A review graph can involve many HTTP requests; the deadline covers the entire API operation.
       const bounded = this.withSignal(AbortSignal.timeout(30_000))
-      const output = await giteaApi((program, args) => bounded.run(program, args), this.deployment, path,
+      const adapter = this.deployment.github.provider === 'gitlab' ? gitlabApi : giteaApi
+      const output = await adapter((program, args) => bounded.run(program, args), this.deployment, path,
         typeof schema === 'string' ? rest : rest.slice(1))
-      if (output.startsWith('HTTP/1.1 304 ')) throw new CliError('Gitea API not modified (HTTP 304)', 304)
+      if (output.startsWith('HTTP/1.1 304 ')) throw new CliError('Repository API not modified (HTTP 304)', 304)
       return typeof schema === 'string' ? output : schema.parse(JSON.parse(output))
     }
     if (typeof schema === 'string') return this.run(this.deployment.github.cli, ['api', this.path(schema), ...rest])
@@ -96,7 +98,7 @@ export class Commands {
   }
   /** Fetches all pages of a GitHub API list within the configured repository, skipping items that fail schema validation. */
   async pages<T>(item: z.ZodType<T>, path: string, tally?: Tally): Promise<T[]> {
-    if (this.deployment.github.provider === 'gitea') {
+    if (this.deployment.github.provider === 'gitea' || this.deployment.github.provider === 'gitlab') {
       const pages = JSON.parse(await this.api(path, '--paginate', '--slurp')) as unknown
       return validItems(item, z.array(z.array(z.unknown())).parse(pages).flat(), tally)
     }

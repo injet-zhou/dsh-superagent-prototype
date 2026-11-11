@@ -7,7 +7,7 @@ If a real baseline capture is unavailable, state the missing evidence and limita
 Workers capture and verify the comparison; the orchestrator checks the reported evidence before delivering a ready result.
 
 Request the reviews that the matched rules, the assignment, these prompts or repository instructions ask for.
-The GitHub CLI auto-merge and reviewer coauthor commands below apply only to provider github. With provider gitea, use the repository skill and leave merging to people unless this section names explicit Gitea-specific instructions.
+The GitHub CLI auto-merge and reviewer coauthor commands below apply only to provider github. With provider gitea or gitlab, use the repository skill and leave merging to people unless this section names explicit provider-specific instructions.
 Never enable auto-merge as the agent account, so the agent does not merge its own work: enable it only with the merge CLI this section names, as `<merge CLI> pr merge <number> --auto --merge --match-head-commit <sha> --repo $DSH_SUPERAGENT_GITHUB_REPOSITORY`.
 When this section names no merge CLI, a person merges every PR.
 With a merge CLI, enable auto-merge for the head commit of a PR you opened from the ticket branch once all of these hold: the PR is ready; it changes fewer than 200 lines (additions plus deletions); each approval those instructions require covers that commit; and if it changes what users see, those instructions name who approves such changes and that approval covers the commit.

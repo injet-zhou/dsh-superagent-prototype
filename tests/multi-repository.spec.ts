@@ -153,6 +153,16 @@ it('rejects duplicate repository subscriptions and shared IM destinations, inclu
   expect(() => assertRepositoryIsolation([{ id: 'a', settings: wildcard }], false)).not.toThrow()
 })
 
+it('isolates GitLab subscriptions by instance root and full subgroup path', () => {
+  const entry = (id: string, baseUrl: string, repository = 'group/team/project') => ({ id, settings: SettingsSchema.parse({
+    sources: { github: { enabled: true, config: { provider: 'gitlab', baseUrl, repository } } },
+  }) })
+  const first = entry('first', 'https://gitlab.example.test/code')
+  expect(() => assertRepositoryIsolation([first, entry('duplicate', 'https://gitlab.example.test/code/')])).toThrow('already assigned')
+  expect(() => assertRepositoryIsolation([first, entry('other-instance', 'https://gitlab.example.test/other')])).not.toThrow()
+  expect(() => assertRepositoryIsolation([first, entry('other-project', 'https://gitlab.example.test/code', 'group/other/project')])).not.toThrow()
+})
+
 it('starts default and fast Sources while another setup is pending and a locked repository reports a catalog error', async () => {
   const h = await startRuntime(undefined, { scopedEnvironment: true })
   onTestFinished(() => h.stop())

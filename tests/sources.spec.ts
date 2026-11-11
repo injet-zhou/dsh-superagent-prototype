@@ -821,14 +821,14 @@ describe('github source', () => {
     h.store.set('github-since', since)
     // A notification is as new as the latest change it reports: the Issue or its newest comment.
     const updated = (item: GithubIssue) => [item.updated_at ?? item.created_at,
-      ...(comments[item.number] ?? []).map(comment => comment.updated_at ?? '')].sort().at(-1)!
+      ...(comments[Number(item.number)] ?? []).map(comment => comment.updated_at ?? '')].sort().at(-1)!
     const notifications = issues.map(item => ({ id: `n${item.number}`, updated_at: updated(item), reason: 'mention',
       repository: { full_name: 'acme/widgets' },
       subject: { url: `https://api.github.com/repos/acme/widgets/issues/${item.number}`, type: 'Issue', title: item.title } }))
     // An Issue that is a PR also answers as the PR.
     const routes: Record<string, unknown> = { notifications, ...Object.fromEntries(issues.flatMap(item => [[`issues/${item.number}`, item],
-      [`pulls/${item.number}`, openPull(item.number)],
-      [`issues/${item.number}/comments`, comments[item.number] ?? []]])) }
+      [`pulls/${item.number}`, openPull(Number(item.number))],
+      [`issues/${item.number}/comments`, comments[Number(item.number)] ?? []]])) }
     return { routes, reads: github(h, routes) }
   }
   it('takes in a new Issue from its notification as a Trigger with its body, addressed to the agent when the body mentions it', async () => {

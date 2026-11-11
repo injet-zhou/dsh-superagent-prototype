@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Superagent",
-    "description": "Manage local GitHub and Gitea repositories with isolated state and accounts, and execute authorized Tickets in DSH Sessions."
+    "description": "Manage local GitHub, Gitea and self-managed GitLab repositories with isolated state and accounts, and execute authorized Tickets in DSH Sessions."
   }
 }
