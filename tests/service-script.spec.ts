@@ -84,6 +84,20 @@ it('takes no `dsh plugin` command of the profile for its service', async () => {
     `${service} node node /opt/my tools/dsh --profile superagent --no-open`)
   expect(await status('superagent')).toMatchObject({ pids: [service] })
 })
+
+it('recognizes Node MainThread services while excluding plugin commands and other profiles', async () => {
+  const pid = sleeper()
+  processes(`${pid} MainThread node /opt/dsh --profile superagent --no-open`,
+    `${sleeper()} MainThread node /opt/dsh plugin --profile superagent add link:/x`,
+    `${sleeper()} MainThread node /opt/dsh --profile web --no-open`)
+  const url = await answering(READY, true)
+  const checked = await run('status', '--url', url)
+  expect(checked.code).toBe(0)
+  expect(JSON.parse(checked.stdout).pids).toEqual([pid])
+  expect(await run('start', '--url', url, '--timeout', '10')).toMatchObject({ code: 0,
+    stdout: expect.stringContaining(`already running (PID ${pid})`) })
+  expect(await run('stop', '--stop-timeout', '5')).toMatchObject({ code: 0 })
+}, 20_000)
 it('records the service PID at start, and still refuses a second instance the scan finds', async () => {
   const url = await answering()
   const pid = sleeper()

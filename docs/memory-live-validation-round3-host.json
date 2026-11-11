@@ -1,0 +1,89 @@
+{
+  "provider": "opencode-go",
+  "model": "deepseek-v4.1-flash",
+  "mode": "host-only",
+  "calls": [],
+  "stages": {
+    "capture": {
+      "ran": false,
+      "reason": "host-only"
+    },
+    "retention": {
+      "compactedSourceRetained": true,
+      "restoredSeqRetained": true
+    },
+    "retrievalAB": {
+      "disabledHits": 0,
+      "enabledVerifiedHits": 1,
+      "modelCalls": 0
+    },
+    "dreaming": {
+      "ran": false,
+      "reason": "host-only"
+    },
+    "attestation": {
+      "receipts": 1,
+      "autoVerified": true,
+      "explicitFixtureTool": "bash",
+      "permissionPreset": "workspace-write",
+      "extraModelCalls": 0
+    },
+    "evidence": {
+      "events": 1,
+      "checks": [
+        {
+          "evidenceId": "95e414a89e28308df48258458b0d8d96af8441aaec0e7204dd5506980c3a7561",
+          "status": "available"
+        }
+      ]
+    },
+    "publisherSafety": {
+      "keptVerified": true,
+      "pendingReview": true,
+      "sourceState": "available",
+      "extraModelCalls": 0
+    },
+    "concurrentRetrieval": {
+      "requests": 4,
+      "successful": 4,
+      "busy": 0,
+      "extraModelCalls": 0
+    },
+    "wiki": {
+      "rebuilt": true,
+      "secretAbsent": true,
+      "topics": 0
+    }
+  },
+  "success": true,
+  "ordinaryTestAgents": 1,
+  "analyzerCreatedAgents": 0,
+  "fts5": true,
+  "health": {
+    "enabled": true,
+    "fts": true,
+    "dailyCallBudget": 0,
+    "usedCalls": 0,
+    "retrieval": true,
+    "autoCapture": true,
+    "dreaming": true,
+    "analyzerAvailable": true,
+    "remainingCalls": 0,
+    "capturePending": 0,
+    "consolidationPending": 0,
+    "partialCaptures": 0,
+    "lastCaptureAt": null,
+    "lastConsolidationAt": null
+  },
+  "environment": {
+    "dsh": "0.2.2-rc.1",
+    "node": "24.15.0",
+    "sqlite": "3.51.3",
+    "source": "isolated synthetic Ticket/Session and actual Host assertions; user Runtime never opened"
+  },
+  "adapterSha256": "dd4e660d9fe3ea01618927fa8f516afa3d13319cb3c5511725d6b83b68047f89",
+  "limitations": [
+    "No Coding Ticket performance or dollar-cost benchmark.",
+    "Host-only success explicitly skips model analysis and topic generation."
+  ]
+}

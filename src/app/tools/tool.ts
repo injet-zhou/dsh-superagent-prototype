@@ -20,12 +20,12 @@ export const AcknowledgementSchema = z.string().trim().min(1)
  * Executor Session (which may read only its own ticket and messages that reached it).
  */
 export function readTool(description: string, executor: boolean,
-  read: (resource: string, offset: number, limit: number | undefined, signal: AbortSignal) => Promise<unknown>): Tool {
+  read: (resource: string, offset: number, limit: number | undefined, signal: AbortSignal) => Promise<unknown>, memory = false): Tool {
   return tool({
     name: 'orchestrator_read',
     description,
     schema: z.object({
-      resource: z.string().min(1).describe(`The resource, one of: ${resourceGrammar(executor)}.`),
+      resource: z.string().min(1).describe(`The resource, one of: ${resourceGrammar(executor, memory)}.`),
       offset: z.number().int().min(0).default(0).describe('Copy next_offset from the previous page; it counts characters of a text and items of a list.'),
       limit: z.number().int().min(1).max(8000).optional()
         .describe('Characters of a text, 4000 by default and 8000 at most, or items of a list, 20 by default and 50 at most.'),

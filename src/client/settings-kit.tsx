@@ -61,7 +61,7 @@ export function Field({ label, hint, note,
       { id })}{note && <small>{note}</small>}
   </div>
 }
-function SwitchRow({ label, hint, checked,
+export function SwitchRow({ label, hint, checked,
   onChange }: { label: string; hint?: string | undefined; checked: boolean; onChange: (next: boolean) => void }) {
   return <div className="dt-switch-row">
     <div className="dt-field-head">{label}{hint && <InfoTip text={hint} />}</div><Switch checked={checked} onChange={onChange}
@@ -69,7 +69,7 @@ function SwitchRow({ label, hint, checked,
   </div>
 }
 type RoleModel = Settings['eval']['model']
-export function ModelField({ id, value, onChange }: { id: string; value: RoleModel; onChange: (next: RoleModel) => void }) {
+export function ModelField({ id, value, onChange, explicit }: { id: string; value: RoleModel; onChange: (next: RoleModel) => void; explicit?: boolean }) {
   const { t, call } = usePanel()
   const [catalog, setCatalog] = useState<ApiResponse<'GET models'>>()
   const [error, setError] = useState<string>()
@@ -86,11 +86,11 @@ export function ModelField({ id, value, onChange }: { id: string; value: RoleMod
       onChange={event => set({ [name]: event.target.value })} />
   </Field>
   return <div className="dt-model">
-    <Hint>{fallback ? t('defaultModel', { model: `${fallback.provider} / ${fallback.model}${fallback.reasoningEffort
-      ? ` · ${fallback.reasoningEffort}` : ''}` }) : t('defaultModelUnavailable')}</Hint>
+    {!explicit && <Hint>{fallback ? t('defaultModel', { model: `${fallback.provider} / ${fallback.model}${fallback.reasoningEffort
+      ? ` · ${fallback.reasoningEffort}` : ''}` }) : t('defaultModelUnavailable')}</Hint>}
     {error && <p className="dt-error">{t('modelCatalogError', { error })}</p>}
     <div className="dt-grid3">
-      {input('provider', t('modelProvider'), t('modelInherit'))}{input('model', t('modelName'), t('modelInherit'))}{input('effort',
+      {input('provider', t('modelProvider'), t(explicit ? 'unsetValue' : 'modelInherit'))}{input('model', t('modelName'), t(explicit ? 'unsetValue' : 'modelInherit'))}{input('effort',
         t('modelEffort'), t('modelEffortDefault'))}
     </div>
     <datalist id={`${id}-providers`}>{catalog?.groups.map(group => <option key={group.id}

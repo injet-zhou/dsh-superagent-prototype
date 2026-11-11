@@ -20,6 +20,7 @@ import { SKILL_PREFIX, type PromptVersion, type Prompts } from './prompts.ts'
 import type { Store } from './store.ts'
 import { KV } from '../kv.ts'
 import type { RegisterTool, Tool } from './tools/tool.ts'
+import type { MemoryService } from './memory/service.ts'
 
 /** Host dependencies used by `Sessions`. */
 export interface SessionsHost {
@@ -32,6 +33,8 @@ export interface SessionsHost {
   readonly health: HealthEntry
   readonly masterId: string
   readonly lifetime: AbortSignal
+  readonly memory?: Pick<MemoryService, 'index'>
+  observeExecution?(context: Context, sessionId: string): () => void
   closing(): boolean
   /** Execution environment variables for `ticket`, rendered into its worker's system prompt. */
   environment(ticket: Ticket): Variable[]
@@ -44,7 +47,7 @@ export interface SessionsHost {
  * What Sessions registered for an agent it decorated: the releases of its prompt section, tools and skill scope, the scope
  * its skills are registered in, and the skills of one prompt revision; for a worker's subagent, only its tool limits.
  */
-interface SessionBinding { disposers: (() => void)[]; scope?: Context; skills?: { revision: number; dispose: () => void }; subagent?: true }
+interface SessionBinding { disposers: (() => void)[]; memoryTools?: (() => void)[]; scope?: Context; skills?: { revision: number; dispose: () => void }; subagent?: true }
 
 /** The agent presets Executor Sessions and the main Session are created with, which the bundle's patch defines. */
 export const WORKER_PRESET = 'dsh-superagent-worker', ROUTER_PRESET = 'dsh-superagent-router'
@@ -62,6 +65,7 @@ declare module '@deepseek-ai/cordis' {
  */
 const WORK_TOOLS = ['read', 'write', 'edit', 'read_image', 'glob', 'grep', 'bash', 'pwsh', 'job_output', 'job_list', 'job_kill', 'web_search',
   'web_fetch', 'skill', 'todo_write', 'subagent', 'list_subagent_models', 'send_message', 'list_agents', 'interrupt_agent']
+const MEMORY_TOOLS = new Set(['orchestrator_memory_search', 'orchestrator_read'])
 /** What the main Session is told when it would wait: what it waits for comes to it, and a waiting step holds back the next. */
 const NO_WAIT = 'Reports, follow_up notices, new candidates and a background job\'s end with its output arrive by themselves as messages; '
   + 'end the turn instead of waiting for them.'
@@ -205,9 +209,9 @@ export class Sessions {
     return revision === this.promptVersion(sessionId).revision || (this.host.store.get(KV.sessions.prompts(sessionId)) ?? []).includes(revision)
   }
   /** Returns a tool registrar for `agent` that renders tool output as JSON text and attaches `output.image` as an image when present. */
-  private registerTool(agent: Agent, binding: SessionBinding): RegisterTool {
+  private registerTool(agent: Agent, binding: SessionBinding, disposers = binding.disposers): RegisterTool {
     return (name, description, schema, execute) => {
-      binding.disposers.push(agent.ctx.tools.register({ name, description, parameters: z.toJSONSchema(schema),
+      disposers.push(agent.ctx.tools.register({ name, description, parameters: z.toJSONSchema(schema),
         output: { schema: { type: 'object', additionalProperties: true }, render: (_args, value) => {
           const text = { type: 'text' as const, text: JSON.stringify(value) }
           const image = value && typeof value === 'object' && 'image' in value ? (value as { image: never }).image : undefined
@@ -247,7 +251,8 @@ export class Sessions {
       const version = this.promptFor(agent, context.signal !== undefined)
       const current = ticket && host.store.tickets.get(ticket.id)
       const composed = host.prompts.compose(version.config, master ? 'orchestrator' : 'worker', current ? host.environment(current) : undefined)
-      return `[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${current ? mandateInstructions(current.mandate) : ''}`
+      const memory = current && liveTicket(current) ? host.memory?.index() : ''
+      return `[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${memory ? `\n${memory}\n` : ''}${current ? mandateInstructions(current.mandate) : ''}`
     }, ...(master ? { complete: true } : {}) }))
     // A recreated skill scope (e.g. after the skills service restarts) starts empty, so reset `binding.skills` before rebinding.
     const skillScope = agent.ctx.inject(['skills'], scope => {
@@ -261,7 +266,10 @@ export class Sessions {
     if (this.bindings.get(agent) !== binding) return
     const register = this.registerTool(agent, binding)
     this.scopeEnvironment(agent, binding, ticket)
-    for (const tool of host.tools(agent, ticket)) register(tool.name, tool.description, tool.schema, tool.execute)
+    if (ticket && host.observeExecution) binding.disposers.push(host.observeExecution(agent.ctx, String(agent.session.id)))
+    const tools = host.tools(agent, ticket)
+    for (const tool of tools) if (!ticket || !MEMORY_TOOLS.has(tool.name)) register(tool.name, tool.description, tool.schema, tool.execute)
+    if (ticket) this.replaceMemoryTools(agent, binding, tools)
     if (master) {
       binding.disposers.push(agent.ctx.tools.restrict({ allow: ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill'] }),
         agent.ctx.tools.guard(execution => noWait(execution, () => this.routed(agent))))
@@ -353,10 +361,24 @@ export class Sessions {
     if (!binding) return
     this.bindings.delete(agent)
     binding.skills?.dispose()
-    for (const dispose of binding.disposers.splice(0).reverse()) {
+    for (const dispose of [...binding.memoryTools ?? [], ...binding.disposers.splice(0).reverse()]) {
       try { dispose() } catch (error) { this.ctx.logger.warn('dsh-superagent could not release what it registered for a Session: %s', String(error)) }
     }
   }
   /** Releases prompt sections, skills, and tools registered by `Sessions` across all decorated agents. */
   dispose(): void { for (const agent of [...this.bindings.keys()]) this.release(agent) }
+  private replaceMemoryTools(agent: Agent, binding: SessionBinding, tools: Tool[]): void {
+    for (const dispose of binding.memoryTools ?? []) dispose()
+    const disposers = binding.memoryTools = []
+    const register = this.registerTool(agent, binding, disposers)
+    for (const tool of tools) if (MEMORY_TOOLS.has(tool.name)) register(tool.name, tool.description, tool.schema, tool.execute)
+  }
+  /** Update only Worker memory access/grammar; security, environment, skills and Router bindings stay installed. */
+  refreshMemoryTools(): void {
+    for (const [agent, binding] of this.bindings) {
+      if (binding.subagent || !binding.memoryTools || agent.id === this.host.masterId) continue
+      const ticket = this.ticketOf(agent)
+      if (ticket) this.replaceMemoryTools(agent, binding, this.host.tools(agent, ticket))
+    }
+  }
 }

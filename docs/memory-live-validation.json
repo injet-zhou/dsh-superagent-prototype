@@ -1,0 +1,87 @@
+{
+  "provider": "opencode-go",
+  "model": "deepseek-v4.1-flash",
+  "calls": [
+    {
+      "tools": 0,
+      "routingId": "memory-34d6a49327783604b1542af47801ec77b71eafd75f4a121267c7a17784ec0212",
+      "mode": "analysis",
+      "usage": {
+        "inputTokens": 515,
+        "outputTokens": 792,
+        "totalTokens": 1307
+      },
+      "finish": "stop"
+    },
+    {
+      "tools": 0,
+      "routingId": "memory-34d6a49327783604b1542af47801ec77b71eafd75f4a121267c7a17784ec0212",
+      "mode": "analysis",
+      "usage": {
+        "inputTokens": 1846,
+        "outputTokens": 722,
+        "totalTokens": 2568
+      },
+      "finish": "stop"
+    }
+  ],
+  "stages": {
+    "capture": {
+      "candidates": 1,
+      "checkpoint": 2,
+      "replayCalls": 0
+    },
+    "retention": {
+      "compactedSourceRetained": true,
+      "restoredSeqRetained": true
+    },
+    "retrievalAB": {
+      "disabledHits": 0,
+      "enabledVerifiedHits": 1,
+      "modelCalls": 0
+    },
+    "dreaming": {
+      "published": true,
+      "lastConsolidationAt": "2026-11-10T08:11:24.404Z"
+    },
+    "wiki": {
+      "rebuilt": true,
+      "secretAbsent": true
+    }
+  },
+  "success": true,
+  "newAgents": 0,
+  "budget": {
+    "day": "2026-11-10",
+    "calls": 2
+  },
+  "fts5": true,
+  "health": {
+    "enabled": true,
+    "fts": true,
+    "dailyCallBudget": 4,
+    "usedCalls": 2,
+    "retrieval": true,
+    "autoCapture": true,
+    "dreaming": true,
+    "analyzerAvailable": true,
+    "remainingCalls": 2,
+    "capturePending": 0,
+    "consolidationPending": 0,
+    "partialCaptures": 0,
+    "lastCaptureAt": "2026-11-10T08:11:16.901Z",
+    "lastConsolidationAt": "2026-11-10T08:11:24.404Z"
+  },
+  "environment": {
+    "dsh": "0.2.2-rc.1",
+    "node": "24.15.0",
+    "sqlite": "3.51.3",
+    "source": "synthetic DSH Session; actual deterministic Host assertion; live provider"
+  },
+  "adapterSha256": "9b0d985566c5bb1393163e89c9434d0b78be87949ec2564fed1874dc63ef024a",
+  "limitations": [
+    "One synthetic live scenario, not a Coding Worker performance benchmark.",
+    "Provider token usage only; no dollar cost estimate.",
+    "Earlier failed development probes are not included in this successful-run report."
+  ]
+}

@@ -1,6 +1,6 @@
 /** DSH executor: manages one persistent worker session and workspace directory per ticket. */
 import type { Context } from '@deepseek-ai/cordis'
-import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionId, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { mkdir, rmdir, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -81,6 +81,9 @@ export interface ExecutorHost {
   sourceLink(trigger: Trigger, signal?: AbortSignal): Promise<{ source_url?: string; source_url_read?: string }>
   /** Stored Trigger of the message `trigger` replies to, when it replies to one. */
   repliedTo(trigger: Trigger): Trigger | undefined
+  /** Auxiliary post-settlement capture; absent while memory is disabled. Never changes domain authorization. */
+  onTurnSettled?(ticketId: string, assignmentId: string, event: SessionEvent<'turn/end'>): void
+  onMemoryError?(): void
 }
 /** Looks up a ticket's origin trigger in Store. */
 export const sourceTrigger = (host: { store: Pick<Store, 'triggers'> }, ticket: Ticket): Trigger | undefined =>
@@ -209,6 +212,7 @@ export class WorkerSlots {
  * Runtime, Engine, worker tools, and management routes use this class to prepare, launch, deliver to, stop, and resume ticket assignments.
  */
 export class DshExecutor implements Executor {
+  private readonly turnEnds = new Map<string, SessionEvent<'turn/end'>>()
   private readonly disposers: (() => void)[] = []
   private readonly slots: WorkerSlots
   /** Transient failure counts tried so far: keyed by `assignment.id` for worker turns and `launch:<assignment.id>` for launches. */
@@ -369,6 +373,10 @@ export class DshExecutor implements Executor {
       if (!ownTurn) this.host.context.agents.get(sessionId as SessionId)?.cancel({ kind: 'user' }, { keepInbox: false })
       // Its shell jobs and subagents stop with it, also those of a worker that ends its own turn.
       this.stopWork(ticket.id, reason)
+      if (this.host.onTurnSettled) {
+        const agent = this.host.context.agents.get(sessionId as SessionId)
+        if (agent) void this.captureAfterStop(ticket.id, assignment.id, agent).catch(() => { this.host.onMemoryError?.() })
+      }
       this.left.get(ticket.id)?.collect.abort(); this.left.delete(ticket.id); this.personal.delete(ticket.id)
     })
   }
@@ -497,6 +505,7 @@ export class DshExecutor implements Executor {
       if (ticketId !== undefined && this.host.store.tickets.get(ticketId) && message.source.kind === 'user') this.personal.set(ticketId, now())
     }))
     this.disposers.push(ctx.on('agent/disposed', ({ agent }) => {
+      this.turnEnds.delete(agent.id)
       const ticketId = ticketOfSession(agent.id)
       if (ticketId !== undefined) this.personal.delete(ticketId)
     }))
@@ -504,6 +513,11 @@ export class DshExecutor implements Executor {
     // history: a step that claimed it may be cancelled or fail before, which drops it.
     this.disposers.push(ctx.on('session/event', (session, event) => {
       const ticketId = ticketOfSession(session.id)
+      if (event.type === 'turn/end' && ticketId !== undefined && this.host.onTurnSettled && this.host.store.tickets.get(ticketId)) {
+        const agent = ctx.agents.get(session.id)
+        // Draining children may wake and cancel a synthetic turn; preserve the real turn's capture anchor.
+        if (!agent || !cancelled.has(agent)) this.turnEnds.set(session.id, event)
+      }
       if (event.type !== 'user/message' || ticketId === undefined || !this.host.store.tickets.get(ticketId) || event.data.source.kind !== 'dsh-superagent' || this.host.closing()) return
       const message = event.data
       void this.background(Promise.resolve().then(() => {
@@ -634,6 +648,10 @@ export class DshExecutor implements Executor {
     if (handedOff(before) && !(report && person && person > report.at)) {
       this.host.engine.turnEnded(ticket.id, idle.id)
       this.handOff(ticket.id, agent)
+      const anchor = this.turnEnds.get(agent.id)
+      if (this.host.onTurnSettled && anchor) {
+        void this.captureHandoff(ticket.id, idle.id, agent, anchor).catch(() => { this.host.onMemoryError?.() })
+      }
       return
     }
     // Its turn ends once nothing runs for it in the background, which holds its slot meanwhile: at most for the limit from
@@ -649,7 +667,10 @@ export class DshExecutor implements Executor {
     finally { clearTimeout(timer); if (this.settling.get(ticket.id) === look) this.settling.delete(ticket.id) }
     const current = live()
     if (this.host.closing() || look.signal.aborted || (!quiet && !limit.signal.aborted) || !current || this.resuming.has(idle.id)) return
-    if (quiet) this.host.engine.turnEnded(ticket.id, idle.id)
+    if (quiet) this.host.store.atomic(() => {
+      this.host.engine.turnEnded(ticket.id, idle.id)
+      this.captureTurn(ticket.id, idle.id, agent)
+    })
     let stopped = ''
     if (!quiet) {
       // Its shell jobs that ran past the limit are killed, which it is told at its next turn; its subagents, whose stop would
@@ -679,5 +700,23 @@ export class DshExecutor implements Executor {
         this.relay(resultRelay(updated, 'waiting', 'Worker ended without a status report. Use orchestrator_ticket_request_status to request one.'))
       }
     })
+  }
+  private captureTurn(ticketId: string, assignmentId: string, agent: Agent, anchor = this.turnEnds.get(agent.id)): void {
+    if (!anchor || this.host.closing() || agent.status !== 'idle' || this.resuming.has(assignmentId) || this.turnEnds.get(agent.id) !== anchor) return
+    try { this.host.onTurnSettled?.(ticketId, assignmentId, anchor) } catch { this.host.onMemoryError?.() }
+  }
+  /** Review jobs may outlive a handoff; waiting for them here holds no WorkerSlot. */
+  private async captureHandoff(ticketId: string, assignmentId: string, agent: Agent, anchor: SessionEvent<'turn/end'>): Promise<void> {
+    await this.stopped(ticketId)
+    if (!await untilQuiet(this.host.context, agent, this.host.lifetime)) return
+    const current = this.host.store.tickets.get(ticketId)
+    if (current && latestAssignment(current)?.id === assignmentId) this.captureTurn(ticketId, assignmentId, agent, anchor)
+  }
+  /** Direct cancellation/closure is best effort, after the existing background shutdown finishes. */
+  private async captureAfterStop(ticketId: string, assignmentId: string, agent: Agent): Promise<void> {
+    await this.stopped(ticketId)
+    if (await until(agent.whenIdle().then(() => true), this.host.lifetime) !== true) return
+    const current = this.host.store.tickets.get(ticketId)
+    if (current && latestAssignment(current)?.id === assignmentId) this.captureTurn(ticketId, assignmentId, agent)
   }
 }

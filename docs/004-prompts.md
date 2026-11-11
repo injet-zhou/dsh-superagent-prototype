@@ -62,6 +62,10 @@ Executors also read DeepSeek Harness's coding prompt and the repository's `AGENT
 
 Executors work unattended. Their tools exclude those that ask a person, present UI to them or change the profile, such as `ask_user_question`, `present` and `plugin_manager`.
 
+When repository memory is enabled, only current Workers receive a precomputed index with an explicit untrusted-data boundary. Memory precedes the final Mandate restriction and never changes Policy, permissions or the request. Rendering this index performs no database, file or model access. The snapshot has a conservative 600 UTF-8 byte ceiling (a token upper bound, not an exact tokenizer measurement). Full notes and evidence are paged through `orchestrator_read memory/<id>`; `memory/index` reads the snapshot. `orchestrator_memory_search` returns only verified notes, optionally filtered by a repository-relative path. Human confirmation marks a claim as reviewed; it never turns its contents into an instruction or bypasses tool guards. Disabled memory and Router prompts keep their previous tool and prompt surfaces.
+
+Changing Memory visibility replaces only the Worker's memory search registration and resource-read grammar. Ticket guards, tool restrictions, repository execution environment, prompts and skill registrations remain installed throughout the change; no skill initialization is awaited.
+
 From strongest to weakest:
 
 1. Facts enforced by tools and the host: identities, permissions, tool argument checks, reply purposes, length limits. Prompt text cannot change them.
@@ -94,3 +98,7 @@ These apply [000 Philosophy](000-philosophy.md) to the agents:
 - Saves name their base revision. A conflicting save is refused without discarding the draft.
 - Sessions read the latest version on every model request, including later steps in the same turn. Saving does not restart, cancel or wake a Session. The host records the revisions each Session used; an Executor can read any revision it worked under.
 - The deployment sets a total size limit, including overrides. Validation refuses unknown keys, reserved built-in skill names, unknown override parts and missing template placeholders. It never silently truncates text. An override identical to the default is removed so the part follows future defaults.
+
+Dreaming stores salience separately from a claim: `core` repository architecture, `routine` procedures, and `incidental` outcomes. The precomputed index prefers core entries, then reusable procedures, and omits incidental outcomes; retrieval still searches all verified Notes. Classification changes use their own CAS/history and never refresh verification. Workers can navigate derived topic articles through `memory/topic/index` and `memory/topic/<id>` under the same Ticket guard. Articles cite exact source revisions and evidence; obsolete sections are withdrawn, and synthesized explanations never become Host attestations.
+
+Memory review proposals remain untrusted data. A verified Note stays available while a model-proposed invalidation awaits a person; search/read expose its pending-review flag and sources. The analyzer prompt explains that verified invalidation is a request, while the Publisher independently enforces that boundary even for hostile output or missing/changed/truncated history.

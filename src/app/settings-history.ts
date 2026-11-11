@@ -3,13 +3,14 @@ import type { FieldSpec } from '../sources/kind.ts'
 import type { SourceRegistry } from '../sources/registry.ts'
 import { KV } from '../kv.ts'
 import type { Store, SettingsVersion } from './store.ts'
+import { MemoryConfigSchema } from '../policy.ts'
 
 type SourceSettings = SettingsVersion['settings']['sources'][string]
 /** Change codes localized by the web panel as `change.<code>`. */
 export type SettingsChangeCode = 'ruleAdded' | 'ruleRenamed' | 'ruleInstruction' | 'ruleEnabled' | 'ruleDisabled' | 'ruleRemoved'
   | 'sourceEnabled' | 'sourceDisabled' | 'sourceField' | 'sourceRowsAdded' | 'sourceRowsRemoved' | 'sourceRowsChanged' | 'sourceAdmission'
   | 'mode' | 'timeout' | 'evalModel' | 'executorModel' | 'maxWorkers' | 'paused' | 'resumed' | 'executionDirectory' | 'prepareCommand'
-  | 'blockedCommands'
+  | 'blockedCommands' | 'memoryEnabled' | 'memoryRetrieval' | 'memoryCapture' | 'memoryDreaming' | 'memoryBudget' | 'memoryModel'
 /** A single settings diff entry rendered by the panel using `change.<code>` and field labels from the Source listing. */
 export interface SettingsChange {
   code: SettingsChangeCode; items?: string[]; from?: string | number | boolean; to?: string | number | boolean; name?: string; source?: string
@@ -71,6 +72,12 @@ function settingsChanges(before: SettingsVersion['settings'], after: SettingsVer
   if (before.executor.directory !== after.executor.directory) changes.push({ code: 'executionDirectory', from: before.executor.directory, to: after.executor.directory })
   if (before.executor.prepare !== after.executor.prepare) changes.push({ code: 'prepareCommand' })
   if (!same(before.executor.blockedCommands, after.executor.blockedCommands)) changes.push({ code: 'blockedCommands', from: before.executor.blockedCommands.join(' '), to: after.executor.blockedCommands.join(' ') })
+  const previousMemory = before.memory ?? MemoryConfigSchema.parse({}), nextMemory = after.memory ?? MemoryConfigSchema.parse({})
+  for (const [field, code] of [['enabled', 'memoryEnabled'], ['retrieval', 'memoryRetrieval'], ['autoCapture', 'memoryCapture'],
+    ['dreaming', 'memoryDreaming'], ['dailyCallBudget', 'memoryBudget']] as const) {
+    if (previousMemory[field] !== nextMemory[field]) changes.push({ code, from: previousMemory[field], to: nextMemory[field] })
+  }
+  if (!same(previousMemory.analyzerModel, nextMemory.analyzerModel)) changes.push({ code: 'memoryModel' })
   for (const id of new Set([...Object.keys(before.sources), ...Object.keys(after.sources)])) changes.push(...sourceChanges(id, before.sources[id], after.sources[id], sources))
   return changes
 }

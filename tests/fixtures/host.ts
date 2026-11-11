@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { vi, type Mock } from 'vitest'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
+import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { Runtime, type RuntimeOptions } from '../../src/app/runtime.ts'
 import type { Machine } from '../../src/deployment.ts'
 import { Store } from '../../src/app/store.ts'
@@ -232,7 +233,7 @@ export async function startRuntime(seed?: (store: Store) => void, machine: Parti
     }),
     selectModel: vi.fn(async () => {}), resolveAgent: vi.fn(resolveDefault), rename: vi.fn(async () => {}),
     prompt: vi.fn(() => { throw new Error('Plugin delivery must not use user RPC') }),
-    inspect: vi.fn(async () => ({ events: [] })),
+    inspect: vi.fn<(_id?: string, _signal?: AbortSignal) => Promise<{ events: readonly SessionEvent[] }>>(async () => ({ events: [] })),
   }
   const reader = { read: async () => ({ events: [] }), [Symbol.asyncDispose]: async () => {} }
   const persistence = { flush: vi.fn(async () => {}), open: vi.fn(async () => reader) }

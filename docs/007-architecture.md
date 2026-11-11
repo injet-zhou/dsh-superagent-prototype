@@ -156,6 +156,10 @@ Trigger and Thread `meta` belong to the Source. The core does not interpret them
 
 ### Store
 
+Repository memory is an optional application subsystem, composed once per Runtime after Setup resolves repository identity. It has no Engine port. SQLite schema 12 adds notes, source evidence, immutable revisions and capture checkpoints in the existing connection. Schemas 10 and 11 upgrade transactionally; an older binary requires a pre-upgrade backup. FTS5 is optional and uses a bounded substring fallback. The default Runtime keeps its database path.
+
+Workers receive only verified memory through repository-bound read/search tools and a precomputed short index. Router Sessions have no memory access. Settings changes use the repository's independent `memory` revision and do not change `policyVersion`. Memory visibility changes replace only memory-related tool registrations, preserving Ticket guards, tool restrictions and scoped execution environments. Memory contents remain untrusted data under Policy and Mandate.
+
 `Store` (`src/app/store.ts`) owns one SQLite database per repository context. Runtime acquires the directory lock before opening it, preventing a second process from migrating or writing the same state.
 
 Its interfaces are grouped by purpose:
@@ -167,7 +171,7 @@ Its interfaces are grouped by purpose:
 - **Outbox receipts:** `replyStatus` and `receipts`, written only by Outbox. Receipt operations are `get`, `waiting`, `behind`, `add`, `settle` and `withdraw`. `behind` checks whether an earlier message for the same Ticket and conversation is waiting with fewer than three failures. A withdrawn message settles with `channelGone` or `channelIgnored`. Read queries expose failed and dropped replies through `failingReplies`, `droppedReplies` and `droppedSince`.
 - **Typed key-value records:** `get`, `set`, `delete` and `keys`, using entries from `KV`.
 
-`afterCommit` runs an action only after the transaction commits, never after rollback. Runtime reads records in their stored shape; the schema 11 migration converts older supported records at startup.
+`afterCommit` runs an action only after the transaction commits, never after rollback. Runtime reads records in their stored shape; the schema 10→11 step converts legacy records, then schema 12 adds memory without rewriting schema 11 data.
 
 ### Effects
 
@@ -327,8 +331,21 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/outbox.ts` | The Outbox: the Engine's `Outbox` port, the receipts and the `reply` effects that send them |
 | `src/app/notices.ts` | The main Session's notices and relays: `eventNotice`, `reportRelay`, `resultRelay` and `followupRelay` |
 | `src/app/store.ts` | The Store, and `Receipt`, a message of the outbox |
+| `src/app/memory/types.ts` | Strict memory, evidence, path and retrieval schemas and the untrusted-data boundary |
+| `src/app/memory/security.ts` | Secret/PII redaction and source fingerprints |
+| `src/app/memory/retrieval.ts` | Full-repository FTS/fallback plans and deadline-isolated read-only SQLite reader |
+| `src/app/memory/store.ts` | Repository binding, evidence-backed writes, revision CAS and bounded FTS5 retrieval |
+| `src/app/memory/service.ts` | Failure isolation, health, read/search facade and precomputed prompt index |
+| `src/app/memory/analyzer.ts` | Restricted JSON proposal contract, without tool execution or publishing access |
+| `src/app/memory/capture.ts` | Settled-turn capture effects, raw-log continuity checks, atomic cursors, redaction and call budgets |
+| `src/app/memory/evidence.ts` | Host-controlled scoped Transcript replay, source integrity checks and bounded redacted evidence packages |
+| `src/app/memory/attestation.ts` | Bounded Host-observed test execution receipts, exact facts and replay-safe publication |
+| `src/app/memory/knowledge.ts` | Source-linked topic synthesis, independent salience CAS/audit and stale derived-content withdrawal |
+| `src/app/memory/dsh-analyzer.ts` | Tool-free direct LLM stream adapter with explicit model, bounded input/output and no Session |
+| `src/app/memory/dreaming.ts` | Strict proposal publisher, evidence provenance, atomic CAS batches and durable consolidation scheduling |
+| `src/app/memory/projection.ts` | Private atomic Markdown projections, symlink refusal and rebuild coalescing |
 | `src/app/store-read.ts` | `storeReads`: the Store's read queries for the views, the tools and the Sources' polls, which never write |
-| `src/app/migration.ts` | The schema 11 migration: one step from schema 10 that writes every stored record in its current shape |
+| `src/app/migration.ts` | Transactional upgrades from supported schemas 10/11 to 12, retaining the legacy shape migration and adding memory |
 | `src/app/effects.ts` | Effects |
 | `src/app/versions.ts` | `Versions`: a record kept as numbered snapshots with a pointer to the current one, for the settings and the prompts |
 | `src/app/cache.ts` | `TextCache`: texts kept in memory within a size, the least recently used dropped first |
@@ -338,6 +355,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/context.ts` | The built-in prompt text, read from `prompts/`, and the transcript entries Sessions read |
 | `src/app/skill-files.ts` | Packaged text: `promptFile`, which joins a file's one-sentence lines into paragraphs, and the bundled skills |
 | `src/app/sessions.ts` | Sessions |
+| `src/app/session-history.ts` | Passive raw history compatibility for DSH inspect/query APIs, with disposable observation cleanup |
 | `src/app/delivery.ts` | `AgentDelivery`: delivers a message to a DeepSeek Harness agent once per request id, also across a restored Session |
 | `src/app/retry-health.ts` | `RetryHealth`: which Sessions wait on a model budget retry, for the `models` health entry |
 | `src/app/role-models.ts` | Resolves the Router and Worker models, and seeds a new Session with its role's model |
@@ -396,6 +414,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/client/overview.tsx` | The overview |
 | `src/client/repositories.tsx` | Multi-repository overview, host configuration form writes for adding/removing repositories, and independent global/repository settings |
 | `src/client/source.tsx`, `trigger.tsx`, `eval.tsx`, `execution.tsx` | One file per stage: its status, and its settings where it has some |
+| `src/client/memory.tsx` | Repository memory settings, maintenance health, note browsing, source evidence and revision-safe operator reviews |
 | `src/client/thread.tsx`, `ticket.tsx` | The record pages: a Thread with its timeline, and a Ticket with its authorization, Inputs and Assignments |
 | `src/client/settings.tsx` | The Settings tab: the group navigation and the group on screen |
 | `src/client/settings-kit.tsx` | The building blocks of settings blocks: the settings the stage groups share, `useBlockDraft`, the fields, among them a Source kind's, and the history of saves |
@@ -450,6 +469,18 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/timeline.spec.ts` | A Thread's pages and a Trigger's neighbours by time and then id, with every received Trigger's time in one form |
 | `tests/migration.spec.ts` | The schema 11 migration: every stored record in its current shape, and the refusal of older schemas |
 | `tests/store.spec.ts` | Repositories and their working sets, in SQLite as in memory, the kv area, with every key of `KV` spelled only in `src/kv.ts` and the migration, settings history and queries |
+| `tests/memory-store.spec.ts` | Schema 12 upgrades, rollback/recovery, source evidence, CAS and retained revisions |
+| `tests/memory-retrieval.spec.ts` | FTS5/fallback, Unicode, scopes, bounded prompt index and hostile data |
+| `tests/memory-runtime.spec.ts` | Cross-Ticket reads, worker authorization, versioned settings and three-repository isolation |
+| `tests/memory-management.spec.ts` | Scoped browsing, explicit human confirmation, revision conflicts, invalidation and atomic audit rollback |
+| `tests/panel-memory.spec.tsx` | Memory settings, source review, safe text rendering, CAS conflicts, manual maintenance and repository selection |
+| `tests/memory-capture.spec.ts` | Capture idempotence, cursor atomicity, retention gaps, budgets and Worker lifecycle |
+| `tests/memory-evidence.spec.ts` | Missing/changed/foreign source history and complete evidence-package bounds |
+| `tests/memory-attestation.spec.ts` | Actual ToolRuntime and Node test execution facts, zero-model reuse, rejection and atomic rollback |
+| `tests/memory-knowledge.spec.ts` | Core context selection, cross-Ticket article synthesis, source revision invalidation and rebuild |
+| `tests/memory-publisher.spec.ts` | Verified invalidation review requests, source checks, merge/update bypasses, idempotence and rollback |
+| `tests/memory-dreaming.spec.ts` | Publisher CAS/merge/retract, model capability isolation, global budgets and projection recovery |
+| `tests/memory-evaluation.spec.ts` | Fixed 20-case offline A/B retrieval fixture, without live model quality/cost claims |
 | `tests/prompts.spec.ts` | Prompt validation, assembly and versions |
 | `tests/cards.spec.ts` | The rules the built-in text must state, file by file |
 | `tests/model-surface.spec.ts` | Everything models read: tools, prompts, skills and inputs, checked against the tool schemas, the execution environment and the glossary, within a size budget per role |
@@ -482,6 +513,10 @@ One SQLite file per repository context, opened only by its Store: `<stateDir>/or
 | `effect` | The effect queue: per kind and key, the payload, its order, failed attempts with the last error, and when it is due | Effects; the schema 11 migration queues what earlier versions kept for the main Session |
 | `outbox` | The receipt of each message for a Channel, by id, with the Ticket it is for and its `status`, `pending`, `sent` or `dropped`, kept so an id is never queued twice; for a dropped message, when and why, as the generated column `dropped`, its time, and a reason code. A message that waits has a `reply` effect, which holds its attempts | The Outbox |
 | `kv` | Every other record, by key | The part that names it |
+| `memory_note` | Repository-bound claims with scope, status and revision | MemoryStore |
+| `memory_evidence` | Auditable event references, redacted excerpts and exact-claim Host attestations | MemoryStore |
+| `memory_revision` | Immutable before/after audit with reason and source job fingerprint | MemoryStore |
+| `memory_capture_checkpoint` | Atomically committed capture cursor and explicit partial-history state | MemoryCapture |
 
 A generated column is computed from its row's JSON and is empty outside its set, and each has an index over its set, so a pass reads only active work. A database that predates a column gets it when the Store opens it.
 
@@ -496,6 +531,7 @@ A generated column is computed from its row's JSON and is empty outside its set,
 | Session prompt history | `session-prompts:<session id>` |
 | Source state | Read positions such as `github-cursor:<number>`, PR CI fingerprints and seen Feishu-topic messages; keys begin with the kind or `thread-` plus a Thread key |
 | Display names | `source-labels:<source id>` |
+| Memory | Immutable repository identity, UTC daily call reservations, published-job replay markers, reviewed note revisions and durable rotation sequence |
 
 Dismissal is stored on its Decision. Input text is rendered from the Ticket when read, so neither needs a separate key-value record.
 
@@ -503,7 +539,7 @@ Read caches use bounded in-memory `TextCache` instances and are lost on restart.
 
 Nothing deletes old records yet, so these grow without bound: the `trigger`, `disposition` and `decision` rows; ended Tickets and their Threads; the outbox's receipts; and in `kv`, every saved settings revision and prompt version, the prompt revisions each Session worked under, and the Sources' records per Thread and per Issue or pull request.
 
-`SCHEMA_VERSION` only increases. A database of a newer version refuses to start; `src/app/migration.ts` upgrades a database of the pre-release schema 10 once, at start, and refuses an older one.
+`SCHEMA_VERSION` only increases. A newer database refuses to start; `src/app/migration.ts` upgrades schemas 10 and 11 to 12 once at startup, and refuses an older one.
 
 ## Model-facing interfaces
 

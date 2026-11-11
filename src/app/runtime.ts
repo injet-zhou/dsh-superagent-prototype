@@ -1,7 +1,7 @@
 /** Application composition root and lifecycle manager for dsh-superagent. */
 import { Service, type Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { SessionId } from '@deepseek-ai/dsh-session'
+import { SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-api-session-controller'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import type {} from '@deepseek-ai/dsh-workspace'
@@ -20,7 +20,7 @@ import { Commands } from '../infra/commands.ts'
 import type { Deployment, Machine } from '../deployment.ts'
 import { environmentOf, ticketEnvironment, type Variable } from './execution-environment.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
-import { DshExecutor, sourceTrigger, triggerMessage, workerSessionId, type WorkerSlots } from '../executor/dsh.ts'
+import { DshExecutor, sourceTrigger, triggerMessage, workerSessionId, type WorkerSlots, type ExecutorHost } from '../executor/dsh.ts'
 import { ticketCard } from './cards.ts'
 import { MasterAssessor } from './assessment.ts'
 import { KV } from '../kv.ts'
@@ -47,11 +47,20 @@ import type { ResourceHost } from './resources.ts'
 import { mainTools, type MainToolsHost } from './tools/main.ts'
 import { executorTools, type ExecutorToolsHost } from './tools/executor.ts'
 import type { Settings as SettingsValue } from '../policy.ts'
+import { MemoryService } from './memory/service.ts'
+import { MemoryCapture } from './memory/capture.ts'
+import type { MemoryAnalyzer } from './memory/analyzer.ts'
+import { DshMemoryAnalyzer } from './memory/dsh-analyzer.ts'
+import { MemoryDreaming } from './memory/dreaming.ts'
+import { MemoryProjection } from './memory/projection.ts'
+import { MemoryAttestor } from './memory/attestation.ts'
 
 // Source plugins interact with dsh-superagent exclusively through the `SourceHost` service interface.
 declare module '@deepseek-ai/cordis' { interface Context { orchestrator: SourceHost } }
 const now = (): string => new Date().toISOString()
 export interface RuntimeOptions {
+  /** Explicit host injection for offline analysis; production never borrows a Worker Session. */
+  memoryAnalyzer?: MemoryAnalyzer
   repositories?: () => readonly { id: string; name: string; runtime?: Runtime; error?: string }[]
   watchRepositories?: (mount: RepositoryMount) => SourceDisposer
   globalLoad?: () => { running: number; maxWorkers: number }
@@ -71,6 +80,9 @@ export class Runtime extends Service implements SourceHost {
   readonly setup: Setup
   readonly prompts: Prompts
   readonly effects: Effects
+  readonly memory: MemoryService
+  private readonly memoryProjection: MemoryProjection
+  private readonly memoryAttestation: MemoryAttestor
   readonly sources: SourceRegistry
   readonly commands: Commands
   readonly sessions: Sessions
@@ -120,6 +132,8 @@ export class Runtime extends Service implements SourceHost {
       const commands = this.commands = new Commands(() => setup.deployment, setup.commandEnvironment, this.lifetime)
       const board = this.board
       const effects = this.effects = new Effects(store, board)
+      const memory = this.memory = new MemoryService(store, board.claim('memory'))
+      const attestor = this.memoryAttestation = new MemoryAttestor({ store, memory, lifetime: this.lifetime, paused: () => this.paused() })
       const sources = this.sources = new SourceRegistry(() => store.settings(), board, kind => {
         // Sync source member lists once startup completes when a source plugin loads dynamically.
         if (kind.policy?.sync) void this.ready?.then(() => this.settings.syncable().includes(kind.kind) ? this.settings.sync(kind.kind) : undefined)
@@ -131,17 +145,37 @@ export class Runtime extends Service implements SourceHost {
       const environment = (ticket: Ticket) => this.ticketEnvironment(ticket)
       const executionEnvironment = (ticket?: Ticket): NodeJS.ProcessEnv => ({ ...setup.executionEnvironment,
         ...ticket ? Object.fromEntries(environment(ticket).map(variable => [variable.key, variable.value])) : {} })
-      const resources: ResourceHost = { store, pages: new TextCache(4_000_000), prompts, commands, masterId, context: ctx,
+      const resources: ResourceHost = { store, memory, pages: new TextCache(4_000_000), prompts, commands, masterId, context: ctx,
         promptVersion: id => this.sessions.promptVersion(id), mayRead: (id, revision) => this.sessions.mayRead(id, revision),
         feishuPageSize: () => feishuSettings(sources).readPageSize, sourceLink: link }
       const sessions = this.sessions = new Sessions({ context: ctx, store, prompts, effects, health: board.claim('models'), masterId,
-        lifetime: this.lifetime,
+        lifetime: this.lifetime, memory, observeExecution: (context, sessionId) => attestor.bind(context, sessionId),
         closing: () => this.closing(), environment, ...machine.scopedEnvironment ? { executionEnvironment } : {},
         tools: (agent, ticket) => ticket ? executorTools(this.toolHost, ticket) : mainTools(this.toolHost, agent) })
       const policyChanged: EngineForSettings['policyChanged'] = (from, to, effects) => { this.engine.policyChanged(from, to, effects) }
+      const memoryHost = { context: ctx, store, effects, memory, lifetime: this.lifetime,
+        get analyzer(): MemoryAnalyzer | undefined {
+          const model = store.settings().memory.analyzerModel
+          return options.memoryAnalyzer ?? (model ? new DshMemoryAnalyzer(ctx.llm, model, SessionId(`memory-${masterId}`)) : undefined)
+        }, paused: () => this.paused() }
+      const capture = new MemoryCapture(memoryHost)
+      const dreaming = new MemoryDreaming(memoryHost)
+      const projection = this.memoryProjection = new MemoryProjection(memory, machine.stateDir, this.lifetime)
+      memory.maintenanceWith({ consolidate: () => dreaming.enqueue(), rebuild: async () => {
+        memory.publisher().rebuildIndex(); memory.refresh(); await projection.rebuild()
+      } })
       this.settings = new Settings({ store, sources, engine: { policyChanged }, health: board, context: ctx, lifetime: this.lifetime, sessions,
-        sourceHost: this, setup, requestPass: () => { this.passes.request() }, ...options.validateSettings ? { validateSettings: options.validateSettings } : {} })
+        sourceHost: this, setup, requestPass: () => { this.passes.request() },
+        settingsChanged: settings => {
+          memory.analyzerAvailable(!!options.memoryAnalyzer || !!settings.memory.analyzerModel)
+          if (memory.configure(settings.memory)) {
+            try { sessions.refreshMemoryTools() } catch { memory.degraded('memory_tools_unavailable') }
+          }
+        },
+        ...options.validateSettings ? { validateSettings: options.validateSettings } : {} })
       this.executor = new DshExecutor({ context: ctx, get engine() { return runtime.engine }, store, effects, health: board.claim('worker'), machine,
+        get onTurnSettled(): ExecutorHost['onTurnSettled'] { return memory.captureEnabled() ? (ticketId, assignmentId, event) => { capture.enqueue(ticketId, assignmentId, event) } : undefined },
+        onMemoryError: () => { memory.degraded('memory_settlement_failed') },
         lifetime: this.lifetime, sessions, closing: () => this.closing(), paused: () => this.paused(), environment, sourceLink: link,
         repliedTo: trigger => repliedTo({ store, sources }, trigger), ...options.slots ? { slots: options.slots } : {},
         ...machine.scopedEnvironment ? { executionEnvironment: () => setup.executionEnvironment } : {} })
@@ -256,6 +290,9 @@ export class Runtime extends Service implements SourceHost {
       return
     }
     if (this.closing()) return
+    const deployment = this.setup.deployment
+    this.memory.bind(JSON.stringify([this.machine.repositoryId ?? 'default', deployment.github.provider ?? 'github',
+      deployment.github.baseUrl ?? 'https://github.com', deployment.repository.toLowerCase()]))
     this.startupStage = 'sessions.install'
     this.sessions.install()
     this.startupStage = 'executor.install'
@@ -277,7 +314,7 @@ export class Runtime extends Service implements SourceHost {
   private httpHost(): HttpHost {
     const runtime = this
     const { store, sources, prompts, sessions, settings, engine, executor, machine, masterId, sourceLinks, setup, passes } = this
-    return { store, sources, prompts, sessions, settings, engine, executor, machine, masterId, sourceLinks,
+    return { store, sources, prompts, sessions, settings, engine, executor, memory: this.memory, machine, masterId, sourceLinks,
       get ready() { return runtime.ready }, get health() { return { ...runtime.health, ...runtime.options.aggregateHealth?.() } },
       get repositoryHealth() { return runtime.health },
       globalLoad: this.options.globalLoad,
@@ -298,6 +335,8 @@ export class Runtime extends Service implements SourceHost {
       await Promise.allSettled([passes, this.effects.drain(), ...agents.map(agent => agent.whenIdle())])
       // The workers' jobs and subagents stop too: their ends would start worker turns without the tool limits released below.
       await this.executor.shutdown()
+      await this.memoryAttestation.idle()
+      await this.memoryProjection.idle()
       this.executor.dispose()
       this.sessions.dispose()
       for (const dispose of this.disposers.reverse()) dispose()

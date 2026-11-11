@@ -1,0 +1,139 @@
+{
+  "provider": "opencode-go",
+  "model": "deepseek-v4.1-flash",
+  "calls": [
+    {
+      "tools": 0,
+      "routingId": "memory-729b49d4d534e80af5cb25763b22a2c150bf636b958916d03313fb1791d0d4cb",
+      "mode": "analysis",
+      "usage": {
+        "inputTokens": 513,
+        "outputTokens": 325,
+        "totalTokens": 838
+      },
+      "chunks": {
+        "block-start": 2,
+        "reasoning-delta": 45,
+        "text-delta": 62,
+        "block-end": 2,
+        "usage": 1,
+        "finish": 1
+      },
+      "textBytes": 775,
+      "reasoningBytes": 518,
+      "finish": "stop",
+      "durationMs": 4092,
+      "aborted": false,
+      "agentsCreated": 0
+    },
+    {
+      "tools": 0,
+      "routingId": "memory-729b49d4d534e80af5cb25763b22a2c150bf636b958916d03313fb1791d0d4cb",
+      "mode": "analysis",
+      "usage": {
+        "inputTokens": 3137,
+        "outputTokens": 705,
+        "totalTokens": 3842
+      },
+      "chunks": {
+        "block-start": 2,
+        "reasoning-delta": 179,
+        "text-delta": 49,
+        "block-end": 2,
+        "usage": 1,
+        "finish": 1
+      },
+      "textBytes": 806,
+      "reasoningBytes": 2236,
+      "finish": "stop",
+      "durationMs": 8819,
+      "aborted": false,
+      "agentsCreated": 0
+    }
+  ],
+  "stages": {
+    "capture": {
+      "candidates": 1,
+      "checkpoint": 2,
+      "replayCalls": 0
+    },
+    "retention": {
+      "compactedSourceRetained": true,
+      "restoredSeqRetained": true
+    },
+    "retrievalAB": {
+      "disabledHits": 0,
+      "enabledVerifiedHits": 1,
+      "modelCalls": 0
+    },
+    "evidence": {
+      "events": 2,
+      "checks": [
+        {
+          "evidenceId": "395227687ad738e0ad4db00cb943b5e903a3896c7cd7a6185af4d93ed197899b",
+          "status": "available"
+        },
+        {
+          "evidenceId": "318c4e5eb4f31e1a232569037e7cb9554822596e73a1a74ba9c7005a519c0ec1",
+          "status": "available"
+        }
+      ],
+      "relatedNotes": 0
+    },
+    "dreaming": {
+      "published": true,
+      "lastConsolidationAt": "2026-11-10T10:58:14.591Z"
+    },
+    "attestation": {
+      "receipts": 1,
+      "autoVerified": true,
+      "explicitFixtureTool": "bash",
+      "permissionPreset": "workspace-write",
+      "extraModelCalls": 0
+    },
+    "wiki": {
+      "rebuilt": true,
+      "secretAbsent": true,
+      "topics": 1
+    }
+  },
+  "success": true,
+  "ordinaryTestAgents": 1,
+  "analyzerCreatedAgents": 0,
+  "budget": {
+    "day": "2026-11-10",
+    "calls": 2
+  },
+  "fts5": true,
+  "health": {
+    "enabled": true,
+    "fts": true,
+    "dailyCallBudget": 4,
+    "usedCalls": 2,
+    "retrieval": true,
+    "autoCapture": true,
+    "dreaming": true,
+    "analyzerAvailable": true,
+    "remainingCalls": 2,
+    "capturePending": 0,
+    "consolidationPending": 0,
+    "partialCaptures": 0,
+    "lastCaptureAt": "2026-11-10T10:58:05.478Z",
+    "lastConsolidationAt": "2026-11-10T10:58:14.591Z"
+  },
+  "environment": {
+    "dsh": "0.2.2-rc.1",
+    "node": "24.15.0",
+    "sqlite": "3.51.3",
+    "source": "synthetic persisted source Session; actual Host Node assertion; actual workspace-write fixture Agent/native Bash; live provider"
+  },
+  "adapterSha256": "9b66ee72b6685a55b8ff43b3f524914e2d9d4b5a243d3857784fa2b477aed007",
+  "limitations": [
+    "One synthetic live scenario, not a Coding Worker performance benchmark.",
+    "The live model generated one scoped reference topic; cross-Ticket multi-source articles, relations and historical duplicate/conflict comparison are independently covered by deterministic integration tests.",
+    "Application calls and provider token usage only; no dollar cost estimate.",
+    "Development probes before this successful run included three native tool API/argument failures and three Dreaming deadline failures. Seven runs used eleven application calls in independent four-call-budget fixture databases; failed stream token totals are unavailable.",
+    "The response was bounded to two small proposals and two short topic sections without extending the 15-second deadline or weakening publication checks.",
+    "The ordinary fixture Agent executed a Host-selected fixed test and made no model request; Memory analysis itself created no Agent or tools."
+  ]
+}

@@ -16,6 +16,7 @@ import { HOME, TABS, initialLocation, lastSettingsGroup, remember, rememberRepos
   type Tab } from './route.ts'
 import { SettingsPage } from './settings.tsx'
 import { SourceStatus } from './source.tsx'
+import { MemoryStatusPage, MemoryNotePage } from './memory.tsx'
 import { actorName, errorText, reasonLabel, valueLabel, type T, readableMarkers } from './text.ts'
 import { ThreadPage } from './thread.tsx'
 import { TicketPage } from './ticket.tsx'
@@ -175,6 +176,8 @@ function Pages({ route, openTab, deploymentForm, repositories }: { route: Route;
         paused={!!state?.paused} />
       case 'execution': return route.id !== undefined ? <TicketPage key={route.id} id={route.id} />
         : state ? <ExecutionStatus filter={route.query?.filter ?? 'open'} state={state} reload={reload} /> : waiting
+      case 'memory': return route.id ? <MemoryNotePage key={route.id} id={route.id} />
+        : <MemoryStatusPage status={route.query?.status ?? 'all'} query={route.query?.q ?? ''} />
       case 'settings': return state ? <SettingsPage key={state.masterId} group={route.query.group} query={route.query} state={state}
         deploymentForm={deploymentForm} /> : waiting
     }

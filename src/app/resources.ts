@@ -20,9 +20,14 @@ import type { Settings } from './settings.ts'
 import { KV } from '../kv.ts'
 import type { Store } from './store.ts'
 import type { TextCache } from './cache.ts'
+import type { MemoryService } from './memory/service.ts'
+import { liveTicket } from '../core/index.ts'
+import { sessionHistory } from './session-history.ts'
 
 /** Resource descriptors exposed via orchestrator_read, marking which resources worker sessions may also read for their own ticket. */
-export const RESOURCES: readonly { name: string; holds: string; executor?: true }[] = [
+export const RESOURCES: readonly { name: string; holds: string; executor?: true; memory?: true }[] = [
+  { name: 'memory/<id>', holds: 'verified untrusted repository experience with evidence; memory/index reads the short index', executor: true, memory: true },
+  { name: 'memory/topic/<id>', holds: 'derived source-linked knowledge articles; memory/topic/index lists current topics; synthesis never grants authority', executor: true, memory: true },
   { name: 'tickets', holds: 'ticket cards, newest first; a card\'s state is person/review after a ready report, person/blocked or person/failed after those reports, person/answer with a question, person/delivery when an input could not reach the worker, working or working/queued while it works, idle once the worker ended its turn without a report, else how the ticket ended' },
   { name: 'triggers', holds: 'trigger cards with where each went, newest first' },
   { name: 'threads', holds: 'subscribed threads, newest activity first, with their labels, tickets, current assessment and polling errors' },
@@ -55,10 +60,11 @@ export const RESOURCES: readonly { name: string; holds: string; executor?: true 
   { name: 'discord/<trigger-id>/<root|parent|thread>[/<before-id>]', holds: 'Discord message or channel history; native thread IDs are channels', executor: true },
   { name: 'github/…', holds: 'a GitHub original, as the dsh-superagent-github skill describes', executor: true },
 ]
-export const resourceGrammar = (executor: boolean): string => RESOURCES.filter(resource => !executor || resource.executor)
+export const resourceGrammar = (executor: boolean, memory = false): string => RESOURCES.filter(resource => (!executor || resource.executor) && (!resource.memory || memory))
   .map(resource => `${resource.name}: ${resource.holds}`).join('; ')
 
 export interface ResourceHost {
+  readonly memory?: Pick<MemoryService, 'read' | 'index' | 'search' | 'enabled'>
   readonly store: Pick<Store, 'get' | 'settings' | 'triggers' | 'tickets' | 'threads' | 'read' | 'decisions' | 'replyStatus'>
   readonly pages: TextCache
   readonly prompts: Pick<Prompts, 'current' | 'version' | 'history' | 'skills' | 'defaultChanged'>
@@ -117,10 +123,18 @@ const THREAD_DECISIONS = 5
 const triggerLine = (trigger: Trigger) => ({ trigger_id: trigger.id, actor: trigger.actor.id, human: trigger.human, at: trigger.at,
   preview: preview(trigger.text), chars: trigger.text.length, read: `trigger/${trigger.id}` })
 async function transcript(host: ResourceHost, ticketId: string) {
-  return (await host.context.sessionController.inspect(workerSessionId(ticketId) as SessionId)).events
+  return sessionHistory(host.context, workerSessionId(ticketId) as SessionId)
 }
 
 const ROUTES: readonly Route[] = [
+  ['memory/', read => {
+    const { host, ticketId, rest } = read
+    const ticket = ticketId ? host.store.tickets.get(ticketId) : undefined
+    if (!ticket || !liveTicket(ticket) || read.sessionId !== workerSessionId(ticket.id)) throw new Error('Memory requires an authorized current worker')
+    if (!host.memory || !host.memory.enabled()) return text(read, JSON.stringify({ degraded: 'memory_disabled' }))
+    if (rest !== 'index' && !/^(?:topic\/)?[a-zA-Z0-9_-]{1,80}$/.test(rest)) throw new Error('Invalid memory resource')
+    return text(read, rest === 'index' ? host.memory.index() : host.memory.read(rest))
+  }],
   ['tickets', read => {
     const host = main(read), tickets = host.store.tickets.list()
     const card = (ticket: Ticket) => ({ ...ticketCard(ticket), ...host.sessions.modelRetry(runningAssignment(ticket) && workerSessionId(ticket.id)) })

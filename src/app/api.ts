@@ -8,6 +8,7 @@ import type { SettingsView } from './views/settings.ts'
 import type { SourceStatusView } from './views/sources.ts'
 import type { DecisionListView, SearchView, ThreadDetailView, ThreadListView } from './views/threads.ts'
 import type { TicketListView } from './views/tickets.ts'
+import type { MemoryBrowse, MemoryDetails, MemoryHealth, MemoryPage, MemoryReview } from './memory/types.ts'
 
 export const TICKET_FILTERS = ['open', 'person', 'working', 'idle', 'ended'] as const
 export const THREAD_FILTERS = ['subscribed', 'evaluating', 'recent', 'all'] as const
@@ -18,6 +19,11 @@ interface Paged { offset?: number; limit?: number }
 type Delivery = 'injected' | 'pending'
 
 export interface Api {
+  'GET memory': { query?: MemoryBrowse; response: MemoryPage & { health: MemoryHealth } }
+  'GET memory/:id': { response: MemoryDetails }
+  'POST memory/:id/review': { body: MemoryReview; response: MemoryDetails }
+  'POST memory/consolidate': { response: { queued: boolean } }
+  'POST memory/rebuild': { response: { rebuilt: boolean } }
   'GET repositories': { response: { id: string; name: string; repository: string; configured: boolean;
     state?: 'starting' | 'ready' | 'paused' | 'error'; health?: Record<string, import('../sources/host.ts').Health>; error?: string;
     load?: { running: number; queued: number; maxWorkers: number }; attention?: number;
