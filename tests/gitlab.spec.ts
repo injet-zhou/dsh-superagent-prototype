@@ -42,10 +42,10 @@ const server = createServer(async (request, response) => {
 })
 const at = () => new Date(Date.now() + 1000).toISOString()
 const issue = (iid: number) => ({ id: 100 + iid, iid, title: `Issue ${iid}`, description: '@agent_bot fix this',
-  state: 'opened', author: { username: 'alice' }, created_at: at(), updated_at: at(), web_url: `${baseUrl}/acme/team/widgets/-/issues/${iid}` })
+  state: 'opened', author: { id: 1, username: 'alice' }, created_at: at(), updated_at: at(), web_url: `${baseUrl}/acme/team/widgets/-/issues/${iid}` })
 const mergeRequest = (iid: number) => ({ ...issue(iid), id: 200 + iid, title: `MR ${iid}`, sha: 'abc1234', source_branch: 'agent/fix', target_branch: 'main',
   source_project_id: 42, target_project_id: 42, web_url: `${baseUrl}/acme/team/widgets/-/merge_requests/${iid}` })
-const comment = (id: number) => ({ id, author: { username: 'alice' }, body: '@agent_bot fix the test', created_at: at(), updated_at: at(), system: false })
+const comment = (id: number) => ({ id, author: { id: 1, username: 'alice' }, body: '@agent_bot fix the test', created_at: at(), updated_at: at(), system: false })
 const project = 'projects/acme%2Fteam%2Fwidgets'
 const route = (method: string, path: string, value: unknown) => routes.set(`${method} ${path}`, async () => value)
 function paged(path: string, items: unknown[]): void {
@@ -70,6 +70,8 @@ beforeEach(async () => {
   cli = join(directory, 'agent-gitlab')
   writeFileSync(cli, `#!/bin/sh\nexec python3 '${resolve('scripts/dsh-gitlab')}' --config '${config}' "$@"\n`, { mode: 0o755 })
   route('GET', 'todos', [])
+  route('GET', 'users/1', { id: 1, username: 'alice', bot: false })
+  route('GET', 'users/7', { id: 7, username: 'agent_bot', bot: false })
   route('GET', 'user', { username: 'agent_bot', id: 7, email: 'agent@example.test' })
   route('GET', 'projects/acme%2Fteam%2Fwidgets', { id: 42, path_with_namespace: 'acme/team/widgets', permissions: { project_access: { access_level: 30 }, group_access: null }, default_branch: 'main' })
   const probe = new Commands(() => deployment, {}, new AbortController().signal)
@@ -178,9 +180,10 @@ it('creates and closes an MR through the isolated worker CLI using native GitLab
 })
 
 it('reads diff discussions as threads, preserving author, file, line and reply relationships', async () => {
+  route('GET', 'users/2', { id: 2, username: 'review_bot', bot: true })
   route('GET', `${project}/merge_requests/1/discussions`, [{ id: 'discussion-a', notes: [
     { ...comment(10), type: 'DiffNote', position: { new_path: 'src/index.ts', new_line: 12 } },
-    { ...comment(11), type: 'DiffNote', author: { username: 'review_bot', bot: true } },
+    { ...comment(11), type: 'DiffNote', author: { id: 2, username: 'review_bot' } },
   ] }])
   expect(await readGithub(commands(), 'github/pulls/1/thread/11')).toMatchObject({ messages: [
     { id: '10', from: 'alice', path: 'src/index.ts', line: 12 }, { id: '11', reply_to: '10', bot: true },
@@ -208,6 +211,64 @@ it('polls mentions into separate Issue/MR candidates and never gives system note
     const config = githubKind.schema.parse({ provider: 'gitlab' })
     expect(githubKind.environment!.values({ deployment, config, trigger: h.received.find(item => item.meta.isPr === false)! }).DSH_SUPERAGENT_GITHUB_NUMBER).toBe('1')
     expect(githubKind.environment!.values({ deployment, config, trigger: h.received.find(item => item.meta.isPr === true)! }).DSH_SUPERAGENT_GITHUB_PR_HEAD).toBe('refs/merge-requests/1/head')
+  } finally { h.store.close() }
+})
+
+it('keeps a bot mention inferred when basic note authors omit bot and unlisted human mentions are explicit', async () => {
+  const login = 'project_42_bot_review'
+  const old = new Date(Date.now() - 60_000).toISOString()
+  route('GET', 'todos', [{ target_type: 'Issue', target: issue(1) }])
+  route('GET', `${project}/issues/1`, { ...issue(1), created_at: old })
+  route('GET', `${project}/issues/1/notes`, [{ ...comment(90), author: { id: 2, username: login } }])
+  route('GET', 'users/2', { id: 2, username: login, bot: true })
+  const h = host()
+  try {
+    h.store.saveSettings(SettingsSchema.parse({ ...h.store.settings(), eval: { mode: 'auto' },
+      policy: { sources: { github: { allowed: [], bots: [{ id: login }], admission: { comments: { unlistedAddressed: 'explicit' } } } } } }))
+    h.ctx.state.set(KV.github.since, new Date(Date.now() - 10_000).toISOString())
+    await pollRound(h.ctx)
+    const trigger = h.received.find(item => item.meta.commentId === 90)!
+    expect(h.engine.candidate(trigger.id)?.strength).toBe('inferred')
+    expect(trigger).toMatchObject({ actor: { id: login }, human: false })
+  } finally { h.store.close() }
+})
+
+it('rejects an unlisted bot even when the human allowed list and explicit admission would accept its username', async () => {
+  const login = 'review_bot'
+  route('GET', 'todos', [{ target_type: 'Issue', target: issue(1) }])
+  route('GET', `${project}/issues/1`, { ...issue(1), created_at: new Date(Date.now() - 60_000).toISOString() })
+  route('GET', `${project}/issues/1/notes`, [{ ...comment(90), author: { id: 2, username: login } }])
+  route('GET', 'users/2', { id: 2, username: login, bot: true })
+  const h = host()
+  try {
+    h.store.saveSettings(SettingsSchema.parse({ ...h.store.settings(), policy: { sources: { github: {
+      allowed: [{ id: login }], bots: [], admission: { comments: { unlistedAddressed: 'explicit' } },
+    } } } }))
+    await pollRound(h.ctx)
+    const trigger = h.received.find(item => item.meta.commentId === 90)!
+    expect(h.engine.candidate(trigger.id)).toBeUndefined()
+    expect(trigger.human).toBe(false)
+  } finally { h.store.close() }
+})
+
+it.each(['unavailable', 'missing bot', 'wrong identity'] as const)('retries a note without authorization when its account lookup is %s', async failure => {
+  const login = 'review_bot'
+  route('GET', 'todos', [{ target_type: 'Issue', target: issue(1) }])
+  route('GET', `${project}/issues/1`, { ...issue(1), created_at: new Date(Date.now() - 60_000).toISOString() })
+  route('GET', `${project}/issues/1/notes`, [{ ...comment(90), author: { id: 2, username: login } }])
+  if (failure === 'missing bot') route('GET', 'users/2', { id: 2, username: login })
+  if (failure === 'wrong identity') route('GET', 'users/2', { id: 3, username: 'alice', bot: false })
+  const h = host()
+  try {
+    await expect(pollRound(h.ctx)).rejects.toThrow()
+    expect(h.received).toEqual([])
+    expect(h.ctx.state.get(KV.github.cursor('issue-1'))).toBeUndefined()
+    expect(h.ctx.state.get(KV.github.retries)).toHaveProperty('issue-1')
+    route('GET', 'users/2', { id: 2, username: login, bot: true })
+    await pollRound(h.ctx)
+    expect(h.received).toMatchObject([{ human: false, actor: { id: login } }])
+    expect(h.ctx.state.get(KV.github.cursor('issue-1'))).toBeDefined()
+    expect(h.ctx.state.get(KV.github.retries)).toEqual({})
   } finally { h.store.close() }
 })
 
@@ -245,7 +306,7 @@ it('binds an agent MR on the ticket branch and ends the ticket after merge', asy
   route('GET', 'todos', [{ target_type: 'Issue', target: issue(1) }])
   route('GET', `${project}/issues/1`, issue(1))
   route('GET', `${project}/issues/1/notes`, [])
-  route('GET', `${project}/merge_requests/1`, { ...mergeRequest(1), author: { username: 'agent_bot' } })
+  route('GET', `${project}/merge_requests/1`, { ...mergeRequest(1), author: { id: 7, username: 'agent_bot' } })
   const h = host()
   try {
     await pollRound(h.ctx)
@@ -258,18 +319,42 @@ it('binds an agent MR on the ticket branch and ends the ticket after merge', asy
     const assignment = h.store.tickets.get(ticket.id)!.assignments.at(-1)!
     h.engine.assignmentStarted(ticket.id, assignment.id)
     h.engine.report(ticket.id, { state: 'ready', summary: 'MR ready' })
-    route('GET', `${project}/merge_requests/1`, { ...mergeRequest(1), author: { username: 'agent_bot' }, state: 'merged', merged_at: at() })
+    route('GET', `${project}/merge_requests/1`, { ...mergeRequest(1), author: { id: 7, username: 'agent_bot' }, state: 'merged', merged_at: at() })
     await observePull(h.ctx, await readPull(h.ctx, 1))
     expect(h.store.tickets.get(ticket.id)?.ended?.outcome).toBe('merged')
   } finally { h.store.close() }
 })
 
 it('reports commit status failure, running and unavailability without GitHub check runs', async () => {
-  route('GET', `${project}/repository/commits/abc1234/statuses`, [{ name: 'build', status: 'failed' }, { name: 'test', status: 'running' }])
+  route('GET', `${project}/repository/commits/abc1234/statuses`, [{ id: 1, name: 'build', status: 'failed' }, { id: 2, name: 'test', status: 'running' }])
   expect(ciCounts(await pullChecks(commands(), 'abc1234'))).toEqual({ failed: 1, running: 1 })
   route('GET', `${project}/repository/commits/abc1234/statuses`, [])
   expect(ciSummary(await pullChecks(commands(), 'abc1234'), 'MR !1', 'github/pulls/1/checks')).toContain('CI unavailable')
   expect(requests.some(item => item.url.pathname.includes('check-runs'))).toBe(false)
+})
+
+it('uses the newest same-name status across paginated pipelines instead of an older success', async () => {
+  paged(`${project}/repository/commits/abc1234/statuses`, [
+    { id: 10, pipeline_id: 100, name: 'build', status: 'success' },
+    { id: 11, pipeline_id: 100, name: 'test', status: 'success' },
+    { id: 20, pipeline_id: 200, name: 'build', status: 'failed' },
+    { id: 21, pipeline_id: 200, name: 'test', status: 'running' },
+  ])
+  const snapshot = await pullChecks(commands(), 'abc1234')
+  expect(snapshot.statuses).toEqual([{ context: 'build', state: 'failure' }, { context: 'test', state: 'pending' }])
+  expect(ciCounts(snapshot)).toEqual({ failed: 1, running: 1 })
+  expect(ciSummary(snapshot, 'MR !1', 'github/pulls/1/checks')).toContain('CI failed')
+})
+
+it('reports recovery from the highest status ID even when pipeline pages arrive out of order', async () => {
+  paged(`${project}/repository/commits/abc1234/statuses`, [
+    { id: 30, pipeline_id: 300, name: 'build', status: 'failed' },
+    { id: 50, pipeline_id: 500, name: 'build', status: 'success' },
+    { id: 40, pipeline_id: 400, name: 'build', status: 'failed' },
+  ])
+  const snapshot = await pullChecks(commands(), 'abc1234')
+  expect(snapshot.statuses).toEqual([{ context: 'build', state: 'success' }])
+  expect(ciSummary(snapshot, 'MR !1', 'github/pulls/1/checks')).toContain('CI passed 1/1')
 })
 
 it('posts idempotent replies to the correct Issue or MR conversation', async () => {
@@ -281,7 +366,7 @@ it('posts idempotent replies to the correct Issue or MR conversation', async () 
     expect(await sendGithub({ commands: commands() }, message)).toBe('sent')
     const body = (posts[0] as { body: string }).body
     expect(body).toContain(`<!-- dsh-superagent:reply-${number} -->`)
-    route('GET', `${project}/${kind}/1/notes`, [{ ...comment(99), author: { username: 'agent_bot' }, body }])
+    route('GET', `${project}/${kind}/1/notes`, [{ ...comment(99), author: { id: 7, username: 'agent_bot' }, body }])
     expect(await sendGithub({ commands: commands() }, message)).toBe('sent')
     expect(posts).toHaveLength(1)
   }
