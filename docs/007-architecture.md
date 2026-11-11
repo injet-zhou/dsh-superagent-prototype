@@ -261,7 +261,7 @@ Each model request binds the Session to the current prompt revision. The revisio
 | `src/app/tools/main.ts`, `src/app/tools/executor.ts` | Tool arguments of the main Session and the Executor Sessions into calls of the core classes, and their results into cards |
 | `src/app/http.ts`, `src/app/views/`, `src/app/api.ts` | HTTP requests into calls, and Store reads into the panel's views; `api.ts` types every route for the panel |
 | `src/app/resources.ts`, `src/app/links.ts`, `src/app/cards.ts` | Resource names into reads, source messages into links, records into compact cards for models |
-| `src/sources/github*.ts`, `src/sources/feishu*.ts`, `src/sources/poll.ts` | GitHub and Feishu payloads into Triggers and Thread facts, and messages into CLI calls |
+| `src/sources/github*.ts`, `src/sources/feishu*.ts`, `src/sources/discord.ts`, `src/sources/wecom.ts`, `src/infra/wecom*.ts`, `src/sources/poll.ts` | GitHub, Feishu, Discord and WeCom payloads into Triggers and Thread facts; messages into CLI calls or the robot's WebSocket |
 | `src/deployment.ts`, `src/setup.ts`, `src/infra/` | Setup probes and problems, CLI transport, the agent's process environment |
 
 ## Dependency rules
@@ -294,8 +294,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 - Runtime sends `pullEndNotices` for merged or closed Tickets.
 - Executor tools bind reported pull requests with `readPull` and `claimPull`, using the GitHub context exposed by Runtime.
 - MasterAssessor reads repository files with `readRepositoryPath`.
-- Sessions and Prompts register built-in skills for the repository Source, Feishu and Discord. Migration converts their schema-10 records.
-- Setup probes repository, Feishu and Discord account fields (`SETUP_FIELDS`). Only those Sources receive account setup problems through `SourceContext.problem`.
+- Sessions and Prompts register built-in skills for the repository Source, Feishu, Discord and WeCom. Migration converts their schema-10 records.
+- Setup probes repository, Feishu, Discord and WeCom account fields (`SETUP_FIELDS`). Only those Sources receive account setup problems through `SourceContext.problem`.
 
 
 ## Modules
@@ -381,6 +381,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/executor/background.ts` | A worker's background work in DeepSeek Harness, the shell jobs its Session owns (`ctx.jobs`) and its subagents (`ctx.subagents`): `runningJobs`, `untilQuiet`, `killJobs`, `collectJobs`, `stopSubagents`, `stopBackground`, `until`, and `cancelled`, the workers whose turn a stop of their subagents cancelled |
 | `src/infra/errors.ts` | Shared `CliError` transport failure type, re-exported from Commands for compatibility |
 | `src/infra/discord.ts` | Bot-only Discord REST transport, shared rate-limit queue, fixed HTTPS origin and sanitized errors |
+| `src/infra/wecom.ts` | The WeCom intelligent robot's WebSocket connection through `@wecom/aibot-node-sdk`: one shared transport per robot, authentication, callbacks, Markdown sends and connection state |
+| `src/infra/wecom-secret.ts` | Reads the private WeCom secret file with its `botId` and `secret`, refusing files other users can read |
 | `src/infra/commands.ts` | `Commands`, the CLI transport: `run`; `api` and `pages`, limited to the configured repository and validated; `lark` as the bot; `git`. `CliError` carries the code a command's output reports, such as a GitHub HTTP status, and a command that prints nothing fails with how it ended, never with its arguments; `validItems` skips and counts the malformed items of a list |
 | `src/infra/gitlab.ts` | GitLab REST v4 normalization, separate Issue/MR identifiers, to-dos, discussions, repository reads and commit statuses through the account-isolated Python CLI |
 | `src/infra/gitea.ts` | Gitea REST normalization behind the existing repository Source: notifications, Issues, PRs, reviews and pagination; uses the account-isolated Python CLI, without changing the DSH Executor |
@@ -400,6 +402,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/sources/github-channel.ts` | The GitHub Channel: comments and review thread replies, `sent` or `gone` |
 | `src/sources/github-read.ts` | CI snapshots, repository reads, the `github/` resources, and `githubThreadContext`: an Issue's or pull request's conversation by page |
 | `src/sources/discord.ts` | Explicit Discord channel/thread polling, snowflake checkpoints, policy rows, context reads, bot reply receipts, mention acknowledgement reactions and plugin entry |
+| `src/sources/wecom.ts` | The WeCom kind and plugin entry, exported as `./wecom-watch`: callbacks as Triggers, the group/direct scope, Markdown replies with a private receipt, policy rows, the connection loop and health |
 | `src/sources/feishu.ts` | The Feishu kind and plugin entry, exported as `./feishu-watch` |
 | `src/sources/feishu-trigger.ts` | Feishu messages as Triggers, by one rule for live events, history pages and topic pages |
 | `src/sources/feishu-loops.ts` | The Feishu loops: the event consumer, history recovery, chat names and polling of subscribed topics |
@@ -432,7 +435,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/client/locales.ts` | All copy in both languages, and the glossary of [001 Domain model](001-domain.md) |
 | `src/client/client.css`, `css.d.ts` | The panel's stylesheet, loaded as text |
 
-`src/sources/github.ts` and `src/sources/feishu.ts` are also the entries of the repository and Feishu Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch` and `./feishu-watch`. `src/sources/discord.ts` is exported as `./discord-watch`. The bundle's `cordis.patch.yml` inserts the runtime and three Source plugins, with Feishu and Discord disabled.
+`src/sources/github.ts` and `src/sources/feishu.ts` are also the entries of the repository and Feishu Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch` and `./feishu-watch`. `src/sources/discord.ts` is exported as `./discord-watch`, and `src/sources/wecom.ts` as `./wecom-watch`. The bundle's `cordis.patch.yml` inserts the runtime and four Source plugins, with Feishu, Discord and WeCom disabled.
 
 ## Tests
 
@@ -443,6 +446,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/policy.spec.ts` | Source scope, the gate, the admission table, Mandate revalidation, the Policy version, settings migrations and assessment outcomes |
 | `tests/registry.spec.ts` | `SourceRegistry`: instances, validation, Policy parts, Channels and Thread context |
 | `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, polls and read positions, the pull request rules, health |
+| `tests/wecom.spec.ts` | The WeCom Source: callback translation, scope and policy rows, admission, Markdown replies with their receipt, the connection loop, and an end-to-end WebSocket authentication, callback and reply |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
 | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
 | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |
@@ -533,7 +537,7 @@ A generated column is computed from its row's JSON and is empty outside its set,
 | Session prompt history | `session-prompts:<session id>` |
 | Source state | Read positions such as `github-cursor:<number>`, PR CI fingerprints and seen Feishu-topic messages; keys begin with the kind or `thread-` plus a Thread key |
 | Display names | `source-labels:<source id>` |
-| Memory | Immutable repository identity, UTC daily call reservations, published-job replay markers, reviewed note revisions and durable rotation sequence |
+| Memory | Immutable repository identity, UTC daily call reservations, durable per-Session/cursor capture retry holds, published-job replay markers, reviewed note revisions and durable rotation sequence |
 
 Dismissal is stored on its Decision. Input text is rendered from the Ticket when read, so neither needs a separate key-value record.
 

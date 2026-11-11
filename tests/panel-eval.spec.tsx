@@ -34,7 +34,7 @@ it('keeps a Policy draft across remounts, and merges another save into it sender
   await mount()
   await click(zh['tab.eval'])
   await click(find(zh['tab.settings'], '.dt-status-head button'))
-  expect(all('.dt-subtab').map(tab => tab.textContent)).toEqual(['飞书', 'GitHub / Gitea / GitLab'])
+  expect(all('.dt-subtab').map(tab => tab.textContent)).toEqual(['飞书', 'GitHub / Gitea / GitLab', '企业微信'])
   await addUser()
   expect(text()).toContain(zh.draftKept)
   await remount()

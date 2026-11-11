@@ -162,10 +162,24 @@ it('calls only the DSH text stream with no tools, an isolated routing identity a
 it('refuses model tool calls, incomplete streams and provider errors without exposing their text', async () => {
   const adapter = (chunks: StreamChunk[]) => new DshMemoryAnalyzer({ stream: async function* () { yield* chunks } }, { provider: 'p', model: 'm' })
   const input = { mode: 'capture' as const, events: [], notes: [] }, signal = new AbortController().signal
-  await expect(adapter([{ type: 'tool-call-delta', index: 0, id: ToolCallId('call'), name: 'bash', argumentsDelta: 'dangerous' }]).propose(input, signal)).rejects.toThrow('memory_analyzer_failed')
-  await expect(adapter([{ type: 'text-delta', index: 0, text: '[]' }]).propose(input, signal)).rejects.toThrow('memory_analyzer_failed')
+  await expect(adapter([{ type: 'tool-call-delta', index: 0, id: ToolCallId('call'), name: 'bash', argumentsDelta: 'dangerous' }]).propose(input, signal)).rejects.toThrow(/^memory_tool_output_refused$/)
+  await expect(adapter([{ type: 'text-delta', index: 0, text: '[]' }]).propose(input, signal)).rejects.toThrow(/^memory_model_incomplete$/)
+  await expect(adapter([{ type: 'text-delta', index: 0, text: 'secret=invalid-json' }, { type: 'finish', reason: { kind: 'stop' } }])
+    .propose(input, signal)).rejects.toThrow(/^memory_invalid_json$/)
   const bad = new DshMemoryAnalyzer({ stream: async function* () { throw new Error('secret=private-value') } }, { provider: 'p', model: 'm' })
   await expect(bad.propose(input, signal)).rejects.toThrow(/^memory_analyzer_failed$/)
+})
+
+it.each([
+  ['MISSING_CREDENTIAL', 'memory_model_credentials'], ['AUTH', 'memory_model_credentials'],
+  ['RATE_LIMIT', 'memory_model_rate_limit'], ['UNKNOWN_MODEL', 'memory_model_configuration'],
+  ['UNKNOWN_SECRET_CODE', 'memory_analyzer_failed'],
+])('classifies provider failure %s without retaining provider text', async (code, expected) => {
+  const adapter = new DshMemoryAnalyzer({ stream: async function* () {
+    yield { type: 'finish' as const, reason: { kind: 'error' as const, failure: { code, message: 'API_KEY=private-provider-text' } } }
+  } }, { provider: 'p', model: 'm' })
+  await expect(adapter.propose({ mode: 'capture', events: [], notes: [] }, new AbortController().signal))
+    .rejects.toThrow(new RegExp(`^${expected}$`))
 })
 
 it('shares the memory model limit across repositories, charges failed calls and cancels when disabled', async () => {
@@ -341,7 +355,7 @@ it('bounds a non-cooperative analyzer with the configured deadline and retains i
     await waitUntil(() => propose.mock.calls.length === 1)
     expect(deadline).toHaveBeenCalledWith(15_000)
     timeout.abort()
-    await expect(active).rejects.toThrow('memory_operation_aborted')
+    await expect(active).rejects.toThrow('memory_analysis_timeout')
     await expect(analyze(host, input)).rejects.toThrow('memory_analyzer_busy')
     pending.resolve([])
     await vi.waitFor(async () => { await expect(analyze(host, input)).rejects.toThrow('memory_analysis_paused') })

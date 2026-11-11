@@ -1,7 +1,7 @@
 /** Probes repository and account CLIs, configures the worker execution environment and command shims, and tracks setup readiness. */
 import type { Context } from '@deepseek-ai/cordis'
 import { UserError } from '../core/index.ts'
-import { GithubAccountsSchema, SETUP_FIELDS, resolveDeployment, resolveFeishuBot, resolveDiscordBot, workerProbe, type Deployment, type Machine } from '../deployment.ts'
+import { GithubAccountsSchema, SETUP_FIELDS, resolveDeployment, resolveFeishuBot, resolveDiscordBot, resolveWecomBot, workerProbe, type Deployment, type Machine } from '../deployment.ts'
 import { agentVariables, applyEnvironment, runAsWorker, sourceProcessEnvironment, verifyEnvironment, withoutDirectory, workerBin, writeEnvironment } from '../infra/environment.ts'
 import { delimiter } from 'node:path'
 import type { Settings, SettingsBlock } from '../policy.ts'
@@ -32,6 +32,7 @@ export class Setup {
   problem?: SetupProblem
   feishuProblem?: SetupProblem
   discordProblem?: SetupProblem
+  wecomProblem?: SetupProblem
   /** PATH with the worker shim directory removed so the host's own CLI calls invoke the real binaries. */
   private readonly path: string
   /** Environment variables pointing agent subprocesses at the isolated git config and command shims. */
@@ -61,7 +62,7 @@ export class Setup {
   }
   /** Trigger a restart to re-run setup, refusing if setup and optional bots are already healthy so running assignments are not interrupted. */
   check(): void {
-    if (this.configured() && !this.feishuProblem && !this.discordProblem) throw new UserError('setupComplete')
+    if (this.configured() && !this.feishuProblem && !this.discordProblem && !this.wecomProblem) throw new UserError('setupComplete')
     this.restart()
   }
   /** Defer the restart to the next macrotask so the current HTTP or tool caller receives its response first. */
@@ -69,9 +70,10 @@ export class Setup {
   /** Verify account CLIs for a modified source block before saving, ignoring setup errors belonging to other blocks. */
   async checkAccounts(block: SettingsBlock, settings: Settings): Promise<void> {
     const { machine } = this.host
-    if ((block === 'source:feishu' || block === 'source:discord') && settings.sources[block.slice(7)]?.enabled === false) return
+    if ((block === 'source:feishu' || block === 'source:discord' || block === 'source:wecom') && settings.sources[block.slice(7)]?.enabled === false) return
     let check: Promise<unknown>
     if (block === 'source:discord') check = resolveDiscordBot(settings.sources.discord?.config, this.host.lifetime)
+    else if (block === 'source:wecom') check = resolveWecomBot(settings.sources.wecom?.config)
     else if (block === 'source:feishu') check = resolveFeishuBot(machine, settings.sources.feishu?.config, this.probe())
     else check = resolveDeployment(machine, settings.sources.github?.config, this.probe())
     await check.catch((error: unknown) => { if (!(error instanceof SetupError) || error.place === block.slice(7)) throw error })
@@ -103,7 +105,13 @@ export class Setup {
       context.logger.warn('dsh-superagent leaves Discord out: %s', error.message)
       return undefined
     })
-    const resolved = { ...deployment, ...(feishu ? { feishu } : {}), ...(discord ? { discord } : {}) }
+    const wecom = settings.sources.wecom?.enabled === false ? undefined : await resolveWecomBot(settings.sources.wecom?.config).catch((error: unknown) => {
+      if (!(error instanceof SetupError)) throw error
+      this.wecomProblem = error.problem
+      context.logger.warn('dsh-superagent leaves WeCom out: %s', error.message)
+      return undefined
+    })
+    const resolved = { ...deployment, ...(feishu ? { feishu } : {}), ...(discord ? { discord } : {}), ...(wecom ? { wecom } : {}) }
     const machineProblem = (error: unknown): never => {
       if (error instanceof SetupError) throw error
       throw new SetupError('environmentFailed', { output: error instanceof Error ? error.message : String(error) })

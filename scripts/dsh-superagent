@@ -90,7 +90,8 @@ def state(url):
         entries = {name: entry if isinstance(entry, dict) else {} for name, entry in health.items()}
         return {'health': {name: entry.get('state') for name, entry in entries.items()},
                 'errors': {name: str(entry.get('detail', '')) for name, entry in entries.items() if entry.get('state') == 'error'},
-                'setup': setup.get('problem'), 'feishu': setup.get('feishuProblem'), 'discord': setup.get('discordProblem')}
+                'setup': setup.get('problem'), 'feishu': setup.get('feishuProblem'), 'discord': setup.get('discordProblem'),
+                'wecom': setup.get('wecomProblem')}
     except (OSError, ValueError, AttributeError):
         return None
 
@@ -125,7 +126,8 @@ def status(args):
     print(json.dumps({'pids': pids, 'cwd': str(ROOT), 'url': args.url,
                       'manually_stopped': stopped(args.profile), 'health': current and current['health'],
                       'errors': current and current['errors'], 'setup': current and current['setup'],
-                      'feishu': current and current['feishu'], 'discord': current and current['discord']}, ensure_ascii=False, indent=2))
+                      'feishu': current and current['feishu'], 'discord': current and current['discord'],
+                      'wecom': current and current['wecom']}, ensure_ascii=False, indent=2))
     return outcome(pids, current)
 
 
@@ -201,6 +203,9 @@ def start(args):
             if current['discord']:
                 print('dsh-superagent runs without Discord: ' + str(current['discord'].get('detail', '')))
                 print('Fix it on the Discord card of the Source settings, then recheck setup.')
+            if current['wecom']:
+                print('dsh-superagent runs without WeCom: ' + str(current['wecom'].get('detail', '')))
+                print('Fix it on the WeCom card of the Source settings, then recheck setup.')
             for name, detail in part_errors(current).items():
                 print(f'{name} reports an error, which a restart does not fix: {detail}')
             return code

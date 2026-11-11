@@ -5,7 +5,7 @@ import { expect, it, onTestFinished, vi } from 'vitest'
 import { analyze, MemoryCapture } from '../src/app/memory/capture.ts'
 import { MemoryConfigSchema } from '../src/policy.ts'
 import { Effects } from '../src/app/effects.ts'
-import type { MemoryAnalysisInput, MemoryAnalyzer } from '../src/app/memory/analyzer.ts'
+import { MemoryAnalysisFailure, type MemoryAnalysisInput, type MemoryAnalyzer } from '../src/app/memory/analyzer.ts'
 import type { Ticket } from '../src/core/index.ts'
 import { exampleNote, memoryFixture } from './fixtures/memory.ts'
 import { startRuntime, feishu } from './fixtures/host.ts'
@@ -33,7 +33,7 @@ function captureFixture(analyzer: MemoryAnalyzer = { propose: async input => pro
     actor: { source: 'github', id: 'alice' }, basis: { via: 'listed' } }, assignments: [{ id: 'assignmentA', state: 'running', createdAt: '' }],
     origin: { triggerId: 'triggerA', triggerIds: ['triggerA'] }, channels: [], inputs: [], undelivered: [], createdAt: '', updatedAt: '' }
   f.store.tickets.save(ticket)
-  const inspect = vi.fn(async () => ({ events: session.snapshotEvents() }))
+  const inspect = vi.fn(async (_id: SessionId) => ({ events: session.snapshotEvents() }))
   context.reflect.provide('sessionController', { inspect })
   context.reflect.provide('sessionPersistence', { flush: vi.fn(async () => {}) })
   const host = { store: f.store, memory: f.service, effects, context, lifetime: lifetime.signal, analyzer, paused: () => false }
@@ -78,7 +78,7 @@ it.each(['x'.repeat(2000), '"\\'.repeat(1000), '记忆'.repeat(1000)])('splits c
   expect(f.effects.pending('memory-capture')).toBe(false)
   expect(stream.mock.calls.length).toBeGreaterThan(1)
   expect(stream.mock.calls.every(([options]) => Buffer.byteLength(options.messages.map(message => message.content
-    .filter(block => block.type === 'text').map(block => block.text).join('')).join('')) <= 100_000)).toBe(true)
+    .filter(block => block.type === 'text').map(block => block.text).join('')).join('')) <= 12_000)).toBe(true)
   expect(f.store.get(KV.memory.usage)?.calls).toBe(stream.mock.calls.length)
 })
 
@@ -89,6 +89,50 @@ it('does not debit the budget when the complete analysis payload exceeds the ada
     .rejects.toThrow('memory_input_too_large')
   expect(f.store.get(KV.memory.usage)).toBeUndefined()
   expect(propose).not.toHaveBeenCalled()
+})
+
+it('keeps a failed Session queued without blocking capture from another Ticket', async () => {
+  const propose = vi.fn(async (input: Readonly<MemoryAnalysisInput>) => {
+    if (input.events.some(event => event.text === 'healthy Ticket B')) return proposal(input)
+    throw new MemoryAnalysisFailure('memory_analysis_timeout')
+  })
+  const f = captureFixture({ propose }), other = Session.create(SessionId('worker-ticketB'))
+  f.store.tickets.save({ ...f.store.tickets.get('ticketA')!, id: 'ticketB' })
+  f.inspect.mockImplementation(async id => ({ events: id === 'worker-ticketB' ? other.snapshotEvents() : f.session.snapshotEvents() }))
+  f.capture.enqueue('ticketA', 'assignmentA', turn(f.session, 1))
+  f.capture.enqueue('ticketB', 'assignmentA', turn(other, 1, 'healthy Ticket B'))
+  await f.effects.idle('memory-capture')
+  expect(f.memory.list('candidate')).toHaveLength(1)
+  expect(f.memory.get(f.memory.list('candidate')[0]!.id)!.evidence[0]!.ticketId).toBe('ticketB')
+  expect(f.effects.pending('memory-capture')).toBe(true)
+  expect(f.store.db.prepare("SELECT error FROM effect WHERE kind='memory-capture'").get()?.error).toBe('Error: memory_analysis_timeout')
+})
+
+it('stops charging the same failing cursor after three calls, survives restart and resumes after a settings change', async () => {
+  const propose = vi.fn(async (_input: Readonly<MemoryAnalysisInput>): Promise<unknown> => { throw new MemoryAnalysisFailure('memory_model_incomplete') })
+  const f = captureFixture({ propose }), first = turn(f.session, 1)
+  f.capture.enqueue('ticketA', 'assignmentA', first)
+  for (let attempt = 0; attempt < 5; attempt++) {
+    f.store.db.exec('UPDATE effect SET due=0'); await f.effects.idle('memory-capture')
+  }
+  expect(propose).toHaveBeenCalledTimes(3)
+  expect(f.cursor()).toBeNull()
+  await f.effects.drain()
+  const restarted = new Effects(f.store, { claim: () => ({ get: () => undefined, set: () => {}, release: () => {} }) })
+  const capture = new MemoryCapture({ ...f.host, effects: restarted })
+  onTestFinished(() => restarted.drain())
+  capture.enqueue('ticketA', 'assignmentA', turn(f.session, 2))
+  restarted.start(); f.store.db.exec('UPDATE effect SET due=0'); await restarted.idle('memory-capture')
+  expect(propose).toHaveBeenCalledTimes(3)
+  expect(f.board.all.memory?.detail).toBe('memory_capture_retry_limit')
+  expect(f.store.get(KV.memory.usage)?.calls).toBe(3)
+  f.store.saveSettings({ ...f.store.settings(), memory: { ...f.store.settings().memory, dailyCallBudget: 21 } })
+  f.service.configure(f.store.settings().memory)
+  propose.mockImplementation(async input => proposal(input))
+  f.store.db.exec('UPDATE effect SET due=0'); await restarted.idle('memory-capture')
+  expect(f.cursor()?.seq).toBe(Number(f.session.snapshotEvents().at(-1)!.seq))
+  expect(restarted.pending('memory-capture')).toBe(false)
+  expect(propose).toHaveBeenCalledTimes(5)
 })
 
 it('rolls back candidates and evidence when checkpoint publication fails, then retries exactly once', async () => {

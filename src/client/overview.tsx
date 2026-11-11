@@ -26,7 +26,7 @@ function ProblemLine({ problem, onChanged }: { problem: Problem; onChanged: () =
   switch (problem.kind) {
     // Optional bot checks pause only their Source; repository and machine failures halt the service.
     case 'setup': {
-      const titles = { deployment: 'problemSetup', github: 'problemSetup', feishu: 'problemSetupFeishu', discord: 'problemSetupDiscord' } as const
+      const titles = { deployment: 'problemSetup', github: 'problemSetup', feishu: 'problemSetupFeishu', discord: 'problemSetupDiscord', wecom: 'problemSetupWecom' } as const
       return row(t(titles[problem.place]), <p className="dt-error"><SetupMessage
       problem={problem} /></p>,
       setupPage(problem.place), t(`problemSetupFix.${problem.place}`), <CheckSetupButton />)

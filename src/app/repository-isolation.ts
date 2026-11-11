@@ -25,7 +25,8 @@ export function assertRepositoryIsolation(entries: readonly { id: string; settin
       // This first version has no cross-repository IM request routing: dedicate each bot configuration to one repository.
       if (kind === 'feishu' && config.cli) claim(`feishu-cli:${config.cli}`, id)
       if (kind === 'discord' && config.tokenFile) claim(`discord-token:${config.tokenFile}`, id)
-      const rows = kind === 'feishu' ? config.chats : kind === 'discord' ? config.channels : undefined
+      if (kind === 'wecom' && config.secretFile) claim(`wecom-secret:${config.secretFile}`, id)
+      const rows = kind === 'feishu' ? config.chats : kind === 'discord' ? config.channels : kind === 'wecom' ? config.chats : undefined
       if (Array.isArray(rows)) for (const row of rows) {
         if (!row || typeof row !== 'object') continue
         const channel = row.chatId ?? row.channelId

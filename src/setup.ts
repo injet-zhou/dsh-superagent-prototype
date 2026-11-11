@@ -1,7 +1,7 @@
 /** Structured startup and configuration errors with the settings location where the operator can fix them. */
 import { fill } from './infra/text.ts'
 
-export type SetupPlace = 'deployment' | 'github' | 'feishu' | 'discord'
+export type SetupPlace = 'deployment' | 'github' | 'feishu' | 'discord' | 'wecom'
 export const SETUP_PROBLEMS = {
   foreignFile: ['deployment', '{file} was not written by dsh-superagent; move it, or choose another state directory.'],
   gitTooOld: ['deployment', 'git does not read the repository credential configuration dsh-superagent writes; dsh-superagent needs git 2.32 or later.'],
@@ -17,6 +17,7 @@ export const SETUP_PROBLEMS = {
   repositoryUnreported: ['github', 'The agent repository CLI did not return {repository}.'],
   repositoryReadOnly: ['github', '@{account} cannot push to {repository}.'],
   discordBotFailed: ['discord', 'The Discord bot check failed; verify the token file and bot account.'],
+  wecomBotFailed: ['wecom', 'The WeCom robot check failed; verify the private secret file with its botId and secret.'],
   feishuCliFailed: ['feishu', 'The bot lark-cli does not work.'],
   feishuNoApp: ['feishu', 'auth status of the bot lark-cli did not report the app.'],
   feishuBotNotReady: ['feishu', 'The bot identity of app {app} is {status}; configure the app secret with lark-cli.'],

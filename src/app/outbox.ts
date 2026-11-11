@@ -28,6 +28,7 @@ export class Outbox implements OutboxPort {
     // Validate IM reply length here; acknowledgements are already validated when decided.
     if (message.kind === 'reply' && message.channel.source === 'feishu') checkedImText(message.text)
     if (message.channel.source === 'discord') checkedDiscordText(message.text)
+    if (message.channel.source === 'wecom') checkedImText(message.text)
     const { store, effects } = this.host
     store.atomic(() => { if (store.receipts.add(message)) effects.enqueue('reply', message.id, {}) })
   }

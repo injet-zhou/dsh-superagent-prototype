@@ -24,6 +24,7 @@ export interface SourceContextDeps {
   /** Why setup found no Feishu bot even though the Feishu Source names a CLI. */
   readonly feishuProblem?: SetupProblem | undefined
   readonly discordProblem?: SetupProblem | undefined
+  readonly wecomProblem?: SetupProblem | undefined
   /** Hands a Trigger to the Engine and schedules the pass that assesses it. */
   receive(trigger: Trigger): ReceiveResult | Promise<ReceiveResult>
   /** Subscribes to Tickets the Engine creates; a host without a domain event stream calls no listener. */
@@ -43,7 +44,7 @@ export function sourceContextOf(deps: SourceContextDeps, kind: { kind: string; h
     get commandEnvironment() { return deps.commandEnvironment },
     ready: deps.ready,
     configured: () => deps.configured(),
-    get problem() { return [deps.feishuProblem, deps.discordProblem, deps.setupProblem].find(problem => problem?.place === kind.kind) },
+    get problem() { return [deps.feishuProblem, deps.discordProblem, deps.wecomProblem, deps.setupProblem].find(problem => problem?.place === kind.kind) },
     config: <C extends Record<string, unknown>>(id: string) => {
       const instance = deps.sources.instance<C>(id)
       return instance?.enabled ? instance.config : undefined

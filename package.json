@@ -17,6 +17,7 @@
     "./github-watch": "./lib/github-watch.js",
     "./feishu-watch": "./lib/feishu-watch.js",
     "./discord-watch": "./lib/discord-watch.js",
+    "./wecom-watch": "./lib/wecom-watch.js",
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json"
   },
@@ -59,6 +60,7 @@
   },
   "packageManager": "pnpm@11.7.0",
   "dependencies": {
+    "@wecom/aibot-node-sdk": "1.0.7",
     "proper-lockfile": "4.1.2",
     "zod": "4.4.3"
   },
@@ -124,6 +126,8 @@
     "@deepseek-ai/dsh-client-ui-slots": "0.2.1-alpha.2",
     "react-dom": "18.3.1",
     "@types/react-dom": "18.3.7",
-    "@deepseek-ai/dsh-subprocess": "0.2.1-alpha.2"
+    "@deepseek-ai/dsh-subprocess": "0.2.1-alpha.2",
+    "@types/ws": "8.18.2",
+    "ws": "8.22.2"
   }
 }
