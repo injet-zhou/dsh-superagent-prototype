@@ -667,3 +667,14 @@ DSH 0.2.2-rc.1 的真实 Session 烟测发现 `sessionController.inspect` 已删
 本轮真实模型烟测见 memory-live-validation-round3-model.json：Capture 成功且原始证据包可读，Dreaming 未在既有 15 秒截止内生成结果，整次模型烟测失败；共占用 2 次应用调用预算，超时流的完整 token 用量不可得。没有放宽截止、证据门槛或反复调用模型追求通过。旧版 round-2 的模型成功记录保留其历史含义，不能冒充本轮成功。实际 provider 延迟/模型选择仍需要运营验证，本轮不宣称真实模型 Dreaming 已通过。
 
 独立 host-only 测试见 memory-live-validation-round3-host.json：真实 DSH 0.2.2-rc.1 / SQLite 3.51.3+FTS5，以预算 0、不发起任何模型调用验证来源回放、Host Publisher 待审保护、4 个并发查询全部成功/0 busy、原生 Bash 的限定执行认证及 Wiki 重建。普通 fixture Agent 明确采用 workspace-write、无模型请求；Memory 分析未创建 Agent。该模式明确跳过 Capture/Dreaming 模型分析和主题生成，不把 Host 测试冒充模型提取。用户数据库与配置未用于任何夹具。
+
+
+### 第三轮本机更新
+
+已切换 superagent profile 与启动助手到独立的 memory-review-3 工作树，主工作区继续 main，默认监听仍为 127.0.0.1:3085。升级前确认所有仓库均无运行/排队 Worker，并通过 SQLite backup API 备份 default 和 rosign 数据库、profile package/patch、启动助手。备份位于 ~/.dsh/state/superagent/backups/before-memory-review3-20261111-104713/。
+
+更新前后两个库均 integrity=ok、Schema=12；默认库 Settings revision=19、Memory revision=4、整份设置摘要、1 条 Ticket 与 0 条 Memory 不变，rosign 的设置摘要和 0 条 Ticket/Memory 不变。profile patch 未改，模型、low reasoning、每日 90 次预算与所有渠道设置保持原值，没有注入夹具。
+
+默认 Runtime、Memory、Capture、Consolidate 运行正常。rosign 原有 setupPending 在新旧代码中均存在，且 Memory 仍按默认关闭；因此服务脚本的聚合 status 会返回组件状态码 2。首次部署检查据此回退了插件链接，核对旧版同样状态后，第二次更新严格比较并保留该既有错误，没有删除仓库、修改其配置或把它伪报为 ready。没有恢复过期数据库来覆盖用户状态。后续可在仓库配置中完成 rosign 的部署检查，和本轮 Memory 修复分别处理。
+
+回滚功能可关闭 Memory，取消排队/在途工作并保留审计数据。完整退回本轮代码可使用保留的旧工作树与 profile/助手备份；跨 Schema 退回旧二进制仍须配套旧版本数据库备份。启动 URL 继续由 /home/injetz/.local/bin/superagent-test url 获取当前进程的完整登录链接。
