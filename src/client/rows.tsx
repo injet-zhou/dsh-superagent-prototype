@@ -18,8 +18,21 @@ export function TicketLine({ ticket, question, onChanged, context }: {
   return <li className="dt-row dt-link dt-ticket" data-state={question ? status.dot : undefined}>
     <div className="dt-ticket-stage"><StageMark state={status.dot} icon={status.icon} label={status.label} /></div>
     <div className="dt-ticket-body">
-      <div className="dt-row-title"><button type="button" className="dt-open" onClick={() => navigate({ page: 'execution',
-        id: ticket.id })}>{ticket.title}</button></div>
+      <div className="dt-ticket-head">
+        <div className="dt-row-title"><button type="button" className="dt-open" onClick={() => navigate({ page: 'execution',
+          id: ticket.id })}>{ticket.title}</button></div>
+        {onChanged && <div className="dt-ticket-actions">
+          {answer && <ActionLink href={answer.url} icon="message">{t('answerIn', { source: valueLabel(t, 'source',
+            answer.source) })}</ActionLink>}
+          {ticket.actions.retry && <ConfirmButton variant="outline" icon="refresh" label={t('retry')} title={t('retryTitle')}
+            message={t('retryConfirm', { title: ticket.title })}
+            onConfirm={() => after(call('POST tickets/:id/retry', { id: ticket.id }))} />}
+          {ticket.actions.retry && ticket.sessionId && <SessionButton variant="outline" sessionId={ticket.sessionId} />}
+          {ticket.actions.stop && <ConfirmButton variant="outline" icon="stop" label={t('stop')} title={t('stopConfirmTitle')}
+            message={t('stopConfirm', { title: ticket.title })}
+            onConfirm={() => after(call('POST tickets/:id/stop', { id: ticket.id }))} />}
+        </div>}
+      </div>
       <div className="dt-row-meta dt-ticket-meta">
         {ticket.threads.map(thread => <ThreadChip key={thread.key} thread={thread} />)}
         {context && <ContextTag />}
@@ -27,18 +40,6 @@ export function TicketLine({ ticket, question, onChanged, context }: {
         {note ? <span className={note.error ? 'dt-ticket-note dt-ticket-note-error' : 'dt-ticket-note'} title={note.text}>{note.text}</span>
           : <When at={ticket.updatedAt} />}
       </div>
-      {/* Always render the actions container so every Ticket row keeps a uniform three-line height. */}
-      <div className="dt-ticket-actions">{onChanged && <>
-        {answer && <ActionLink href={answer.url} icon="message">{t('answerIn', { source: valueLabel(t, 'source',
-          answer.source) })}</ActionLink>}
-        {ticket.actions.retry && <ConfirmButton variant="outline" icon="refresh" label={t('retry')} title={t('retryTitle')}
-          message={t('retryConfirm', { title: ticket.title })}
-          onConfirm={() => after(call('POST tickets/:id/retry', { id: ticket.id }))} />}
-        {ticket.actions.retry && ticket.sessionId && <SessionButton variant="outline" sessionId={ticket.sessionId} />}
-        {ticket.actions.stop && <ConfirmButton variant="outline" icon="stop" label={t('stop')} title={t('stopConfirmTitle')}
-          message={t('stopConfirm', { title: ticket.title })}
-          onConfirm={() => after(call('POST tickets/:id/stop', { id: ticket.id }))} />}
-      </>}</div>
     </div>
   </li>
 }
@@ -81,17 +82,16 @@ export function DecisionLine({ decision }: { decision: DecisionRow }) {
   const mark = decisionMark(t, decision.outcome)
   const preview = readableMarkers(t, decision.preview)
   const reason = decision.reason ? reasonLabel(t, decision.reason) : ''
+  const title = decision.ticketTitle ?? (decision.threadTitle ? readableMarkers(t, decision.threadTitle) : preview || t('empty'))
   const open = () => decision.ticketId ? navigate({ page: 'execution', id: decision.ticketId })
     : navigate({ page: 'trigger', id: decision.thread, query: { trigger: decision.triggerIds[0] ?? '' } })
   return <li className="dt-row dt-link dt-ticket">
     <div className="dt-ticket-stage"><StageMark state={mark.dot} icon={mark.icon} label={mark.label} /></div>
     <div className="dt-ticket-body">
       <div className="dt-row-title">
-        <button type="button" className="dt-open" title={reason || undefined} onClick={open}>
-          {decision.ticketTitle ?? (decision.threadTitle ? readableMarkers(t, decision.threadTitle) : preview || t('empty'))}
-        </button>
+        <button type="button" className="dt-open" title={reason || undefined} onClick={open}>{title}</button>
       </div>
-      <div className="dt-row-quote dt-line">{preview}</div>
+      {preview && preview !== title && <div className="dt-row-quote dt-line">{preview}</div>}
       <div className="dt-row-meta dt-line">
         {reason && <span className="dt-line-text">{reason}</span>}
         {matched.length > 0 && <LabelValue label={t('ruleLabel')} value={matched.join(t('listSeparator'))} />}

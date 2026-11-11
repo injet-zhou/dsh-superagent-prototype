@@ -2,9 +2,10 @@
 import { useState } from 'react'
 import { ApiError, usePoll } from './api.ts'
 import type { MemoryNote, MemoryReview } from '../app/memory/types.ts'
-import { Button, Input, Pill, Tag, type TagTone } from './controls.tsx'
+import { Button, Icon, Input, Pill, Tag, type TagTone } from './controls.tsx'
 import { SaveBar } from './draft.tsx'
 import { useAction, usePanel } from './provider.tsx'
+import { settingsRoute } from './route.ts'
 import { ConfigHistory, Field, Fields, ModelField, SwitchRow, numberOf, useBlockDraft, useSettings } from './settings-kit.tsx'
 import { Hint, LabelValue, LoadMore, LoadState, PageHead, Section, StatusHead } from './widgets.tsx'
 import { valueLabel, when } from './text.ts'
@@ -57,8 +58,12 @@ export function MemoryStatusPage({ status, query }: { status: typeof FILTERS[num
         <div className="dt-row-meta"><span>{note.scope.paths.join(', ') || t('memoryWholeRepository')}</span>
           <LabelValue label={t('memoryEvidenceCount')} value={note.evidenceCount} /><span>{when(note.updatedAt, t('lang'))}</span></div>
       </div>
-    </li>)}</ul> : <Hint>{t(Object.values(data.counts).some(Boolean) || query ? 'memorySearchEmpty'
-      : data.health.enabled ? 'memoryEmpty' : 'memoryEnableToCapture')}</Hint>)}
+    </li>)}</ul> : <div className="dt-empty">
+      <Hint>{t(Object.values(data.counts).some(Boolean) || query ? 'memorySearchEmpty'
+        : data.health.enabled ? 'memoryEmpty' : 'memoryEnableToCapture')}</Hint>
+      {!data.health.enabled && <Button variant="outline" size="sm" icon={<Icon name="settings" size={14} />}
+        onClick={() => navigate(settingsRoute('memory'))}>{t('memoryOpenSettings')}</Button>}
+    </div>)}
     {data?.next_offset != null && <LoadMore onMore={() => setLimit(limit + 20)} />}
   </>
 }

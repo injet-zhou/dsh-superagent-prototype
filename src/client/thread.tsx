@@ -153,7 +153,7 @@ export function ThreadPage({ id, target }: { id: string; target?: string }) {
           item.title)}</button>
       </li>)}</ul>
     </Section>}
-    <Section title={t('timeline')} count={t('newestFirst')}>
+    <Section title={t('timeline')} action={<span className="dt-hint">{t('newestFirst')}</span>}>
       {data.timeline.length ? <ol className="dt-timeline">{automatedRuns(data.timeline.slice().reverse(), sender).map(({ item,
         earlier: folded }) =>
         <TriggerItem key={item.id} trigger={item} earlier={folded} target={target} subscribed={subscribed}

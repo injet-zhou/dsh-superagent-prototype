@@ -34,7 +34,7 @@ export function SettingsPage({ group, query, state, deploymentForm, repositoryOn
           true)}>{t(`settingsGroup.${value}`)}</button>)}
     </nav>
     <div className="dt-settings-body">
-      <h2 className="dt-settings-title">{t(`settingsGroup.${group}`)}</h2>
+      <h2 className="dt-sr-only">{t(`settingsGroup.${group}`)}</h2>
       {content}
     </div>
   </div>

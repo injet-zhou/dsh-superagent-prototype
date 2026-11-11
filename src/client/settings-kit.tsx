@@ -215,7 +215,7 @@ function RowsField({ field, value, saved, onChange, labels, refreshLabels }: {
   }
   return <div className="dt-field">
     <div className="dt-subhead">
-      <span className="dt-field-head">{label}{hint && <InfoTip text={hint} />}<span className="dt-count">{rows.length || ''}</span></span>
+      <span className="dt-field-head">{label}{hint && <InfoTip text={hint} />}{rows.length > 0 && <span className="dt-count">{rows.length}</span>}</span>
       <span className="dt-subhead-actions">
         {key.type === 'text' && key.refresh && refreshLabels && <Button variant="ghost" size="sm" className={refresh.busy ? 'dt-btn-busy'
           : undefined} icon={<Icon name="refresh" />}

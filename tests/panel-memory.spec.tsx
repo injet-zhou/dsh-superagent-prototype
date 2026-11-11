@@ -31,6 +31,15 @@ it('configures an explicit Memory model and daily call budget without changing P
   expect(text()).not.toContain(zh.modelInherit)
 })
 
+it('links the disabled Memory empty state to its settings', async () => {
+  server.settings.memory.enabled = false
+  at({ page: 'memory' }); await mount()
+  expect(text()).toContain(zh.memoryEnableToCapture)
+  await click(zh.memoryOpenSettings)
+  expect(tab(zh['tab.settings']).getAttribute('aria-selected')).toBe('true')
+  expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.memory'])
+})
+
 it('searches and filters notes, reports disabled consolidation clearly and runs manual maintenance', async () => {
   server.settings.memory.enabled = true
   seed('sqlite', 'SQLite review', 'verified'); seed('build', 'Build workflow')
