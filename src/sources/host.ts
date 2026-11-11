@@ -16,6 +16,8 @@ export const HEALTH_TEXT = {
   feishuCliUnset: 'The Source is on, and its bot lark-cli is not set',
   feishuBotMissing: 'Waiting for the Feishu bot',
   discordTokenUnset: 'The Source is on, and its bot token file is not set',
+  wecomSecretUnset: 'The Source is on, and its robot secret file is not set',
+  wecomDisconnected: 'The connection to WeCom dropped; reconnecting',
   pollFailures: '{count} consecutive failed polls; last: {error}',
 } as const
 export type HealthCode = keyof typeof HEALTH_TEXT

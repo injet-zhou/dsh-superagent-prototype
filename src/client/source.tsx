@@ -23,7 +23,7 @@ function SourceCard({ source }: { source: SourceView }) {
   const { problem, value: saved } = source
   const changed = (key: string) => String(value.config[key] ?? '') !== String(saved.config[key] ?? '')
   // Saving a modified setup-sensitive field restarts dsh-superagent, interrupting running Assignments.
-  const optionalBot = source.id === 'feishu' || source.id === 'discord'
+  const optionalBot = source.id === 'feishu' || source.id === 'discord' || source.id === 'wecom'
   const restarts = draft.dirty && (optionalBot && value.enabled !== saved.enabled || (value.enabled || !optionalBot) && source.restarts.some(changed))
   const description = localized(t, source.description)
   // Hide derived facts for unsaved field edits until the new value is saved.

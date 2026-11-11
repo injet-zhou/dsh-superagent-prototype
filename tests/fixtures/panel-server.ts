@@ -20,6 +20,7 @@ import { feishuChannel } from '../../src/sources/feishu-trigger.ts'
 import { githubChannel } from '../../src/sources/github-trigger.ts'
 import { feishuKind } from '../../src/sources/feishu.ts'
 import { githubKind } from '../../src/sources/github.ts'
+import { wecomKind } from '../../src/sources/wecom.ts'
 import type { Health } from '../../src/sources/host.ts'
 import type { SourceKind } from '../../src/sources/kind.ts'
 import { testDeployment } from './deployment.ts'
@@ -31,7 +32,7 @@ type Actor = TriggerRow['actor']
 export function actor(source: string, id: string, human = true): Actor {
   if (!id) return { source, id }
   const entry = ALLOWED[source]?.find(item => item.id.toLowerCase() === id.toLowerCase())
-  const unnamed = source === 'feishu' ? feishuKind.policy?.unnamed : undefined
+  const unnamed = source === 'feishu' ? feishuKind.policy?.unnamed : source === 'wecom' ? wecomKind.policy?.unnamed : undefined
   const name = entry ? entry.name || entry.id : unnamed ? undefined : id
   return { source, id, name: name ? { zh: name, en: name } : human ? unnamed!.person : unnamed!.bot }
 }
@@ -80,7 +81,7 @@ export const droppedReply = (id: string, hoursAgo: number, source: 'feishu' | 'g
 const dayAgo = () => new Date(Date.now() - 86_400_000).toISOString()
 export const problemOf = (code: SetupCode, values: Record<string, string> = {}) => new SetupError(code, values).problem
 // The kinds' configurations differ, and the fake reads them only as the records the views carry.
-const KINDS = [feishuKind, githubKind] as unknown as SourceKind[]
+const KINDS = [feishuKind, githubKind, wecomKind] as unknown as SourceKind[]
 const kinds = () => [...KINDS, ...server.extraKinds ?? []]
 export const MACHINE = { stateDir: '/srv/dsh-superagent', promptMaxChars: 100000, admissionContextMaxPages: 10,
   admissionContextTimeoutMs: 15000 }
@@ -119,7 +120,8 @@ export let server: PanelServer
 function resolved() {
   const accounts = server.setup.accounts
   return accounts ? testDeployment({ repository: accounts.repository, github: { cli: '/bin/false', login: accounts.agent, noreply: '' },
-    ...accounts.feishu ? { feishu: { cli: '/bin/false', ...accounts.feishu } } : { feishu: undefined } }) : undefined
+    ...accounts.feishu ? { feishu: { cli: '/bin/false', ...accounts.feishu } } : { feishu: undefined },
+    ...accounts.wecom ? { wecom: { secretFile: '/srv/agent/wecom.json', botId: accounts.wecom.botId } } : { wecom: undefined } }) : undefined
 }
 /** Default source health: paused during setup; Feishu defaults to `socket closed` unless overridden or paused by setup. */
 function healthOf(name: string): Health {
@@ -129,7 +131,7 @@ function healthOf(name: string): Health {
   return server.setup.feishuProblem ? { state: 'paused', detail: server.setup.feishuProblem.detail } : { state: 'error',
     detail: 'socket closed' }
 }
-const problemOf_ = (id: string) => [server.setup.problem, server.setup.feishuProblem, server.setup.discordProblem].find(item => item?.place === id) ?? undefined
+const problemOf_ = (id: string) => [server.setup.problem, server.setup.feishuProblem, server.setup.discordProblem, server.setup.wecomProblem].find(item => item?.place === id) ?? undefined
 function sourceSettings(): SourceView[] {
   return kinds().map(kind => {
     const config = kind.schema.parse(server.settings.sources[kind.kind]?.config ?? {})
@@ -183,8 +185,8 @@ const settingsView = (): ApiResponse<'GET settings'> => ({
       en: 'Repository' } }] }] },
 })
 const overviewView = (): ApiResponse<'GET overview'> => {
-  const { problem, feishuProblem } = server.setup
-  const setup = problem ?? feishuProblem
+  const { problem, feishuProblem, wecomProblem } = server.setup
+  const setup = problem ?? feishuProblem ?? wecomProblem
   return {
     problems: [...setup ? [{ kind: 'setup' as const, ...setup }] : [],
       ...kinds().some(kind => server.settings.sources[kind.kind]?.enabled !== false) ? [] : [{ kind: 'no-source' as const }],
