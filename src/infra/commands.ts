@@ -5,7 +5,7 @@ import { promisify } from 'node:util'
 import { z } from 'zod'
 import type { Deployment } from '../deployment.ts'
 import { DiscordApi } from './discord.ts'
-import { CliError } from './errors.ts'
+import { CliError, remoteError } from './errors.ts'
 import { giteaApi } from './gitea.ts'
 import { gitlabApi } from './gitlab.ts'
 
@@ -14,17 +14,27 @@ const TIMEOUT_MS = 90_000
 export { CliError } from './errors.ts'
 /** Extracts a sanitized error from a failed subprocess without echoing argv, which may contain message text. */
 export function commandError(error: unknown, program = 'command'): Error {
+  if (error instanceof CliError) return error
   if (error instanceof Error && error.name === 'AbortError') return error
   const exitCode = error && typeof error === 'object' && 'code' in error && typeof error.code === 'number' ? error.code : undefined
   if (error && typeof error === 'object' && 'stderr' in error && typeof error.stderr === 'string') {
     const stderr = error.stderr.trim()
     let parsed: { error?: { code?: number; message?: string } } | undefined
     try { parsed = JSON.parse(stderr.slice(stderr.indexOf('{'))) as typeof parsed }
-    catch { /* Non-JSON CLI diagnostics are retained below. */ }
-    const code = parsed?.error?.code
-    if (parsed?.error?.message) return new CliError(`${parsed.error.message}${code ? ` (${code})` : ''}`, code, exitCode)
+    catch { /* Non-JSON diagnostics are checked against fixed operational messages below. */ }
+    if (parsed?.error) return remoteError(parsed.error.code, parsed.error.message, exitCode)
     // `gh` exits non-zero on HTTP errors (such as `gh: Not Found (HTTP 404)`) and on `gh: HTTP 304`, which ETag polling relies on.
-    if (stderr) return new CliError(stderr.slice(0, 2000), Number(/\bHTTP (\d{3})\b/.exec(stderr)?.[1]) || undefined, exitCode)
+    const code = Number(/\bHTTP (\d{3})\b/.exec(stderr)?.[1]) || undefined
+    if (code) return remoteError(code, stderr, exitCode)
+    // These local guardrails contain no operator values; arbitrary CLI output is never retained.
+    const safe = /^(?:Gitea operation request|GitLab operation) budget exceeded$/.exec(stderr)?.[0]
+      ?? /^(?:Gitea|GitLab) pagination left the configured API$/.exec(stderr)?.[0]
+      ?? /^(?:Gitea|GitLab) configuration must deny group and other access; use chmod 600 \(or stricter\)$/.exec(stderr)?.[0]
+      ?? /^(This installation uses (?:GitLab|Gitea));/.exec(stderr)?.[1]
+      ?? /^Use the account-isolated (?:gh|gitea|gitlab) CLI\.$/.exec(stderr)?.[0]
+      ?? (/transport 'ssh' not allowed/.test(stderr) ? "Git transport 'ssh' not allowed" : undefined)
+      ?? (/bad config/.test(stderr) ? 'Git reported bad config' : undefined)
+    if (safe) return new CliError(safe, undefined, exitCode)
   }
   return new CliError(`${basename(program)} ${ended(error)}`, undefined, exitCode)
 }
@@ -72,7 +82,10 @@ export class Commands {
     } catch (error) { throw commandError(error, program) }
   }
   /** Runs the agent's GitHub CLI and parses its JSON output; callers should prefer `api`, which is restricted to the configured repository and validates output. */
-  async gh<T>(args: string[]): Promise<T> { return JSON.parse(await this.run(this.deployment.github.cli, args)) as T }
+  async gh<T>(args: string[]): Promise<T> {
+    const output = await this.run(this.deployment.github.cli, args)
+    try { return JSON.parse(output) as T } catch { throw new Error('Repository CLI returned invalid JSON') }
+  }
   /**
    * Calls the GitHub API on a path within the configured repository, validating JSON output when a schema is provided
    * or returning raw CLI output (such as raw files or `--include` headers) when omitted.
@@ -125,9 +138,9 @@ export class Commands {
     if (!bot) throw new Error('The Feishu Source has no working bot CLI')
     const output = await this.run(bot.cli, [...args, '--as', 'bot', '--format', 'json'], cwd)
       .catch((error: unknown) => { throw membership(error) })
-    const result = JSON.parse(output) as { ok: boolean; data: T; error?: { code?: number; message?: string } }
-    const code = result.error?.code
-    if (!result.ok) throw membership(new CliError(`${result.error?.message ?? 'Feishu command failed'}${code ? ` (${code})` : ''}`, code))
+    let result: { ok: boolean; data: T; error?: { code?: number; message?: string } }
+    try { result = JSON.parse(output) as typeof result } catch { throw new Error('Feishu CLI returned invalid JSON') }
+    if (!result.ok) throw membership(remoteError(result.error?.code, result.error?.message))
     return result.data
   }
   /** Calls Discord as the configured bot; shared rate limits survive withSignal command clones. */

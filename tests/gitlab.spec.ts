@@ -138,7 +138,7 @@ it('rejects unsafe instance URLs and repository paths before probing', async () 
 
 it('canonicalizes default HTTPS ports consistently with Source settings and Git credential hosts', async () => {
   const config = join(directory, 'canonical.json')
-  writeFileSync(config, JSON.stringify({ baseUrl: 'https://GITLAB.example.test:443/code/', token: 'test-agent-credential' }))
+  writeFileSync(config, JSON.stringify({ baseUrl: 'https://GITLAB.example.test:443/code/', token: 'test-agent-credential' }), { mode: 0o600 })
   expect(JSON.parse(await commands().run('python3', [resolve('scripts/dsh-gitlab'), '--config', config, 'config'])))
     .toEqual({ baseUrl: repositoryBaseUrl('https://GITLAB.example.test:443/code/') })
 })

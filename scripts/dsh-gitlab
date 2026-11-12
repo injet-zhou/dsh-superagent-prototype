@@ -5,6 +5,7 @@ import ipaddress
 import json
 import os
 import re
+import stat
 import sys
 import time
 import urllib.error
@@ -163,6 +164,11 @@ def main():
     if not args.config:
         raise ValueError("set --config to the agent's private GitLab JSON configuration")
     with open(args.config, encoding="utf-8") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 8192:
+            raise ValueError("GitLab configuration must be a JSON file no larger than 8 KiB")
+        if os.name != "nt" and info.st_mode & 0o077:
+            raise ValueError("GitLab configuration must deny group and other access; use chmod 600 (or stricter)")
         config = json.load(stream)
     config["baseUrl"] = instance_url(config["baseUrl"])
     timeout, budget = getattr(args, "timeout_seconds", 30), getattr(args, "max_requests", 128)

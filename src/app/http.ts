@@ -96,7 +96,7 @@ function failure(error: unknown): [number, Record<string, unknown>] {
   if (error instanceof UserError) return [error.missing ? 404 : 400, { error: error.message, code: error.code, values: error.values }]
   if (error instanceof SettingsConflict || error instanceof PromptConflict || error instanceof MemoryConflict) return [409, { error: error.message }]
   if (error instanceof Error && error.message === 'memory_unavailable') return [503, { error: 'Repository memory is not available until setup completes' }]
-  return [500, { error: error instanceof Error ? error.message : String(error) }]
+  return [500, { error: 'Internal server error' }]
 }
 
 function machineView({ stateDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs }: Machine) {

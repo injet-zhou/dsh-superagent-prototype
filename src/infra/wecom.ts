@@ -31,6 +31,8 @@ const GONE = new Set([40003, 81013, 86003])
 const QUIET: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
 const AUTH_TIMEOUT_MS = 30_000
 const authTimedOut = (): Error => new Error('Timed out waiting for WeCom authentication; check the network and the robot secret file')
+// SDK errors and remote diagnostics may echo the authentication payload; expose only fixed messages and numeric codes.
+const connectionFailed = (): Error => new Error('WeCom connection failed; check the network and robot credentials')
 
 /** One robot's shared WebSocket: connects on demand, fans callbacks to its consumers, and sends Markdown replies. */
 class WecomTransport implements WecomConnection {
@@ -81,8 +83,11 @@ class WecomTransport implements WecomConnection {
         const secret = await readWecomSecret(this.options.secretFile)
         if (secret.botId !== this.options.botId) throw new Error('The WeCom secret file now names another robot; restart dsh-superagent after changing it')
         if (this.manual) throw new Error('The WeCom connection was closed while connecting')
-        const client = new WSClient({ botId: secret.botId, secret: secret.secret, logger: QUIET,
-          ...(this.options.wsUrl ? { wsUrl: this.options.wsUrl } : {}), maxReconnectAttempts: -1, maxAuthFailureAttempts: 3 })
+        let client: WSClient
+        try {
+          client = new WSClient({ botId: secret.botId, secret: secret.secret, logger: QUIET,
+            ...(this.options.wsUrl ? { wsUrl: this.options.wsUrl } : {}), maxReconnectAttempts: -1, maxAuthFailureAttempts: 3 })
+        } catch { throw connectionFailed() }
         this.client = client
         // Every WebSocket open starts a fresh authentication round, including the SDK's automatic reconnects.
         client.on('connected', () => { this.armAuthTimeout() })
@@ -92,19 +97,19 @@ class WecomTransport implements WecomConnection {
           this.emit({ state: 'ready', detail: 'Connected to WeCom' })
           settle()
         })
-        client.on('disconnected', reason => {
+        client.on('disconnected', () => {
           this.clearAuthTimer()
           if (this.kicked) return
           this.state = 'connecting'
-          this.emit({ state: 'paused', detail: `The WeCom connection closed (${reason}); reconnecting` })
-          if (!settled) settle(new Error(`The WeCom connection closed before authentication: ${reason}`))
+          this.emit({ state: 'paused', detail: 'The WeCom connection closed; reconnecting' })
+          if (!settled) settle(new Error('The WeCom connection closed before authentication'))
         })
         client.on('reconnecting', () => { this.emit({ state: 'paused', detail: 'Reconnecting to WeCom' }) })
-        client.on('error', error => {
-          const detail = error instanceof Error ? error.message : String(error)
+        client.on('error', () => {
+          const error = connectionFailed()
           this.state = 'connecting'
-          this.emit({ state: 'error', detail, retry: true })
-          if (!settled) settle(error instanceof Error ? error : new Error(detail))
+          this.emit({ state: 'error', detail: error.message, retry: true })
+          if (!settled) settle(error)
         })
         client.on('event.disconnected_event', () => {
           this.clearAuthTimer()
@@ -122,7 +127,7 @@ class WecomTransport implements WecomConnection {
         })
         // The timer also covers a socket that never opens; `connected` restarts it for each reconnect.
         this.armAuthTimeout()
-        client.connect()
+        try { client.connect() } catch { throw connectionFailed() }
       })().catch(error => {
         settle(error instanceof Error ? error : new Error(String(error)))
         this.destroy()
@@ -164,14 +169,13 @@ class WecomTransport implements WecomConnection {
       await this.client.sendMessage(conversation, { msgtype: 'markdown', markdown: { content: text } })
       return 'sent'
     } catch (error) {
-      const failure = error as { errcode?: unknown; errmsg?: unknown }
+      const failure = error as { errcode?: unknown }
       const code = typeof failure?.errcode === 'number' ? failure.errcode : undefined
       if (code !== undefined) {
         if (GONE.has(code)) return 'gone'
-        const message = typeof failure.errmsg === 'string' ? `: ${failure.errmsg.slice(0, 300)}` : ''
-        throw new Error(`WeCom rejected the reply (errcode ${code}${message})`)
+        throw new Error(`WeCom rejected the reply (errcode ${code})`)
       }
-      throw error instanceof Error ? error : new Error(String(error))
+      throw new Error('WeCom could not send the reply; check the connection and retry')
     }
   }
 

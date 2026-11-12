@@ -10,6 +10,12 @@ Use this guide to install, configure and operate dsh-superagent. It covers accou
 
 Plugin configuration holds the state directory and machine limits. Use the panel for everything else: Sources for the repository and accounts, Policy for allowed lists, and Execution for worker directories and commands.
 
+### Security boundary
+
+Run the service under a dedicated OS account with access only to its repositories and bot accounts. Workers and their shell commands run as that same account: private files, separate profiles, repository scopes and command shims do not isolate credentials from a compromised Worker. The loopback panel and its same-origin checks also do not authenticate local processes. Deploy repositories with different trust requirements in separate OS accounts or machines; sharing one service is appropriate only when they share a trust boundary. Isolating Workers from the service's own bot credentials requires a separate execution identity and a credential or messaging broker; this bundle does not provide that architecture.
+
+Keep credential files outside repository checkouts. Gitea, GitLab, Discord and WeCom reject group/other-readable credential files on POSIX; use mode `0600` or stricter. Diagnostic errors retain fixed operational messages and numeric response codes rather than raw API errors or CLI output, since those can echo credentials. Rotate any secret previously exposed in the panel, logs, screenshots or chat, and update the service's private file. Dependency overrides in this source checkout do not update an independently installed DSH host; keep that host and its dependencies patched too.
+
 ### Multiple local repositories
 
 Keep the existing repository as `default`. In the sidebar, open **Superagent → Repositories → Add repository**, enter a name and stable ID, and confirm the service reload. When the repository appears, its Source settings open automatically; configure its repository account, permissions and models there. Use **Superagent settings** to switch between global and repository settings. Removing a repository from the overview stops its runtime and retains its files; the default repository stays in place.
@@ -412,7 +418,7 @@ Setup problems appear on the overview with a link to the fix, in the panel's lan
 | `Set a valid Gitea instance root URL` | Set the instance root on Sources: HTTPS, or HTTP only on loopback. Remove /api/v1, credentials, query and fragment; this is checked before the CLI account |
 | `@… cannot read …` or `@… cannot push to …` | Give the agent account write access to the repository |
 | `The repository Source names no repository.` | Set the repository, `owner/name`, on the GitHub / Gitea card |
-| A Ticket fails with `The prepare command failed: …` | The output names the cause, such as a wrong clone path; fix the command, then retry the Ticket |
+| A Ticket fails with `The prepare command failed: …` | Check the prepare command, clone path and exit status, then retry the Ticket. Raw command output is omitted because it may contain credentials |
 | `git does not read the repository credential configuration dsh-superagent writes` | Install git 2.32 or later |
 | A Ticket fails with `The git configuration of the repository in … sets …` | Remove the named credential or `http.*.extraheader` settings from the clone's `.git/config` |
 | `… was not written by dsh-superagent` | Move the named file out of `<stateDir>/worker-bin` or `<stateDir>/worker-gitconfig`, or choose another `stateDir` |

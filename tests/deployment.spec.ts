@@ -125,6 +125,6 @@ describe('setup', () => {
     program(join(dir, 'bin', 'lark-cli'), lark({ appId: 'cli_bot', identities: { bot: { status: 'ready' } } }, 'bot', { code: 0, data: {} }))
     await refuses('feishuNoBot')
     program(join(dir, 'bin', 'lark-cli'), 'echo "not configured" >&2; exit 1')
-    await refuses('feishuCliFailed', { output: expect.stringContaining('not configured') })
+    await refuses('feishuCliFailed', { output: expect.stringContaining('exited with code 1') })
   })
 })
