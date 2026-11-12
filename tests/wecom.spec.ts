@@ -262,6 +262,66 @@ describe('wecom transport', () => {
     await new Promise<void>(resolve => server.once('listening', resolve))
     return (server.address() as { port: number }).port
   }
+  it.each(['authentication', 'close'])('keeps credentials echoed by a server out of %s failures and health', async failure => {
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
+    const port = await listening(server)
+    const sockets: WebSocket[] = []
+    server.on('connection', socket => {
+      sockets.push(socket)
+      socket.on('message', raw => {
+        const frame = JSON.parse(String(raw)) as { headers: { req_id: string }; body: { secret: string } }
+        if (failure === 'close') socket.close(1008, `Invalid secret: ${frame.body.secret}`)
+        else socket.send(JSON.stringify({ headers: frame.headers, errcode: 40001, errmsg: `Invalid secret: ${frame.body.secret}` }))
+      })
+    })
+    const transport = wecomTransport({ botId: 'bot1', secretFile: secret(), wsUrl: `ws://127.0.0.1:${port}` })
+    const states: WecomConnectionState[] = []
+    transport.onState(state => states.push(state))
+    try {
+      const connecting = transport.connect()
+      await expect(connecting).rejects.toThrow(failure === 'close'
+        ? 'The WeCom connection closed before authentication' : 'WeCom connection failed; check the network and robot credentials')
+      await expect(connecting).rejects.not.toThrow('s3cret')
+      expect(states.length).toBeGreaterThan(0)
+      expect(JSON.stringify(states)).not.toContain('s3cret')
+    } finally {
+      transport.disconnect()
+      for (const socket of sockets) socket.terminate()
+      await new Promise<void>(resolve => server.close(() => resolve()))
+    }
+  })
+  it('keeps remote reply errors and connection failures out of send failures', async () => {
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
+    const port = await listening(server)
+    const sockets: WebSocket[] = []
+    let replies = 0
+    server.on('connection', socket => {
+      sockets.push(socket)
+      socket.on('message', raw => {
+        const frame = JSON.parse(String(raw)) as { cmd: string; headers: { req_id: string } }
+        if (frame.cmd === 'aibot_subscribe') socket.send(JSON.stringify({ headers: frame.headers, errcode: 0, errmsg: 'ok' }))
+        else if (++replies === 1) socket.send(JSON.stringify({ headers: frame.headers, errcode: 40001, errmsg: 'Invalid secret: s3cret' }))
+        else socket.close(1008, 'Invalid secret: s3cret')
+      })
+    })
+    const transport = wecomTransport({ botId: 'bot1', secretFile: secret(), wsUrl: `ws://127.0.0.1:${port}` })
+    const states: WecomConnectionState[] = []
+    transport.onState(state => states.push(state))
+    try {
+      await transport.connect()
+      const rejected = transport.send('alice', 'hello')
+      await expect(rejected).rejects.toThrow('WeCom rejected the reply (errcode 40001)')
+      await expect(rejected).rejects.not.toThrow('s3cret')
+      const disconnected = transport.send('alice', 'hello again')
+      await expect(disconnected).rejects.toThrow('WeCom could not send the reply; check the connection and retry')
+      await expect(disconnected).rejects.not.toThrow('s3cret')
+      expect(JSON.stringify(states)).not.toContain('s3cret')
+    } finally {
+      transport.disconnect()
+      for (const socket of sockets) socket.terminate()
+      await new Promise<void>(resolve => server.close(() => resolve()))
+    }
+  })
   it('times out when the socket opens but WeCom never authenticates', async () => {
     const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
     const port = await listening(server)

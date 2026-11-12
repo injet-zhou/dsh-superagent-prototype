@@ -585,12 +585,12 @@ describe('github source', () => {
       'issues/13/comments': [mention(1, 13, '2026-09-08T01:00:00Z')] }
     github(h, routes)
     // A read that failed for another reason than a missing Issue fails the round once every step ran.
-    await expect(pollRound(h)).rejects.toThrow('#12: Error: gh: Bad Gateway (HTTP 502)')
+    await expect(pollRound(h)).rejects.toThrow('#12: Error: Command failed (HTTP 502)')
     expect(h.receive.mock.calls.map(([trigger]) => trigger.meta.number)).toEqual([13])
     // The cursor moved together with the Issue it does not cover yet.
     expect(Date.parse(h.store.get<string>('github-since')!)).toBeGreaterThan(Date.parse('2026-09-08T00:00:00.000Z'))
     expect(h.store.get('github-retry')).toEqual({ 12: { since: '2026-09-08T00:00:00.000Z', pr: false, attempts: 1, failedAt: expect.any(String) } })
-    expect(h.store.threads.get('github:12')!.meta.pollError).toContain('Bad Gateway')
+    expect(h.store.threads.get('github:12')!.meta.pollError).toContain('HTTP 502')
     Object.assign(routes, { notifications: [], 'issues/12': issue(12, { created_at: '2026-08-01T00:00:00Z' }),
       'issues/12/comments': [mention(2, 12, '2026-09-08T02:00:00Z')] })
     await pollRound(h)
@@ -611,12 +611,12 @@ describe('github source', () => {
     expect(h.store.get('github-retry')).toEqual({})
     // Dropping a read moves no read position.
     expect(h.store.get('github-cursor:14')).toBeUndefined()
-    expect(h.store.threads.get('github:14')!.meta.pollError).toContain('deleted')
+    expect(h.store.threads.get('github:14')!.meta.pollError).toContain('HTTP 410')
     // Without a Thread to keep it, the Source's health names it.
     expect(h.health.github).toMatchObject({ state: 'ready', detail: '2 notifications; next poll ≥ 60s; deleted on GitHub: #14, #15' })
     // GitHub also answers 404 for a private repository the agent lost access to: that is a failure read again.
     github(h, { notifications: [notification(16)] })
-    await expect(pollRound(h)).rejects.toThrow('#16: Error: gh: Not Found (HTTP 404)')
+    await expect(pollRound(h)).rejects.toThrow('#16: Error: Command failed (HTTP 404)')
     expect(h.store.get('github-retry')).toEqual({ 16: expect.objectContaining({ pr: false }) })
     h.store.close()
   })
@@ -662,7 +662,7 @@ describe('github source', () => {
       meta: {} })
     h.store.set('github-cursor:16', '2026-09-01T00:00:00.000Z')
     github(h, { notifications: [notification(16)] })
-    await expect(pollRound(h)).rejects.toThrow('#16: Error: gh: Not Found (HTTP 404)')
+    await expect(pollRound(h)).rejects.toThrow('#16: Error: Command failed (HTTP 404)')
     const first = h.store.get<Record<string, { failedAt: string; attempts: number }>>('github-retry')![16]!
     expect(first).toMatchObject({ attempts: 1, failedAt: expect.any(String) })
     // However many reads failed, a day of failures has not passed: the read is retried, and the round still fails.
@@ -675,7 +675,7 @@ describe('github source', () => {
     await pollRound(h)
     expect(h.store.get('github-retry')).toEqual({})
     expect(h.store.get('github-cursor:16')).toBe('2026-09-01T00:00:00.000Z')
-    expect(h.store.threads.get('github:16')?.meta.pollError).toContain('Not Found')
+    expect(h.store.threads.get('github:16')?.meta.pollError).toContain('HTTP 404')
     expect(h.health.github).toMatchObject({ state: 'ready',
       detail: '0 notifications; next poll ≥ 60s; dropped after their reads kept failing: #16' })
     h.store.close()
@@ -1051,7 +1051,7 @@ describe('feishu event consumer', () => {
   n=$(cat '${dir}/runs' 2>/dev/null || echo 0); n=$((n + 1)); echo $n > '${dir}/runs'; echo $$ > '${dir}/pid'
   case ${mode} in
     never) exec sleep 60 ;;
-    warn) echo '[event] ready' >&2; echo 'WARN the connection was reset' >&2; exec sleep 60 ;;
+    warn) echo '[event] ready' >&2; echo 'WARN invalid secret: fixture-private-credential' >&2; exec sleep 60 ;;
     ready) echo '[event] ready' >&2; exec sleep 60 ;;
     flaky) echo '[event] ready' >&2; [ "$n" -gt 1 ] && exec sleep 60; exit 1 ;;
     events) echo '[event] ready' >&2; cat '${dir}/events'; touch '${dir}/printed'; exec sleep 60 ;;
@@ -1103,7 +1103,7 @@ describe('feishu event consumer', () => {
     sender_id: 'ou_alice', sender_type: 'user', content: 'fix it', create_time: String(Date.now()),
     ...type === 'group' ? { mentions: [{ id: 'ou_bot', name: 'Bot' }] } : {} })
   it.each(['events', 'late-ready'] as const)('takes in the event lines (%s), records each chat as direct or not, and keeps malformed-line health after readiness', async mode => {
-    writeFileSync(join(dir, 'events'), [event('om_1', 'oc_group', 'group'), event('om_2', 'oc_dm', 'p2p'), 'not json',
+    writeFileSync(join(dir, 'events'), [event('om_1', 'oc_group', 'group'), event('om_2', 'oc_dm', 'p2p'), 'fixture-private-credential not json',
       event('om_3', 'oc_group', 'group')].join('\n') + '\n')
     const { ctx, health, store } = consumerSource(cli(mode))
     running = runFeishu(ctx, controller.signal)
@@ -1111,7 +1111,8 @@ describe('feishu event consumer', () => {
     if (mode === 'late-ready') await vi.waitFor(() => expect(existsSync(join(dir, 'readied'))).toBe(true), until)
     expect(['om_1', 'om_2'].map(id => store.triggers.get(feishuTriggerId(id))?.meta.direct)).toEqual([false, true])
     expect(store.get(KV.feishu.chats)).toEqual({ oc_group: false, oc_dm: true })
-    expect(health.feishu).toMatchObject({ state: 'error', detail: expect.stringContaining('JSON') })
+    expect(health.feishu).toMatchObject({ state: 'error', detail: 'Could not process a Feishu event' })
+    expect(JSON.stringify(health)).not.toContain('fixture-private-credential')
     controller.abort(); await running; store.close()
   }, 20_000)
   it('drops the events it reads once the Source is off', async () => {
@@ -1175,7 +1176,9 @@ describe('feishu event consumer', () => {
   it('reports a warning the consumer prints as an error', async () => {
     const { ctx, health, store } = consumerSource(cli('warn'))
     running = runFeishu(ctx, controller.signal)
-    await vi.waitFor(() => expect(health.feishu).toMatchObject({ state: 'error', detail: 'WARN the connection was reset' }), until)
+    await vi.waitFor(() => expect(health.feishu).toMatchObject({ state: 'error',
+      detail: 'Feishu event consumer reported a warning or error; check the bot credentials and connection' }), until)
+    expect(JSON.stringify(health)).not.toContain('fixture-private-credential')
     controller.abort(); await running; store.close()
   }, 20_000)
   it('stops the consumer within five seconds once the Source is off', async () => {

@@ -78,12 +78,14 @@ async function consume(ctx: SourceContext, signal: AbortSignal): Promise<void> {
   signal.addEventListener('abort', stop, { once: true })
   const timeout = setTimeout(() => { diagnostic = 'Feishu event consumer did not become ready within 45 seconds'; stop() }, 45_000)
   stderr.on('line', (line: string) => {
-    diagnostic = line.slice(0, 4000)
     if (line.startsWith('[event] ready')) {
       ready = true; clearTimeout(timeout)
       // stdout/stderr delivery can be reordered; readiness cannot erase this consumer's earlier failure.
       if (!failed) ctx.report('feishu', { state: 'ready', detail: 'Listening for bot events', at: new Date().toISOString() })
-    } else if (/WARN|drop|error/.test(line)) { failed = true; ctx.report('feishu', { state: 'error', detail: diagnostic }) }
+    } else if (/WARN|drop|error/i.test(line)) {
+      diagnostic = 'Feishu event consumer reported a warning or error; check the bot credentials and connection'
+      failed = true; ctx.report('feishu', { state: 'error', detail: diagnostic })
+    }
   })
   stdout.on('line', (line: string) => {
     chain = chain.then(async () => {
@@ -95,11 +97,11 @@ async function consume(ctx: SourceContext, signal: AbortSignal): Promise<void> {
       chats[String(trigger.meta.chatId)] = trigger.meta.direct === true
       ctx.state.set(KV.feishu.chats, chats)
       await receive(ctx, trigger)
-    }).catch(error => { failed = true; ctx.report('feishu', { state: 'error', detail: String(error) }) })
+    }).catch(() => { failed = true; ctx.report('feishu', { state: 'error', detail: 'Could not process a Feishu event' }) })
   })
   try {
     await new Promise<void>((resolve, reject) => {
-      child.once('error', reject)
+      child.once('error', () => reject(new Error('Could not start the Feishu event consumer')))
       const exited = (code: number | null) => new Error(`Feishu event consumer exited (${code}, ready=${ready}): ${diagnostic}`)
       child.once('close', (code) => signal.aborted ? resolve() : reject(exited(code)))
     })

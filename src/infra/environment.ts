@@ -9,7 +9,7 @@ import { delimiter, join, resolve } from 'node:path'
 import type { SubprocessOutputReader, SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 import type { Deployment } from '../deployment.ts'
 import { SetupError } from '../setup.ts'
-import { CliError } from './commands.ts'
+import { CliError, commandError } from './commands.ts'
 import { withExecutionEnvironment } from './scoped-environment.ts'
 import { scrubbedParentEnv, SENSITIVE_ENV_PATTERN } from '@deepseek-ai/dsh-subprocess'
 
@@ -156,8 +156,7 @@ export async function runAsWorker(subprocess: SubprocessRuntime, argv: string[],
   const { exitCode } = await handle.done
   const read = (reader: SubprocessOutputReader | undefined): string => reader?.readFrom(0).text ?? ''
   if (exitCode === 0) return read(handle.collected.stdout)
-  const ended = exitCode === null ? 'was stopped before it finished' : `exited with ${exitCode}`
-  throw new CliError(read(handle.collected.stderr).trim() || `${argv.join(' ')} ${ended}`, undefined, exitCode ?? undefined)
+  throw commandError({ stderr: read(handle.collected.stderr), code: exitCode ?? undefined }, argv[0])
 }
 
 /** Verifies that worker git invocations resolve the deployment's GitHub credential helper. */

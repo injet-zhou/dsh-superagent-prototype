@@ -157,7 +157,7 @@ describe('ticket directory check', () => {
     const failing = ['sh', '-c', 'echo nope >&2; exit 3']
     const error = await runAsWorker(subprocess(join(dir, 'global')), failing, dir, signal).catch((e: unknown) => e)
     expect(error).toBeInstanceOf(CliError)
-    expect(error).toMatchObject({ message: 'nope', exitCode: 3 })
+    expect(error).toMatchObject({ message: 'sh exited with code 3', exitCode: 3 })
   })
 })
 

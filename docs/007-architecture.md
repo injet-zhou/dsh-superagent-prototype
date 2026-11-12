@@ -449,6 +449,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, polls and read positions, the pull request rules, health |
 | `tests/wecom.spec.ts` | The WeCom Source: callback translation, scope and policy rows, admission, Markdown replies with their receipt, the connection loop, and an end-to-end WebSocket authentication, callback and reply |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
+| `tests/security.spec.ts` | Private credential-file permissions and size limits, safe CLI and account-probe diagnostics, and malformed response handling |
 | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
 | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |
 | `tests/assessment.spec.ts` | What the MasterAssessor keeps per Eval, and when it lets go |

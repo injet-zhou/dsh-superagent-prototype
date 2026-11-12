@@ -62,8 +62,8 @@ describe('account-isolated operations', () => {
 
 it('reports Feishu failures with their code and without command arguments', () => {
   const membership = commandError({stderr:'[page 1] fetching...\n'+JSON.stringify({error:{code:232011,message:'operator is not in the chat'}})})
-  expect(membership).toMatchObject({ message: 'operator is not in the chat (232011)', code: 232011 })
-  expect(commandError({stderr:JSON.stringify({error:{code:999,message:'scope missing'}})}).message).toBe('scope missing (999)')
+  expect(membership).toMatchObject({ message: 'Command failed (error code 232011)', code: 232011 })
+  expect(commandError({stderr:JSON.stringify({error:{code:999,message:'scope missing'}})}).message).toBe('Command failed (error code 999)')
 })
 describe('Channels', () => {
   const commands = () => new Commands(() => deployment, {}, new AbortController().signal)
@@ -81,7 +81,7 @@ describe('Channels', () => {
     const hint = 'The Feishu bot is not a member of the chat. Add the bot in the chat settings, then retry.'
     await expect(send(value, feishu)).rejects.toThrow(hint)
     run.mockRejectedValueOnce(lark(99991400, 'rate limited'))
-    await expect(send(value, feishu)).rejects.toThrow('rate limited (99991400)')
+    await expect(send(value, feishu)).rejects.toThrow('Command failed (error code 99991400); rate limited')
   })
   it('keep a Feishu reply whose command timed out for a retry, whatever its text says', async () => {
     const value = commands()
@@ -100,7 +100,7 @@ describe('Channels', () => {
     // GitHub also answers 404 for a private repository the agent lost access to, so 404 is retried rather than dropped.
     for (const stderr of ['gh: Not Found (HTTP 404)', 'gh: Server Error (HTTP 500)']) {
       gh.mockRejectedValueOnce(commandError({ stderr, code: 1 }))
-      await expect(send(value, reply)).rejects.toThrow(stderr)
+      await expect(send(value, reply)).rejects.toMatchObject({ code: Number(/HTTP (\d{3})/.exec(stderr)![1]) })
     }
   })
   it('reply on the PR\'s conversation when the review comment a reply points at is gone', async () => {
@@ -184,9 +184,9 @@ it('names only the program and how it ended when a command prints no diagnostics
 it('reports failures as CliError with the code the CLI names and the exit status', async () => {
   const notFound = commandError({ stderr: 'gh: Not Found (HTTP 404)\n', code: 1 })
   expect(notFound).toBeInstanceOf(CliError)
-  expect(notFound).toMatchObject({ message: 'gh: Not Found (HTTP 404)', code: 404, exitCode: 1 })
+  expect(notFound).toMatchObject({ message: 'Command failed (HTTP 404)', code: 404, exitCode: 1 })
   expect(commandError({ stderr: JSON.stringify({ error: { code: 230011, message: 'The message is recalled' } }),
-    code: 1 })).toMatchObject({ message: 'The message is recalled (230011)', code: 230011 })
+    code: 1 })).toMatchObject({ message: 'Command failed (error code 230011); message recalled', code: 230011 })
   // A cancelled command stays an AbortError so callers can distinguish cancellation from failure.
   const aborted = Object.assign(new Error('The operation was aborted'), { name: 'AbortError', stderr: '' })
   expect(commandError(aborted)).toBe(aborted)
@@ -196,7 +196,7 @@ it('reports failures as CliError with the code the CLI names and the exit status
   await expect(running).rejects.toMatchObject({ name: 'AbortError' })
   const commands = new Commands(() => deployment, {}, new AbortController().signal)
   vi.spyOn(commands, 'run').mockResolvedValue(JSON.stringify({ ok: false, error: { code: 231003, message: 'message not found' } }))
-  await expect(commands.lark(['im', '+messages-reply'])).rejects.toMatchObject({ message: 'message not found (231003)', code: 231003 })
+  await expect(commands.lark(['im', '+messages-reply'])).rejects.toMatchObject({ message: 'Command failed (error code 231003)', code: 231003 })
 })
 
 it('stops a running command when the signal of its work aborts, or the lifetime, and leaves the other work running', async () => {

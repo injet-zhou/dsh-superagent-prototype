@@ -9,6 +9,7 @@ import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 import { runAsWorker, sameDirectory, withoutDirectory, workerBin } from './infra/environment.ts'
 import { DiscordApi, DiscordUser } from './infra/discord.ts'
 import { readWecomSecret } from './infra/wecom-secret.ts'
+import { commandError } from './infra/commands.ts'
 import { SetupError } from './setup.ts'
 
 const reason = (error: unknown): string => error instanceof Error ? error.message : String(error)
@@ -121,6 +122,7 @@ function parsed<T>(schema: z.ZodType<T>, text: string): T | undefined {
 }
 /** Verify the agent's GitHub CLI identity and push access to the configured repository. */
 export async function resolveDeployment(machine: Machine, github: unknown, probe: Probe, path = process.env.PATH ?? ''): Promise<Deployment> {
+  const run = (argv: string[]) => probe(argv).catch((error: unknown) => { throw commandError(error, argv[0]) })
   const { stateDir } = machine
   const accounts = GithubAccountsSchema.parse(github ?? {})
   let baseUrl: string | undefined
@@ -138,16 +140,16 @@ export async function resolveDeployment(machine: Machine, github: unknown, probe
   try { cli = executable(accounts.cli, path, workerBin(stateDir)) } catch (error) { throw new SetupError('agentCliMissing', { output: reason(error) }) }
   if (baseUrl !== undefined) {
     try {
-      const configured = parsed(z.object({ baseUrl: z.string() }), await probe([cli, 'config']))
+      const configured = parsed(z.object({ baseUrl: z.string() }), await run([cli, 'config']))
       if (!configured || repositoryBaseUrl(configured.baseUrl) !== baseUrl) throw new Error('Repository CLI configuration must use the same baseUrl as the Source')
     } catch (error) { throw new SetupError('agentCliSignedOut', { output: reason(error) }) }
-    const text = await probe([cli, 'api', 'user']).catch((error: unknown) => { throw new SetupError('agentCliSignedOut', { output: reason(error) }) })
+    const text = await run([cli, 'api', 'user']).catch((error: unknown) => { throw new SetupError('agentCliSignedOut', { output: reason(error) }) })
     if (accounts.provider === 'gitlab') {
       const agent = parsed(z.object({ username: z.string().regex(/^[A-Za-z0-9_.-]+$/), email: z.string().nullish() }), text)
       if (!agent) throw new SetupError('agentCliNoAccount')
       const access = parsed(z.object({ path_with_namespace: z.string().regex(/^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+$/), archived: z.boolean().optional(),
         permissions: z.object({ project_access: z.object({ access_level: z.number() }).nullish(), group_access: z.object({ access_level: z.number() }).nullish() }) }),
-      await probe([cli, 'api', `projects/${encodeURIComponent(remote)}`])
+      await run([cli, 'api', `projects/${encodeURIComponent(remote)}`])
         .catch((error: unknown) => { throw new SetupError('repositoryUnreadable', { account: agent.username, repository: remote, output: reason(error) }) }))
       if (!access) throw new SetupError('repositoryUnreported', { repository: remote })
       if (access.archived || Math.max(access.permissions.project_access?.access_level ?? 0, access.permissions.group_access?.access_level ?? 0) < 30) {
@@ -159,18 +161,18 @@ export async function resolveDeployment(machine: Machine, github: unknown, probe
     const agent = parsed(z.object({ login: z.string().regex(/^[A-Za-z0-9_.-]+$/), email: z.string().nullish() }), text)
     if (!agent) throw new SetupError('agentCliNoAccount')
     const access = parsed(z.object({ full_name: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
-      permissions: z.object({ push: z.boolean() }) }), await probe([cli, 'api', `repos/${remote}`])
+      permissions: z.object({ push: z.boolean() }) }), await run([cli, 'api', `repos/${remote}`])
       .catch((error: unknown) => { throw new SetupError('repositoryUnreadable', { account: agent.login, repository: remote, output: reason(error) }) }))
     if (!access) throw new SetupError('repositoryUnreported', { repository: remote })
     if (!access.permissions.push) throw new SetupError('repositoryReadOnly', { account: agent.login, repository: access.full_name })
     const noreply = accounts.commitEmail || agent.email || `${agent.login}@noreply.${new URL(baseUrl).hostname}`
     return { ...machine, repository: access.full_name, github: { cli, login: agent.login, noreply, provider: 'gitea', baseUrl } }
   }
-  const text = await probe([cli, 'api', 'user']).catch((error: unknown) => { throw new SetupError('agentCliSignedOut', { output: reason(error) }) })
+  const text = await run([cli, 'api', 'user']).catch((error: unknown) => { throw new SetupError('agentCliSignedOut', { output: reason(error) }) })
   const agent = parsed(GithubUser, text)
   if (!agent) throw new SetupError('agentCliNoAccount')
   // Use the canonical repository name returned by GitHub so renamed repositories match incoming notifications.
-  const access = parsed(RepositoryAccess, await probe([cli, 'api', `repos/${remote}`, '--jq', '{name: .full_name, push: .permissions.push}']).catch((error: unknown) => {
+  const access = parsed(RepositoryAccess, await run([cli, 'api', `repos/${remote}`, '--jq', '{name: .full_name, push: .permissions.push}']).catch((error: unknown) => {
     throw new SetupError('repositoryUnreadable', { account: agent.login, repository: remote, output: reason(error) })
   }))
   if (!access) throw new SetupError('repositoryUnreported', { repository: remote })
@@ -191,7 +193,8 @@ export async function resolveFeishuBot(machine: Machine, feishu: unknown, probe:
   const fail = (error: unknown): never => { throw error instanceof SetupError ? error : new SetupError('feishuCliFailed', { output: reason(error) }) }
   let cli = ''
   try { cli = executable(name, path, workerBin(machine.stateDir)) } catch (error) { fail(error) }
-  const run = (...args: string[]): Promise<string> => probe(['env', 'LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1', 'LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1', cli, ...args]).catch(fail)
+  const run = (...args: string[]): Promise<string> => probe(['env', 'LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1', 'LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1', cli, ...args])
+    .catch((error: unknown) => fail(commandError(error, cli)))
   const text = await run('auth', 'status')
   const status = parsed(AuthStatus, text.slice(text.indexOf('{')))
   if (!status) return fail(new SetupError('feishuNoApp'))
