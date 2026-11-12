@@ -89,6 +89,8 @@ export const MACHINE = { stateDir: '/srv/dsh-superagent', promptMaxChars: 100000
 type Settings = ReturnType<typeof SettingsSchema.parse>
 export interface PanelServer {
   memory: Record<string, MemoryDetails>
+  discovery?: ApiResponse<'GET sources/:id/discovery'>
+  workspaceCheck?: ApiResponse<'POST setup/workspace/check'>
   consolidated: number; rebuilt: number
   extraKinds?: SourceKind[]
   joined?: Record<string, string>; joining?: Record<string, string>
@@ -334,6 +336,8 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     await server.searching?.(q)
     return { tickets: [], threads: server.search.threads, items: server.search.items.filter(item => item.preview.includes(q)) }
   } },
+  'GET sources/:id/discovery': { answer: () => server.discovery ?? [] },
+  'POST setup/workspace/check': { body: true, answer: () => server.workspaceCheck ?? { ok: true, code: 'ready' } },
   'GET sources': { answer: sourceStatuses },
   'GET settings': { answer: settingsView },
   'POST sources/:id/labels': { answer: () => {

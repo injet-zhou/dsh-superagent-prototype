@@ -150,7 +150,7 @@ export function useDraft<V, M = undefined>({ key, saved, revision, save, reload 
   const submit = async (event?: FormEvent) => {
     event?.preventDefault()
     const { draft } = state
-    if (state.phase !== 'editing' || !draft) return
+    if (state.phase !== 'editing' || !draft) return state.phase === 'clean'
     dispatch({ type: 'submit' })
     let result: { revision: number; restarting?: boolean }
     try {
@@ -161,10 +161,11 @@ export function useDraft<V, M = undefined>({ key, saved, revision, save, reload 
         await reload().then(() => dispatch({ type: 'refused', notice: { kind: 'rebasing' } }), failed)
       } else dispatch({ type: 'refused', notice: fields.length ? { kind: 'invalid', fields } : { kind: 'failed',
         error: errorText(failure) } })
-      return
+      return false
     }
     dispatch({ type: 'saved', revision: result.revision, restarting: !!result.restarting })
     if (result.restarting) restart(); else await reload().catch(failed)
+    return true
   }
   return { state, value: state.sent?.value ?? state.draft?.value ?? saved, meta: state.draft?.meta,
     revision: state.draft?.revision ?? revision ?? 0, dirty: state.draft !== undefined,

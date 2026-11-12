@@ -85,6 +85,7 @@ it('adds a repository through the host configuration and opens its scoped Source
   await click(zh.repositoryOverview)
   await click(zh.repositoryAdd)
   await type(field<HTMLInputElement>(zh.repositoryName), 'Backend')
+  await click(zh.advanced)
   await type(field<HTMLInputElement>(zh.repositoryId), 'default')
   expect(text()).toContain(zh.repositoryIdReserved)
   expect((find(zh.repositoryAdd, '.dt-modal button[type="submit"]') as HTMLButtonElement).disabled).toBe(true)
@@ -122,6 +123,7 @@ it('keeps a refused repository addition editable and disables management for rea
   await mount()
   await click(zh.repositoryOverview)
   await click(zh.repositoryAdd)
+  await click(zh.advanced)
   await type(field<HTMLInputElement>(zh.repositoryId), 'backend')
   await click(find(zh.repositoryAdd, '.dt-modal button[type="submit"]'))
   expect(mutations).toHaveLength(1)
@@ -168,7 +170,7 @@ it('edits global limits and repository Router and Worker models from the indepen
   expect(server.settings.executor.model).toEqual({ provider: 'worker-provider', model: 'worker-model' })
 })
 
-it('waits for the catalog before mounting any repository page and includes unconfigured repositories in header warnings', async () => {
+it('waits for the catalog before mounting any repository page and shows unconfigured repositories as pending setup', async () => {
   const original = fetch
   const catalog = Promise.withResolvers<Response>()
   const requests: string[] = []
@@ -184,10 +186,9 @@ it('waits for the catalog before mounting any repository page and includes uncon
     { id: 'new', name: 'New', repository: '', configured: false, state: 'paused', problems: [problemOf('repositoryUnset')] }])) })
   await settle()
   expect(tab(zh.repositoryOverview).getAttribute('aria-selected')).toBe('true')
-  expect(all('.dt-repository')[1]!.textContent).toContain(zh['repositoryState.error'])
+  expect(all('.dt-repository')[1]!.textContent).toContain(zh['repositoryState.setup'])
   await click('acme/widgets')
-  expect(text()).toContain(zh.repositoryFailures)
-  expect(find('New', '.dt-error button')).toBeDefined()
+  expect(text()).not.toContain(zh.repositoryFailures)
 })
 
 it('restores the settings scope when reopening the panel and falls back after that repository is removed', async () => {
@@ -216,6 +217,7 @@ it('offers retry and cancellation when a saved addition never appears, without s
     await mount()
     await click(zh.repositoryOverview)
     await click(zh.repositoryAdd)
+    await click(zh.advanced)
     await type(field<HTMLInputElement>(zh.repositoryId), 'backend')
     await click(find(zh.repositoryAdd, '.dt-modal button[type="submit"]'))
     expect(text()).toContain(zh.repositoryReloading)
@@ -243,6 +245,7 @@ it('uses consistent repository names in removal confirmation and explains invali
   expect(document.querySelector('.dt-modal-description')?.textContent).toContain('移除“Backend”')
   await click(zh.cancel)
   await click(zh.repositoryAdd)
+  await click(zh.advanced)
   await type(field<HTMLInputElement>(zh.repositoryId), 'bad id')
   expect(text()).toContain(zh.repositoryIdInvalid)
   await type(field<HTMLInputElement>(zh.repositoryId), 'backend')
@@ -262,6 +265,7 @@ it('can stop waiting even if the catalog refresh itself never answers', async ()
     await mount()
     await click(zh.repositoryOverview)
     await click(zh.repositoryAdd)
+    await click(zh.advanced)
     await type(field<HTMLInputElement>(zh.repositoryId), 'backend')
     await click(find(zh.repositoryAdd, '.dt-modal button[type="submit"]'))
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000) }); await settle()

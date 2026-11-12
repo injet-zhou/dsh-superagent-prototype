@@ -2,7 +2,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import type { ApiResponse } from '../app/api.ts'
 import { LIMITS } from '../limits.ts'
-import { Button, Dot, Icon, Input, Modal, SegmentedTabs, Tag } from './controls.tsx'
+import { Button, DisclosureRow, Dot, Icon, Input, Modal, SegmentedTabs, Tag } from './controls.tsx'
 import { DeploymentPage, type DeploymentForm } from './deployment.tsx'
 import { SaveBar, useDraft } from './draft.tsx'
 import { useAction, usePanel, usePanelData } from './provider.tsx'
@@ -15,7 +15,11 @@ import { Hint, LoadState, SetupMessage } from './widgets.tsx'
 export type RepositoryCatalog = ApiResponse<'GET repositories'>
 export type ManagementView = 'repositories' | 'configuration'
 export function repositoryState(entry: RepositoryCatalog[number]) {
-  return entry.error || entry.problems?.length || Object.values(entry.health ?? {}).some(health => health.state === 'error' || health.code === 'setupPending')
+  const problems = entry.problems ?? []
+  const missing = new Set(['repositoryUnset', 'agentCliUnset'])
+  if (!entry.error && problems.length && problems.every(problem => missing.has(problem.code))
+    && !Object.values(entry.health ?? {}).some(health => health.state === 'error')) return 'setup'
+  return entry.error || problems.length || Object.values(entry.health ?? {}).some(health => health.state === 'error' || health.code === 'setupPending')
     ? 'error' : entry.state ?? 'starting'
 }
 interface RepositoryConfig { id: string; name: string }
@@ -109,6 +113,7 @@ export function ManagementPanel({ view, entries, error, form, scope, configurati
   const [removing, setRemoving] = useState<RepositoryCatalog[number]>()
   const [id, setId] = useState('')
   const [name, setName] = useState('')
+  const [advanced, setAdvanced] = useState(false)
   const [pending, setPending] = useState<{ id: string; adding: boolean; timedOut?: boolean }>()
   const snapshot = form?.state
   const editable = snapshot?.status === 'ready' && snapshot.writable
@@ -117,7 +122,10 @@ export function ManagementPanel({ view, entries, error, form, scope, configurati
   useEffect(() => {
     if (!pending || !entries || entries.some(entry => entry.id === pending.id) !== pending.adding) return
     setPending(undefined)
-    if (pending.adding) configure(pending.id)
+    if (pending.adding) {
+      try { sessionStorage.setItem(`dsh-superagent/onboarding/${pending.id}`, '0') } catch { /* Progress is optional. */ }
+      configure(pending.id)
+    }
   }, [pending, entries])
   useEffect(() => {
     if (!pending || pending.timedOut) return
@@ -149,7 +157,11 @@ export function ManagementPanel({ view, entries, error, form, scope, configurati
       <div className="dt-toolbar">
         {entries && entries.length > 1 && load && <span className="dt-hint">{t('repositoryGlobalLoad', load)}</span>}
         {view === 'repositories' && <Button variant="outline" size="sm" icon={<Icon name="plus" size={14} />} disabled={!editable || mutation.busy || !!pending}
-          onClick={() => { setId(''); setName(''); setAdding(true) }}>{t('repositoryAdd')}</Button>}
+          onClick={() => {
+            let next: string
+            do { next = `repo-${crypto.randomUUID().slice(0, 8)}` } while (configured.some(entry => entry.id === next) || entries?.some(entry => entry.id === next))
+            setId(next); setName(''); setAdvanced(false); setAdding(true)
+          }}>{t('repositoryAdd')}</Button>}
       </div>
     </header>
     <SegmentedTabs value={view} onChange={onView} label={t('title')}
@@ -185,10 +197,12 @@ export function ManagementPanel({ view, entries, error, form, scope, configurati
       <form id="dt-repository-add" className="dt-form" onSubmit={add}>
         <Fields disabled={mutation.busy}>
           <Field label={t('repositoryName')}><Input value={name} onChange={event => setName(event.target.value)} /></Field>
-          <Field label={t('repositoryId')} note={invalid ? undefined : t('repositoryIdHint')}>
-            <Input value={id} required pattern="[a-z][a-z0-9\-]{0,47}" maxLength={48} spellCheck={false}
-              onChange={event => setId(event.target.value.trim())} />
-          </Field>
+          <DisclosureRow icon={<Icon name="settings" />} title={t('advanced')} open={advanced} onToggle={() => setAdvanced(!advanced)}>
+            <Field label={t('repositoryId')} note={invalid ? undefined : t('repositoryIdHint')}>
+              <Input value={id} required pattern="[a-z][a-z0-9\-]{0,47}" maxLength={48} spellCheck={false}
+                onChange={event => setId(event.target.value.trim())} />
+            </Field>
+          </DisclosureRow>
           {invalid && <p className="dt-error" role="alert">{invalid}</p>}
         </Fields>
       </form>

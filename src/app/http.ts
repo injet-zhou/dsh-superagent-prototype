@@ -11,6 +11,7 @@ import { PromptConflict, SKILL_NAME, SKILL_PREFIX, TEAM_SECTIONS, builtInBase, b
 import { policyVersion } from '../policy.ts'
 import { SettingsConflict, type Settings } from './settings.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
+import { wecomDiscovery } from './onboarding.ts'
 import { UserError, ticketStage, type EngineForPeople, type Ticket } from '../core/index.ts'
 import type { Deployment, Machine } from '../deployment.ts'
 import type { DshExecutor } from '../executor/dsh.ts'
@@ -58,6 +59,7 @@ export interface HttpHost {
   configured(): boolean
   links(): LinkTarget
   ticketEnvironment(ticket: Ticket): Variable[]
+  checkWorkspace(path: string): Promise<import('../workspace.ts').WorkspaceCheck>
   checkSetup(): void
   requestPass(): void
   models(): Promise<ModelCatalog>
@@ -178,6 +180,15 @@ function routes(runtime: HttpHost, catalog: () => ApiResponse<'GET repositories'
     'GET overview': () => overview(views(runtime), runtime.health, policyVersion(store.settings()),
       executorLoad(store, runtime.executor.activeCount()), runtime.setupProblem ?? runtime.feishuProblem ?? runtime.discordProblem ?? runtime.wecomProblem),
     'GET search': ({ query }) => search(views(runtime), query.q ?? '', runtime.sourceLinks),
+    'GET sources/:id/discovery': ({ params }) => {
+      if (params.id !== 'wecom' || !runtime.sources.kind('wecom')) throw new RouteError(404, 'Source not found')
+      return wecomDiscovery(store)
+    },
+    'POST setup/workspace/check': async ({ body }) => {
+      const { path } = z.object({ path: z.string().trim().min(1).max(4096).refine(value => !value.includes('\0')) }).strict().parse(await body())
+      if (!runtime.configured()) throw new RouteError(503, 'Configure the repository account first')
+      return runtime.checkWorkspace(path)
+    },
     'GET sources': () => sourcesStatus(views(runtime), runtime.health, setupState(runtime)),
     'GET settings': () => settingsView(store, runtime.sources, runtime.health, setupState(runtime), runtime.machine.stateDir),
     'POST sources/:id/labels': ({ params }) => runtime.settings.refreshLabels(params.id),

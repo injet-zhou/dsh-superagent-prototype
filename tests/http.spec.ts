@@ -152,3 +152,27 @@ it('answers a prompt save that lost a race with 409, and a settings body over 12
     body: { error: `Request exceeds ${128 * 1024} bytes` } })
   expect(saves).toEqual([])
 })
+
+it('scopes discovery to the selected repository and keeps it readable during setup', async () => {
+  const trigger = (id: string) => ({ id, at: '2026-10-01T00:00:00Z', text: 'test', actor: { id }, meta: { chatId: 'team' } })
+  const host = (id: string) => ({ sources: { kind: (source: string) => source === 'wecom' },
+    store: { read: { triggers: vi.fn(() => ({ items: [trigger(id)] })) }, triggers: { disposition: () => ({ filtered: { code: 'chat_not_allowed' } }) } },
+    repositoryHealth: { runtime: { state: 'starting' } } })
+  const primary = host('alice'), backend = host('bob')
+  const call = serve(primary, '127.0.0.1', () => [{ id: 'default', name: 'Default', host: primary as unknown as HttpHost },
+    { id: 'backend', name: 'Backend', host: backend as unknown as HttpHost }])
+  expect(await call('GET', '../repositories/backend/api/sources/wecom/discovery')).toMatchObject({ status: 200, body: [{ userId: 'bob', filtered: true }] })
+  expect(primary.store.read.triggers).not.toHaveBeenCalled()
+  expect(await call('GET', 'sources/unknown/discovery')).toMatchObject({ status: 404 })
+  expect(await call('GET', 'sources/wecom/discovery', undefined, { 'x-orchestrator-request': undefined })).toMatchObject({ status: 403 })
+})
+it('validates workspace checks and requires a resolved repository account', async () => {
+  const checkWorkspace = vi.fn(async () => ({ ok: true, code: 'ready' }))
+  const call = serve({ configured: () => true, checkWorkspace })
+  expect(await call('POST', 'setup/workspace/check', { path: '/tmp/repo' })).toMatchObject({ status: 200, body: { ok: true } })
+  expect(checkWorkspace).toHaveBeenCalledWith('/tmp/repo')
+  expect(await call('POST', 'setup/workspace/check', { path: '/tmp/repo', command: 'rm' })).toMatchObject({ status: 400 })
+  expect(await call('POST', 'setup/workspace/check', { path: '\0' })).toMatchObject({ status: 400 })
+  const pending = serve({ configured: () => false, checkWorkspace })
+  expect(await pending('POST', 'setup/workspace/check', { path: '/tmp/repo' })).toMatchObject({ status: 503 })
+})
