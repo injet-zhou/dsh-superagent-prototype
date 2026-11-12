@@ -1,4 +1,6 @@
 /** Application composition root and lifecycle manager for dsh-superagent. */
+import { checkWorkspace } from './onboarding.ts'
+import { executionRoot } from './execution-environment.ts'
 import { Service, type Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { SessionId } from '@deepseek-ai/dsh-session'
@@ -317,6 +319,8 @@ export class Runtime extends Service implements SourceHost {
     const runtime = this
     const { store, sources, prompts, sessions, settings, engine, executor, machine, masterId, sourceLinks, setup, passes } = this
     return { store, sources, prompts, sessions, settings, engine, executor, memory: this.memory, machine, masterId, sourceLinks,
+      checkWorkspace: path => checkWorkspace(path, executionRoot(store.settings(), machine.stateDir), setup.deployment,
+        runtime.ctx.subprocess, runtime.lifetime, setup.executionEnvironment),
       get ready() { return runtime.ready }, get health() { return { ...runtime.health, ...runtime.options.aggregateHealth?.() } },
       get repositoryHealth() { return runtime.health },
       globalLoad: this.options.globalLoad,

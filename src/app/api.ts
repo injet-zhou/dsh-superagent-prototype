@@ -32,6 +32,8 @@ export interface Api {
   'GET state': { response: StateView }
   'GET overview': { response: OverviewView }
   'GET search': { query: { q: string }; response: SearchView }
+  'GET sources/:id/discovery': { response: { id: string; at: string; preview: string; userId: string; chatId: string; filtered: boolean }[] }
+  'POST setup/workspace/check': { body: { path: string }; response: import('../workspace.ts').WorkspaceCheck }
   'GET sources': { response: SourceStatusView[] }
   'GET settings': { response: SettingsView }
   'POST sources/:id/labels': { response: { added: string[] } }

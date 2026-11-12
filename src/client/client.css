@@ -397,3 +397,10 @@ a.dt-btn, a.dt-btn:hover { text-decoration: none; }
 .dt-admission-slot { display: inline-flex; flex: none; width: 16px; }
 .dt-info-warn { color: var(--dsw-alias-state-warn-primary); }
 .dt-field-segmented { max-width: 240px; }
+
+/* Onboarding follows the existing form rhythm; steps wrap rather than overflow on phones. */
+.dt-onboarding-steps { display: flex; flex-wrap: wrap; gap: 8px 20px; list-style: none; padding: 0; margin: 0 0 12px; border-bottom: 1px solid var(--dsw-alias-border-l3); }
+.dt-onboarding-steps button { padding: 8px 0; border: 0; border-bottom: 2px solid transparent; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.dt-onboarding-steps button[aria-current="step"] { border-bottom-color: currentColor; font-weight: 600; }
+.dt-discovery-row .dt-row-meta { flex-wrap: wrap; }
+.dt-discovery-row .dt-detail { overflow-wrap: anywhere; }

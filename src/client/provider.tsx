@@ -15,7 +15,7 @@ export interface PanelContext {
   backLabel: string
   openSession: (sessionId: string) => Promise<void>
   notify: (text: string) => void
-  restart: () => void
+  restart: () => Promise<boolean>
 }
 export interface PanelData {
   state: StateView | undefined
@@ -88,17 +88,34 @@ export function PanelProvider({ t, interval = 5000, openSession = noSession, nav
   // Poll at 1s during a restart until the server goes down and answers again, or time out after 30s if the restart completed between polls.
   const [restarting, setRestarting] = useState<{ down: boolean }>()
   const [restarts, setRestarts] = useState(0)
-  const restart = useCallback(() => setRestarting({ down: false }), [])
+  const restartWaiters = useRef<((recovered: boolean) => void)[]>([])
+  const recovered = useRef(false)
+  const available = useRef(false)
+  const restart = useCallback(() => new Promise<boolean>(resolve => {
+    restartWaiters.current.push(resolve)
+    recovered.current = false
+    setRestarting({ down: false })
+  }), [])
   const { data: state, error, reload } = usePoll(() => call('GET state'), [call], restarting ? 1000 : interval)
-  if (restarting && !!error !== restarting.down) {
-    setRestarting(error ? { down: true } : undefined)
-    if (!error) setRestarts(restarts + 1)
+  available.current = !!state && !error && state.health.runtime?.state !== 'starting'
+  if (restarting && error && !restarting.down) setRestarting({ down: true })
+  else if (restarting?.down && available.current) {
+    recovered.current = true
+    setRestarting(undefined)
+    setRestarts(restarts + 1)
   }
   useEffect(() => {
-    if (!restarting) return
-    const timer = setTimeout(() => setRestarting(undefined), 30_000)
+    if (!restarting) {
+      for (const resolve of restartWaiters.current.splice(0)) resolve(recovered.current)
+      return
+    }
+    const timer = setTimeout(() => {
+      recovered.current = available.current
+      setRestarting(undefined)
+    }, 30_000)
     return () => clearTimeout(timer)
   }, [restarting])
+  useEffect(() => () => { for (const resolve of restartWaiters.current.splice(0)) resolve(false) }, [])
   const context = useMemo(() => ({ t, repositoryId, call, navigate, back, backLabel, openSession, notify, restart }), [t, repositoryId, call, navigate, back, backLabel,
     openSession, notify, restart])
   const data = useMemo(() => ({ state, error, reload, setup: state?.setup, running: state?.load.running ?? 0, restarts }), [state, error,

@@ -1,7 +1,7 @@
 /**
  * Optimistic settings draft state with sessionStorage persistence and three-way rebase against concurrent saves.
  */
-import { useEffect, useLayoutEffect, useReducer, useRef, type FormEvent } from 'react'
+import { useEffect, useLayoutEffect, useReducer, useRef, useState, type FormEvent } from 'react'
 import { ApiError } from './api.ts'
 import { usePanel } from './provider.tsx'
 import { errorText, type T } from './text.ts'
@@ -135,6 +135,10 @@ export interface DraftOptions<V> {
 /** Manage a settings draft, persisting unsaved edits in `sessionStorage` and rebasing them when newer server revisions arrive. */
 export function useDraft<V, M = undefined>({ key, saved, revision, save, reload }: DraftOptions<V>) {
   const { restart } = usePanel()
+  const mounted = useRef(true)
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
+  const saving = useRef(false)
+  const [submitting, setSubmitting] = useState(false)
   const [state, dispatch] = useReducer(draftReducer<V, M>, undefined, () => {
     const stored = read<V, M>(key)
     const initial: DraftState<V, M> = stored ? { phase: 'editing', draft: stored, notice: { kind: 'restored' } } : { phase: 'clean' }
@@ -149,26 +153,35 @@ export function useDraft<V, M = undefined>({ key, saved, revision, save, reload 
   const failed = (failure: unknown) => dispatch({ type: 'refused', notice: { kind: 'failed', error: errorText(failure) } })
   const submit = async (event?: FormEvent) => {
     event?.preventDefault()
+    if (saving.current) return false
     const { draft } = state
-    if (state.phase !== 'editing' || !draft) return
-    dispatch({ type: 'submit' })
-    let result: { revision: number; restarting?: boolean }
+    if (state.phase !== 'editing' || !draft) return state.phase === 'clean'
+    saving.current = true
+    setSubmitting(true)
     try {
-      result = await save(draft.value, draft.revision, draft.base)
-    } catch (failure) {
-      const fields = failure instanceof ApiError ? failure.issues.map(issue => issue.path) : []
-      if (failure instanceof ApiError && failure.status === 409) {
-        await reload().then(() => dispatch({ type: 'refused', notice: { kind: 'rebasing' } }), failed)
-      } else dispatch({ type: 'refused', notice: fields.length ? { kind: 'invalid', fields } : { kind: 'failed',
-        error: errorText(failure) } })
-      return
-    }
-    dispatch({ type: 'saved', revision: result.revision, restarting: !!result.restarting })
-    if (result.restarting) restart(); else await reload().catch(failed)
+      dispatch({ type: 'submit' })
+      let result: { revision: number; restarting?: boolean }
+      try {
+        result = await save(draft.value, draft.revision, draft.base)
+      } catch (failure) {
+        const fields = failure instanceof ApiError ? failure.issues.map(issue => issue.path) : []
+        if (failure instanceof ApiError && failure.status === 409) {
+          await reload().then(() => dispatch({ type: 'refused', notice: { kind: 'rebasing' } }), failed)
+        } else dispatch({ type: 'refused', notice: fields.length ? { kind: 'invalid', fields } : { kind: 'failed',
+          error: errorText(failure) } })
+        return false
+      }
+      dispatch({ type: 'saved', revision: result.revision, restarting: !!result.restarting })
+      // Callers may save another block next; wait until the host and setup have recovered first.
+      if (result.restarting && !await restart()) return false
+      if (!mounted.current) return false
+      try { await reload() } catch (failure) { failed(failure); return false }
+      return mounted.current
+    } finally { saving.current = false; setSubmitting(false) }
   }
   return { state, value: state.sent?.value ?? state.draft?.value ?? saved, meta: state.draft?.meta,
     revision: state.draft?.revision ?? revision ?? 0, dirty: state.draft !== undefined,
-    busy: state.phase === 'saving' || state.phase === 'awaitingRevision', submit,
+    busy: submitting || state.phase === 'saving' || state.phase === 'awaitingRevision', submit,
     edit: (value: V, meta?: M) => dispatch({ type: 'edit', value, meta, saved, revision }), discard: () => dispatch({ type: 'discard' }) }
 }
 

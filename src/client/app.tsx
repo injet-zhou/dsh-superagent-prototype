@@ -206,13 +206,13 @@ export function App({ t, openSession, deploymentForm }: AppProps) {
   const select = useCallback((id: string) => { setSelected(id); rememberRepository(id) }, [])
   const [management, setManagement] = useState(selectedPanelView)
   const [scope, setScope] = useState(selectedSettingsScope)
-  const [configurationRoute, setConfigurationRoute] = useState<Extract<Route, { page: 'settings' }>>({ page: 'settings', query: { group: 'source' } })
+  const [configurationRoute, setConfigurationRoute] = useState<Extract<Route, { page: 'settings' }>>({ page: 'settings', query: { group: 'onboarding' } })
   const [destination, setDestination] = useState<Route>()
   const view = management ?? (data && data.length > 1 ? 'repositories' : 'repository')
   useEffect(() => { if (data && management === undefined) setManagement(data.length > 1 ? 'repositories' : 'repository') }, [data, management])
   useEffect(() => { if (data) rememberPanelView(view) }, [data, view])
   useEffect(() => { if (data) rememberSettingsScope(scope) }, [data, scope])
-  const configureScope = (id: string) => { setScope(id); setConfigurationRoute({ page: 'settings', query: { group: 'source' } }) }
+  const configureScope = (id: string) => { setScope(id); setConfigurationRoute({ page: 'settings', query: { group: 'onboarding' } }) }
   const open = (id: string, route: Route = HOME) => { select(id); setDestination(route); setManagement('repository') }
   useEffect(() => { if (data && !data.some(entry => entry.id === selected)) select('default') }, [data, selected, select])
   useEffect(() => { if (data && scope && !data.some(entry => entry.id === scope)) setScope('') }, [data, scope])
