@@ -18,8 +18,11 @@ export function searchPlan(repository: string, fts: boolean, input: z.input<type
         ORDER BY n.updated_at DESC,n.id LIMIT ?`, params: [...params, query, limit] }
 }
 
-/** Host-owned SQL only. The read-only connection is terminated on deadline/cancellation, including native SQLite work. */
-export async function readMatches(db: DatabaseSync, plan: ReturnType<typeof searchPlan>, signal?: AbortSignal) {
+/** Host-owned SQL only. A bounded batch shares one read-only process and hard deadline, including native SQLite work. */
+export async function readMatches(db: DatabaseSync, plan: ReturnType<typeof searchPlan> | readonly ReturnType<typeof searchPlan>[], signal?: AbortSignal) {
+  const plans = 'sql' in plan ? [plan] : plan
+  if (!plans.length) return []
+  if (plans.length > 20) throw new Error('memory_retrieval_unavailable')
   const file = db.prepare('PRAGMA database_list').all().find(row => row.name === 'main')?.file
   if (typeof file !== 'string' || !file) throw new Error('memory_retrieval_unavailable')
   const stop = AbortSignal.any([AbortSignal.timeout(500), ...signal ? [signal] : []])
@@ -31,30 +34,31 @@ export async function readMatches(db: DatabaseSync, plan: ReturnType<typeof sear
     process.stdin.on('end', () => {
       let db
       try {
-        const plan = JSON.parse(input)
-        db = new DatabaseSync(plan.file, { readOnly: true })
+        const inputPlans = JSON.parse(input)
+        db = new DatabaseSync(inputPlans.file, { readOnly: true })
         db.exec('PRAGMA busy_timeout=100; PRAGMA query_only=ON')
-        const rows = db.prepare(plan.sql).all(...plan.params)
-        process.stdout.write(JSON.stringify(rows.map(row => ({ id: row.id, revision: row.revision }))))
+        const groups = inputPlans.plans.map(plan => db.prepare(plan.sql).all(...plan.params)
+          .map(row => ({ id: row.id, revision: row.revision })))
+        process.stdout.write(JSON.stringify(groups))
       } catch { process.exitCode = 1 }
       finally { db?.close() }
     })
   `], { env: {}, stdio: ['pipe', 'pipe', 'ignore'] })
   reader.stdin.on('error', () => {})
-  reader.stdin.end(JSON.stringify({ file, ...plan }))
+  reader.stdin.end(JSON.stringify({ file, plans }))
   let abort!: () => void
   try {
     return await new Promise<{ id: string; revision: number }[]>((resolve, reject) => {
       abort = () => { reject(new Error('memory_retrieval_unavailable')) }
       stop.addEventListener('abort', abort, { once: true })
       let output = ''
-      reader.stdout.on('data', (chunk: Buffer) => { output += chunk.toString(); if (output.length > 8192) { abort(); reader.kill('SIGKILL') } })
+      reader.stdout.on('data', (chunk: Buffer) => { output += chunk.toString(); if (output.length > 8192 * plans.length) { abort(); reader.kill('SIGKILL') } })
       reader.once('close', code => {
         if (code !== 0) return abort()
         let value: unknown
         try { value = JSON.parse(output) } catch { return abort() }
-        const parsed = z.array(z.object({ id: MemoryId, revision: z.number().int().positive() })).max(10).safeParse(value)
-        if (parsed.success) resolve(parsed.data); else abort()
+        const parsed = z.array(z.array(z.object({ id: MemoryId, revision: z.number().int().positive() })).max(10)).length(plans.length).safeParse(value)
+        if (parsed.success) resolve(parsed.data.flat()); else abort()
       })
       reader.once('error', abort)
       if (stop.aborted) abort()

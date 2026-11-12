@@ -288,11 +288,15 @@ it('rotates through all candidate, verified and stale pages after empty proposal
   dreaming.enqueue(); effects.start(); await effects.idle('memory-consolidate')
   const seen = propose.mock.calls.flatMap(([input]) => input.notes.map(details => details.note.id))
   expect(seen.sort()).toEqual(ids.sort())
+  expect(propose).toHaveBeenCalledTimes(3)
+  expect(f.service.status()).toMatchObject({ usedCalls: 3, consolidationPending: 0 })
   expect(dreaming.enqueue()).toBe(false)
   const changed = f.memory.get('candidate-00')!.note
   f.memory.update(changed.id, changed.revision, { body: 'Updated evidence needs another review' }, [], 'New finding', 'host')
   await effects.idle('memory-consolidate')
   expect(propose.mock.calls.at(-1)![0].notes).toMatchObject([{ note: { id: changed.id, revision: changed.revision + 1 } }])
+  expect(propose).toHaveBeenCalledTimes(4)
+  expect(f.service.status()).toMatchObject({ usedCalls: 4, consolidationPending: 0 })
 })
 
 it.each(['stale', 'update', 'redacted-update'] as const)('finishes an equivalent %s proposal in one call and revisits only a later external revision', async action => {

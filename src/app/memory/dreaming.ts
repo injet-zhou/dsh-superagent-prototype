@@ -177,16 +177,15 @@ export class MemoryDreaming {
       }
       const relatedNotes: MemoryDetails[] = [], memory = host.memory.publisher(), seen = new Set(input.notes.map(item => item.note.id))
       const signal = AbortSignal.any([host.lifetime, host.memory.analysisSignal(), AbortSignal.timeout(5000)])
-      for (const primary of input.notes) {
-        for (const match of await readMatches(host.store.db, memory.relatedPlan(primary.note), signal)) {
-          if (seen.has(match.id)) continue
-          const found = memory.get(match.id)
-          if (!found || found.note.revision !== match.revision) continue
-          const details = { note: found.note, evidence: found.evidence.slice(0, 5).map(item => ({ ...item, excerpt: safeText(item.excerpt, 500) })), revisions: [],
-            ...found.pendingReview ? { reviewRequired: true } : {} }
-          if (Buffer.byteLength(serializeAnalysisInput({ ...input, relatedNotes: [...relatedNotes, details] })) > 50_000) continue
-          relatedNotes.push(details); seen.add(match.id)
-        }
+      const plans = input.notes.map(primary => memory.relatedPlan(primary.note))
+      for (const match of await readMatches(host.store.db, plans, signal)) {
+        if (seen.has(match.id)) continue
+        const found = memory.get(match.id)
+        if (!found || found.note.revision !== match.revision) continue
+        const details = { note: found.note, evidence: found.evidence.slice(0, 5).map(item => ({ ...item, excerpt: safeText(item.excerpt, 500) })), revisions: [],
+          ...found.pendingReview ? { reviewRequired: true } : {} }
+        if (Buffer.byteLength(serializeAnalysisInput({ ...input, relatedNotes: [...relatedNotes, details] })) > 50_000) continue
+        relatedNotes.push(details); seen.add(match.id)
       }
       const offeredIds = new Set([...input.notes, ...relatedNotes].map(item => item.note.id))
       const topics = new MemoryKnowledge(memory).topics().filter(topic => topic.sections.some(section => section.sources.some(source => offeredIds.has(source.noteId))))

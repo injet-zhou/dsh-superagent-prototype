@@ -333,7 +333,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/store.ts` | The Store, and `Receipt`, a message of the outbox |
 | `src/app/memory/types.ts` | Strict memory, evidence, path and retrieval schemas and the untrusted-data boundary |
 | `src/app/memory/security.ts` | Secret/PII redaction and source fingerprints |
-| `src/app/memory/retrieval.ts` | Full-repository FTS/fallback plans and deadline-isolated read-only SQLite reader |
+| `src/app/memory/retrieval.ts` | Full-repository FTS/fallback plans and bounded, deadline-isolated read-only SQLite query batches |
 | `src/app/memory/store.ts` | Repository binding, evidence-backed writes, revision CAS and bounded FTS5 retrieval |
 | `src/app/memory/service.ts` | Failure isolation, health, read/search facade and precomputed prompt index |
 | `src/app/memory/analyzer.ts` | Restricted JSON proposal contract, without tool execution or publishing access |

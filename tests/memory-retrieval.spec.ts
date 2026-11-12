@@ -1,4 +1,4 @@
-import { expect, it, vi } from 'vitest'
+import { expect, it, onTestFinished, vi } from 'vitest'
 import { MemoryConfigSchema } from '../src/policy.ts'
 import { MemoryStore } from '../src/app/memory/store.ts'
 import { MEMORY_BOUNDARY } from '../src/app/memory/types.ts'
@@ -49,13 +49,46 @@ it.each([true, false])('finds old experience beyond 200 newer notes with FTS=%s 
   expect((await retrieval.search({ query: 'Foundational isolation', path: 'src/client/app.tsx' })).items).toEqual([])
 })
 
-it('kills a slow native SQLite reader at its deadline while keeping the Runtime event loop responsive', async () => {
+it('reads a full Dreaming batch with per-note ranking and full-length historical IDs', async () => {
+  const { memory, store } = memoryFixture()
+  const ids = [0, 1, 2, 3].map(index => `history-${index}`.padEnd(80, 'x'))
+  for (const [index, id] of ids.entries()) memory.create({ ...exampleNote, title: `History ${index}` }, [exampleEvidence], id, 'verified', id)
+  const plans = Array.from({ length: 20 }, (_, index) => memory.relatedPlan({ ...exampleNote, title: `History ${index % 4}`, id: `new-${index}` }))
+  const rows = await readMatches(store.db, plans)
+  expect(rows).toHaveLength(80)
+  for (let index = 0; index < 20; index++) {
+    expect(rows[index * 4]!.id).toBe(ids[index % 4])
+    expect(rows.slice(index * 4, index * 4 + 4)).toEqual(expect.arrayContaining(ids.map(id => ({ id, revision: 1 }))))
+  }
+})
+
+it.each(['query failure', 'too many results'] as const)('rejects the whole read batch on %s and permits a subsequent read', async failure => {
+  const { store } = memoryFixture()
+  const good = { sql: "SELECT 'valid' AS id,1 AS revision", params: [] }
+  const invalid = failure === 'query failure' ? { sql: 'SELECT * FROM nonexistent_memory_table', params: [] }
+    : { sql: "WITH RECURSIVE rows(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM rows WHERE n<11) SELECT 'valid' AS id,1 AS revision FROM rows", params: [] }
+  await expect(readMatches(store.db, [good, invalid, good])).rejects.toThrow('memory_retrieval_unavailable')
+  expect(await readMatches(store.db, good)).toEqual([{ id: 'valid', revision: 1 }])
+})
+
+it('bounds read batches to twenty queries and checks every query repository scope', async () => {
+  const { memory, store } = memoryFixture()
+  const note = memory.create(exampleNote, [exampleEvidence], 'local', 'verified')
+  const local = memory.relatedPlan({ ...exampleNote, id: 'new-note' })
+  const foreign = { ...local, params: local.params.map(value => value === memory.repository ? 'other-repository' : value) }
+  expect(await readMatches(store.db, [foreign, local, foreign])).toEqual([{ id: note.id, revision: 1 }])
+  await expect(readMatches(store.db, Array.from({ length: 21 }, () => local))).rejects.toThrow('memory_retrieval_unavailable')
+})
+
+it.each(['single', 'batch'] as const)('kills a slow native SQLite %s reader at its deadline while keeping the Runtime event loop responsive', async mode => {
   const { store, service, memory } = memoryFixture()
   let ticks = 0
   const timer = setInterval(() => { ticks++ }, 10), started = Date.now()
   try {
-    await expect(readMatches(store.db, { sql: `WITH RECURSIVE counter(n) AS (VALUES(0) UNION ALL
-      SELECT n+1 FROM counter WHERE n<100000000) SELECT 'slow' AS id,1 AS revision FROM counter WHERE n=100000000`, params: [] }))
+    const slow = { sql: `WITH RECURSIVE counter(n) AS (VALUES(0) UNION ALL
+      SELECT n+1 FROM counter WHERE n<100000000) SELECT 'slow' AS id,1 AS revision FROM counter WHERE n=100000000`, params: [] }
+    const plan = mode === 'single' ? slow : [{ sql: "SELECT 'fast' AS id,1 AS revision", params: [] }, slow]
+    await expect(readMatches(store.db, plan))
       .rejects.toThrow('memory_retrieval_unavailable')
     expect(Date.now() - started).toBeLessThan(2000)
     expect(ticks).toBeGreaterThan(5)
@@ -118,8 +151,12 @@ it('bounds the search queue to eight waiters and reports only excess load as bus
   const f = memoryFixture()
   f.memory.create(exampleNote, [exampleEvidence], 'shared', 'verified', 'shared')
   f.service.configure(MemoryConfigSchema.parse({ enabled: true }))
+  // Test capacity independently of process startup latency; the next test advances the wait deadline explicitly.
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  onTestFinished(() => { vi.useRealTimers() })
   const results = await Promise.all(Array.from({ length: 10 }, () => f.service.search({ query: 'SQLite' })))
   expect(results.filter(result => result.degraded === 'memory_retrieval_busy')).toHaveLength(1)
+  expect(results.slice(0, 9).map(result => result.degraded)).toEqual(Array(9).fill(undefined))
   expect(results.slice(0, 9).every(result => result.items.length === 1)).toBe(true)
   expect(f.service.status().problem).toBeUndefined()
 })
