@@ -168,6 +168,38 @@ it('follows X-Next-Page pagination and stops at the configured HTTP request budg
   await expect(commands().run(cli, ['api', `${project}/issues/1/notes`, '--paginate', '--slurp', '--max-requests', '1'])).rejects.toThrow('operation budget exceeded')
 })
 
+it.each(['a'.repeat(40), 'release/fix &v=1'])('pins file and paginated directory reads to ref %s while HEAD changes', async revision => {
+  let head = 'old'
+  const refs: string[] = []
+  routes.set(`GET ${project}/repository/files/src%2Findex.ts`, async (_request, _response, url) => {
+    const ref = url.searchParams.get('ref')!
+    refs.push(ref)
+    return { encoding: 'base64', content: Buffer.from(ref === revision ? 'Pinned source' : head).toString('base64') }
+  })
+  routes.set(`GET ${project}/repository/tree`, async (_request, response, url) => {
+    const ref = url.searchParams.get('ref')!
+    refs.push(ref)
+    expect(url.searchParams.get('path')).toBe('src')
+    const page = Number(url.searchParams.get('page') ?? 1)
+    const names = ref === revision ? ['pinned-a', 'pinned-b', 'pinned-c'] : [head]
+    if (page * 2 < names.length) {
+      url.searchParams.set('page', String(page + 1)); response.setHeader('Link', `<${url}>; rel="next"`)
+    }
+    return names.slice((page - 1) * 2, page * 2).map(name => ({ name }))
+  })
+  const read = commands()
+  expect(await readRepositoryPath(read, 'src/index.ts', 'file', revision)).toBe('Pinned source')
+  expect(await readRepositoryPath(read, 'src', 'directory', revision)).toBe('pinned-a\npinned-b\npinned-c')
+  expect(await readRepositoryPath(read, 'src/index.ts', 'file')).toBe('old')
+  head = 'new'
+  expect(await readRepositoryPath(read, 'src/index.ts', 'file', revision)).toBe('Pinned source')
+  expect(await readRepositoryPath(read, 'src', 'directory', revision)).toBe('pinned-a\npinned-b\npinned-c')
+  expect(await readRepositoryPath(read, 'src/index.ts', 'file')).toBe('new')
+  expect(await readRepositoryPath(read, 'src', 'directory')).toBe('new')
+  expect(refs.filter(ref => ref === revision)).toHaveLength(6)
+  expect(refs.filter(ref => ref === 'HEAD')).toHaveLength(3)
+})
+
 it('creates and closes an MR through the isolated worker CLI using native GitLab JSON', async () => {
   route('POST', `${project}/merge_requests`, mergeRequest(5))
   const created = JSON.parse(await commands().run(cli, ['api', `${project}/merge_requests`, '--method', 'POST',

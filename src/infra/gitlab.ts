@@ -130,11 +130,12 @@ export async function gitlabApi(run: Run, deployment: Deployment, path: string, 
     result = { ...item, sha: item.id }
   } else if (resource === 'contents' || resource.startsWith('contents/')) {
     const filePath = decodeURIComponent(resource.slice('contents/'.length))
+    const ref = encodeURIComponent(query.get('ref') ?? 'HEAD')
     if (raw) {
-      const file = z.object({ encoding: z.literal('base64'), content: z.string() }).parse(await request(`repository/files/${encodeURIComponent(filePath)}?ref=HEAD`))
+      const file = z.object({ encoding: z.literal('base64'), content: z.string() }).parse(await request(`repository/files/${encodeURIComponent(filePath)}?ref=${ref}`))
       return Buffer.from(file.content, 'base64').toString('utf8')
     }
-    result = await request(`repository/tree?ref=HEAD&per_page=100&path=${encodeURIComponent(filePath)}`, true)
+    result = await request(`repository/tree?ref=${ref}&per_page=100&path=${encodeURIComponent(filePath)}`, true)
   } else if (!resource) result = await request('')
   else throw new Error(`Unsupported GitLab repository resource: ${resource}`)
   if (Array.isArray(result)) {
