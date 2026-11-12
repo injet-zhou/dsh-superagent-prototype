@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { Applications, type ApplicationsHost } from '../src/app/applications/service.ts'
-import { ApplicationSchema } from '../src/app/applications/types.ts'
+import { ApplicationSchema, type ApplicationTask } from '../src/app/applications/types.ts'
 import { WorkerSlots } from '../src/executor/dsh.ts'
 import { feishuKind } from '../src/sources/feishu.ts'
 import { startRuntime, feishu, MEMBER, type Host } from './fixtures/host.ts'
@@ -127,6 +127,42 @@ it('uses a restricted diagnosis session, releases its slot on idle, and reports 
   await apps.tick()
   expect(send).toHaveBeenCalledOnce()
   expect(apps.task('shop', task.id).state).toBe('waiting')
+})
+
+it.each(['waiting', 'working', 'ready', 'blocked'] as const)('keeps a mid-turn follow-up queued after an older %s report', async state => {
+  const { apps, trigger } = await setup()
+  apps.receive('shop', trigger())
+  await apps.tick()
+  const task = apps.listTasks('shop')[0]!
+  const followup = trigger('a2', state === 'ready' ? 'Stop this task' : 'The failed request ID is checkout-123')
+  followup.threads = task.trigger.threads; followup.addressed = undefined
+  expect(apps.receive('shop', followup)).toBe('stored')
+  await fixture!.runTool(task.sessionId, 'application_report', { state, summary: 'Report from the original input.' })
+  expect(apps.task('shop', task.id).state).toBe('queued')
+  expect(apps.task('shop', task.id).notifications).toEqual([])
+  fixture!.agents.get(task.sessionId)!.status = 'idle'
+  await vi.waitFor(() => expect(apps.runningIds()).toEqual([]))
+  await apps.tick()
+  const prompts = fixture!.relays(task.sessionId) as { task: ApplicationTask }[]
+  expect(prompts).toHaveLength(2)
+  expect(prompts[1]!.task.version).toBe(task.version + 1)
+  expect(prompts[1]!.task.messages.at(-1)).toEqual(followup)
+  await fixture!.runTool(task.sessionId, 'application_report', { state: 'waiting', summary: 'Current input received.' })
+  expect(apps.task('shop', task.id).state).toBe('waiting')
+})
+
+it('requeues new input when an older turn dispatches a child and ends without reporting', async () => {
+  const { apps, trigger } = await setup()
+  apps.receive('shop', trigger())
+  await apps.tick()
+  const task = apps.listTasks('shop')[0]!
+  const followup = trigger('a2', 'Stop this task')
+  followup.threads = task.trigger.threads
+  apps.receive('shop', followup)
+  await fixture!.runTool(task.sessionId, 'application_dispatch', { repositoryId: 'default', scope: 'Reproduce checkout', purpose: 'investigate' })
+  fixture!.agents.get(task.sessionId)!.status = 'idle'
+  await vi.waitFor(() => expect(apps.runningIds()).toEqual([]))
+  expect(apps.task('shop', task.id).state).toBe('queued')
 })
 
 it('disabling an application stops its active tasks and keeps the history', async () => {

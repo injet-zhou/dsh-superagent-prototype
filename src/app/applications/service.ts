@@ -310,9 +310,13 @@ export class Applications {
     repo.engine.delegate(child.ticketId, trigger, mandate, task.trigger.text.slice(0, 160), child.scope)
     repo.passes.request()
   }
-  report(task: ApplicationTask, state: 'waiting' | 'working' | 'ready' | 'blocked', summary: string): void {
+  report(task: ApplicationTask, state: 'waiting' | 'working' | 'ready' | 'blocked', summary: string): boolean {
     this.authorizeTask(task)
     checkedImText(summary)
+    if (task.version > (task.deliveredVersion ?? task.version)) {
+      task.state = 'queued'; this.saveTask(task)
+      return false
+    }
     if (state === 'ready' && task.children.some(child => {
       const ticket = this.host.repositories().find(repo => repo.id === child.repositoryId)?.runtime?.store.tickets.get(child.ticketId)
       return !ticket || latestReport(ticket)?.state !== 'ready'
@@ -321,6 +325,7 @@ export class Applications {
     const id = key(task.id, 'report', String(task.version), state, summary)
     if (!task.notifications.some(n => n.id === id)) task.notifications.push({ id, text: summary })
     this.saveTask(task)
+    return true
   }
   stop(appId: string, taskId: string): ApplicationTask {
     const task = this.task(appId, taskId)
@@ -398,6 +403,7 @@ export class Applications {
       const agent = await this.agent(task)
       task = this.task(task.applicationId, task.id); this.authorizeTask(task)
       const version = task.version
+      task.deliveredVersion = version
       task.state = 'investigating'; delete task.error; this.saveTask(task)
       const children = task.children.map(child => ({ ...child, ticket: this.repository(task, child.repositoryId).store.tickets.get(child.ticketId) }))
       await this.delivery.send(agent, key(task.id, String(version)), JSON.stringify({ task, children }), 'queue', this.abort.signal,
@@ -406,7 +412,9 @@ export class Applications {
       void agent.whenIdle().then(() => {
         if (this.abort.signal.aborted) return
         const current = this.task(task.applicationId, task.id)
-        if (current.state === 'investigating') {
+        if (current.version > version && current.state !== 'stopped') {
+          current.state = 'queued'; delete current.retryAt; this.saveTask(current)
+        } else if (current.state === 'investigating') {
           current.state = 'blocked'; current.version++; current.retryAt = Date.now() + 30000
           current.error = 'Diagnosis ended without a report; retry to continue'; this.saveTask(current)
         }
@@ -440,7 +448,7 @@ export class Applications {
         } }),
       tool({ name: 'application_report', description: 'Report in the user language, at most 100 words; waiting asks a concrete question, ready includes PR links, test results and any unverified business flow. End the turn after reporting.',
         schema: z.object({ state: z.enum(['waiting', 'working', 'ready', 'blocked']), summary: z.string().min(1).max(1500) }),
-        execute: async args => { this.report(current(), args.state, args.summary); return { reported: true } } }),
+        execute: async args => { const reported = this.report(current(), args.state, args.summary); return { reported, ...!reported ? { queued: true } : {} } } }),
       tool({ name: 'application_stop', description: 'Stop the application task and all children only on an explicit human stop request.', schema: z.object({}),
         execute: async () => this.stop(task.applicationId, task.id) }),
     ]

@@ -22,6 +22,7 @@ export interface ApplicationTask {
   id: string; applicationId: string; sessionId: string; trigger: Trigger; repositories: string[];
   state: 'queued' | 'investigating' | 'waiting' | 'working' | 'ready' | 'blocked' | 'stopped';
   createdAt: string; updatedAt: string; version: number;
+  deliveredVersion?: number;
   retryAt?: number; failures?: number;
   deliveryError?: string; deliveryRetryAt?: number;
   messages: Trigger[]; children: ApplicationChild[]; summary: string; error?: string;
