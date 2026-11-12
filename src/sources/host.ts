@@ -101,3 +101,15 @@ export interface SourceContext {
   report(entry: string, health: Health): void
 }
 export const sourceContext = (host: SourceHost, kind: { kind: string; health: readonly string[] }): SourceContext => host.context(kind)
+
+/** Routes a shared bot's event to its receiving repository; unassigned chats remain discoverable as filtered messages. */
+export function chatRecipients(contexts: Iterable<SourceContext>, kind: string, trigger: Trigger): SourceContext[] {
+  const active = [...contexts].filter(ctx => ctx.config(kind))
+  const receiving = active.filter(ctx => {
+    const config = ctx.config(kind)!
+    if (trigger.meta.direct === true) return config.directMessages === true
+    const chats = config.chats as { chatId: string }[] | undefined
+    return chats?.some(chat => chat.chatId === trigger.meta.chatId) || config.otherChats === 'mentions'
+  })
+  return receiving.length ? receiving : active
+}

@@ -216,6 +216,43 @@ describe('wecom reply', () => {
 })
 
 describe('wecom loop', () => {
+  it('routes a shared robot to separate repositories and keeps its connection until the last one stops', async () => {
+    const first = fixture(), second = fixture(), transport = connection()
+    second.store.saveSettings(SettingsSchema.parse({ ...second.store.settings(), sources: { wecom: { enabled: true,
+      config: { secretFile: '/srv/agent/wecom.json', chats: [{ chatId: 'group2' }], directMessages: false } } } }))
+    const stopFirst = new AbortController(), stopSecond = new AbortController()
+    const firstRun = runWecom(first.ctx, stopFirst.signal, () => transport.value)
+    const secondRun = runWecom(second.ctx, stopSecond.signal, () => transport.value)
+    const emit = (value: unknown) => { for (const listener of transport.messages) listener(value) }
+    try {
+      await vi.waitFor(() => expect(transport.messages.size).toBe(2))
+      emit(body({ msgid: 'first' }))
+      emit(body({ msgid: 'second', chatid: 'group2' }))
+      emit(body({ msgid: 'direct', chattype: 'single', chatid: undefined }))
+      await vi.waitFor(() => {
+        expect(first.store.triggers.get(key('wecom', 'first'))).toBeDefined()
+        expect(first.store.triggers.get(key('wecom', 'direct'))).toBeDefined()
+        expect(second.store.triggers.get(key('wecom', 'second'))).toBeDefined()
+      })
+      expect(first.store.triggers.get(key('wecom', 'second'))).toBeUndefined()
+      expect(second.store.triggers.get(key('wecom', 'first'))).toBeUndefined()
+      expect(second.store.triggers.get(key('wecom', 'direct'))).toBeUndefined()
+      stopFirst.abort(); await firstRun
+      expect(transport.value.disconnect).not.toHaveBeenCalled()
+      expect(transport.messages.size).toBe(1)
+      emit(body({ msgid: 'after', chatid: 'group2' }))
+      await vi.waitFor(() => expect(second.store.triggers.get(key('wecom', 'after'))).toBeDefined())
+      await sendWecom({ commands: second.commands }, { id: 'reply', kind: 'reply', text: 'Working on it.',
+        channel: { source: 'wecom', thread: 'wecom:group:group2', address: { conversation: 'group2' } } }, transport.value)
+      expect(transport.value.send).toHaveBeenCalledWith('group2', 'Working on it.')
+    } finally {
+      stopFirst.abort(); stopSecond.abort()
+      await Promise.all([firstRun, secondRun])
+      first.store.close(); second.store.close()
+    }
+    expect(transport.value.disconnect).toHaveBeenCalledTimes(1)
+    expect(transport.messages.size).toBe(0)
+  })
   it('connects, takes in callbacks in order, and reports a paused Source while setup waits', async () => {
     const h = fixture()
     const transport = connection()
@@ -253,6 +290,10 @@ describe('wecom loop', () => {
 })
 
 describe('wecom transport', () => {
+  it('reuses the shared connection when the default WebSocket address is explicit or omitted', () => {
+    const bot = { botId: 'bot1', secretFile: '/srv/agent/wecom.json' }
+    expect(wecomTransport(bot)).toBe(wecomTransport({ ...bot, wsUrl: 'wss://openws.work.weixin.qq.com' }))
+  })
   const secret = (): string => {
     const secretFile = join(directory(), 'wecom.json')
     writeFileSync(secretFile, JSON.stringify({ botId: 'bot1', secret: 's3cret' }), { mode: 0o600 })

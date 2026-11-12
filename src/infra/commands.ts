@@ -11,6 +11,8 @@ import { gitlabApi } from './gitlab.ts'
 
 const exec = promisify(execFile)
 const TIMEOUT_MS = 90_000
+// Repository runtimes using the same bot must also share its REST queue and rate-limit waits.
+const sharedDiscordClients = new Map<string, DiscordApi>()
 export { CliError } from './errors.ts'
 /** Extracts a sanitized error from a failed subprocess without echoing argv, which may contain message text. */
 export function commandError(error: unknown, program = 'command'): Error {
@@ -70,7 +72,7 @@ export class Commands {
    * @param environment - variables overriding `process.env` for every command (such as isolated git settings).
    */
   constructor(private readonly resolved: () => Deployment, private readonly environment: Record<string, string | undefined>, private readonly signal: AbortSignal,
-    private readonly discordClients = new Map<string, DiscordApi>()) {}
+    private readonly discordClients = sharedDiscordClients) {}
   get deployment(): Deployment { return this.resolved() }
   get repository(): string { return this.deployment.repository }
   withSignal(signal?: AbortSignal): Commands { return signal ? new Commands(this.resolved, this.environment, AbortSignal.any([this.signal, signal]), this.discordClients) : this }
@@ -143,7 +145,7 @@ export class Commands {
     if (!result.ok) throw membership(remoteError(result.error?.code, result.error?.message))
     return result.data
   }
-  /** Calls Discord as the configured bot; shared rate limits survive withSignal command clones. */
+  /** Calls Discord as the configured bot; rate limits are shared across repositories and withSignal clones. */
   async discord<T>(schema: z.ZodType<T>, path: string, body?: unknown): Promise<T> {
     return this.discordClient().request(schema, path, this.signal, body)
   }

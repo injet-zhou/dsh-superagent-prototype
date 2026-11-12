@@ -10,7 +10,7 @@ import { validItems, type Tally } from '../infra/commands.ts'
 import { readFeishu, type FeishuRef } from './feishu-read.ts'
 import { feishuRef, feishuTime, feishuTrigger, HistoricalMessageSchema, historyEvent, HistoryPageSchema, SOURCE, topicEvent }
   from './feishu-trigger.ts'
-import { health, type SourceContext } from './host.ts'
+import { chatRecipients, health, type Health, type SourceContext } from './host.ts'
 import { KV } from '../kv.ts'
 import { cursorAt, POLL_HORIZON_MS, polled, pollThreads as pollEach } from './poll.ts'
 import type { FeishuConfig } from './feishu.ts'
@@ -57,7 +57,7 @@ async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
     const stop = () => running.abort()
     signal.addEventListener('abort', stop, { once: true })
     const began = Date.now()
-    try { await consume(ctx, running.signal) }
+    try { await sharedConsumer(ctx, running.signal) }
     catch (error) { if (!running.signal.aborted) ctx.report('feishu', { state: 'error', detail: String(error) }) }
     finally { clearInterval(check); signal.removeEventListener('abort', stop) }
     if (running.signal.aborted) continue
@@ -68,8 +68,52 @@ async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
 /** Wait before restarting the event consumer: 1s after a run that stayed up for a minute, otherwise exponential backoff up to 60s. */
 export const consumerRetry = (previous: number | undefined, ranMs: number): number =>
   previous === undefined || ranMs >= 60_000 ? 1000 : Math.min(previous * 2, 60_000)
-async function consume(ctx: SourceContext, signal: AbortSignal): Promise<void> {
-  const child = spawn(bot(ctx).cli, ['event', 'consume', 'im.message.receive_v1', '--as', 'bot'],
+
+interface Consumer {
+  contexts: Map<SourceContext, Promise<void>>
+  controller: AbortController
+  running: Promise<void>
+  health?: Health
+}
+const consumers = new Map<string, Consumer>()
+/** One event consumer per bot; removing a repository stops it only after its final subscriber leaves. */
+async function sharedConsumer(ctx: SourceContext, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return
+  const resolved = bot(ctx), identity = JSON.stringify([resolved.brand, resolved.appId, resolved.botId])
+  let consumer = consumers.get(identity)
+  if (!consumer) {
+    const entry: Consumer = { contexts: new Map(), controller: new AbortController(), running: Promise.resolve() }
+    consumer = entry
+    consumers.set(identity, entry)
+    const report = (value: Health) => {
+      entry.health = value
+      for (const source of entry.contexts.keys()) if (enabled(source)) source.report('feishu', value)
+    }
+    entry.running = Promise.resolve().then(() => consume(ctx, entry.controller.signal, entry.contexts, report))
+      .finally(() => { if (consumers.get(identity) === entry) consumers.delete(identity) })
+  }
+  const entry = consumer
+  entry.contexts.set(ctx, Promise.resolve())
+  if (entry.health) ctx.report('feishu', entry.health)
+  let stop!: () => void
+  const stopped = new Promise<void>(resolve => { stop = resolve })
+  signal.addEventListener('abort', stop, { once: true })
+  try { await Promise.race([entry.running, stopped]) }
+  finally {
+    signal.removeEventListener('abort', stop)
+    const pending = entry.contexts.get(ctx)
+    entry.contexts.delete(ctx)
+    if (!entry.contexts.size) {
+      if (consumers.get(identity) === entry) consumers.delete(identity)
+      entry.controller.abort()
+      await entry.running.catch(() => {})
+    }
+    await pending
+  }
+}
+async function consume(ctx: SourceContext, signal: AbortSignal, contexts: Map<SourceContext, Promise<void>>, report: (value: Health) => void): Promise<void> {
+  const resolved = bot(ctx)
+  const child = spawn(resolved.cli, ['event', 'consume', 'im.message.receive_v1', '--as', 'bot'],
     { stdio: ['pipe', 'pipe', 'pipe'], env: { ...sourceProcessEnvironment(ctx.commandEnvironment), LARKSUITE_CLI_NO_UPDATE_NOTIFIER: '1',
       LARKSUITE_CLI_NO_SKILLS_NOTIFIER: '1' } })
   const stdout = createInterface({ input: child.stdout }); const stderr = createInterface({ input: child.stderr })
@@ -81,23 +125,33 @@ async function consume(ctx: SourceContext, signal: AbortSignal): Promise<void> {
     if (line.startsWith('[event] ready')) {
       ready = true; clearTimeout(timeout)
       // stdout/stderr delivery can be reordered; readiness cannot erase this consumer's earlier failure.
-      if (!failed) ctx.report('feishu', { state: 'ready', detail: 'Listening for bot events', at: new Date().toISOString() })
+      if (!failed) report({ state: 'ready', detail: 'Listening for bot events', at: new Date().toISOString() })
     } else if (/WARN|drop|error/i.test(line)) {
       diagnostic = 'Feishu event consumer reported a warning or error; check the bot credentials and connection'
-      failed = true; ctx.report('feishu', { state: 'error', detail: diagnostic })
+      failed = true; report({ state: 'error', detail: diagnostic })
     }
   })
   stdout.on('line', (line: string) => {
     chain = chain.then(async () => {
       if (line.length > 1_048_576) throw new Error('Feishu event exceeds 1 MiB')
-      const trigger = feishuTrigger(JSON.parse(line), bot(ctx).botId, bot(ctx).appId)
+      const trigger = feishuTrigger(JSON.parse(line), resolved.botId, resolved.appId)
       // Events already read when the Source is disabled are dropped; the consumer stops shortly after.
-      if (!trigger || !enabled(ctx)) return
-      const chats = ctx.state.get(KV.feishu.chats) ?? {}
-      chats[String(trigger.meta.chatId)] = trigger.meta.direct === true
-      ctx.state.set(KV.feishu.chats, chats)
-      await receive(ctx, trigger)
-    }).catch(() => { failed = true; ctx.report('feishu', { state: 'error', detail: 'Could not process a Feishu event' }) })
+      if (!trigger || signal.aborted) return
+      await Promise.all(chatRecipients(contexts.keys(), SOURCE, trigger).map(source => {
+        const pending = (async () => {
+          try {
+            const chats = source.state.get(KV.feishu.chats) ?? {}
+            chats[String(trigger.meta.chatId)] = trigger.meta.direct === true
+            source.state.set(KV.feishu.chats, chats)
+            await receive(source, trigger)
+          } catch {
+            failed = true; source.report('feishu', { state: 'error', detail: 'Could not process a Feishu event' })
+          }
+        })()
+        contexts.set(source, pending)
+        return pending
+      }))
+    }).catch(() => { failed = true; report({ state: 'error', detail: 'Could not process a Feishu event' }) })
   })
   try {
     await new Promise<void>((resolve, reject) => {

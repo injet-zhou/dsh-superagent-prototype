@@ -8,7 +8,7 @@ import { key, threadKey, type OutboundMessage, type ReceiveResult, type Trigger 
 import { WecomBotSchema, type WecomBot } from '../deployment.ts'
 import { checkedImText } from '../infra/text.ts'
 import { wecomTransport, type WecomConnection, type WecomConnectionState } from '../infra/wecom.ts'
-import { health, mountSource, type SourceContext } from './host.ts'
+import { chatRecipients, health, mountSource, type SourceContext } from './host.ts'
 import type { ChannelHost, Localized, SourceKind } from './kind.ts'
 import { pause } from './poll.ts'
 
@@ -152,11 +152,12 @@ export async function sendWecom(host: ChannelHost, message: OutboundMessage, con
 }
 
 /** Takes in one callback body, returns `'ignored'` for an event or a message this Source cannot map. */
-export async function receiveWecom(ctx: SourceContext, body: unknown): Promise<ReceiveResult | 'ignored'> {
+export async function receiveWecom(ctx: SourceContext, body: unknown, peers: Iterable<SourceContext> = [ctx]): Promise<ReceiveResult | 'ignored'> {
   const parsed = WecomMessageSchema.safeParse(body)
   if (!parsed.success) return 'ignored'
   const trigger = wecomTrigger(parsed.data)
   if (!trigger) return 'ignored'
+  if (!chatRecipients(peers, SOURCE, trigger).includes(ctx)) return 'ignored'
   const result = await ctx.receive(trigger)
   const direct = trigger.meta.direct === true
   const chatId = String(trigger.meta.chatId ?? '')
@@ -169,6 +170,7 @@ export async function receiveWecom(ctx: SourceContext, body: unknown): Promise<R
 }
 
 const messageOf = (error: unknown): string => error instanceof Error ? error.message : String(error)
+const consumers = new Map<WecomConnection, Set<SourceContext>>()
 /**
  * Keeps the robot connection in step with the switch and the resolved account, reports its health, and takes in callbacks
  * in order. The SDK reconnects a dropped socket itself; the loop recreates the connection when authentication fails or a
@@ -188,7 +190,9 @@ export async function runWecom(ctx: SourceContext, signal: AbortSignal,
     if (!current) return
     current.offMessage()
     current.offState()
-    current.connection.disconnect()
+    const peers = consumers.get(current.connection)!
+    peers.delete(ctx)
+    if (!peers.size) { consumers.delete(current.connection); current.connection.disconnect() }
   }
   const report = (state: WecomConnectionState) => {
     if (state.state === 'ready') { retry = false
@@ -217,15 +221,24 @@ export async function runWecom(ctx: SourceContext, signal: AbortSignal,
         if (active && (retry || active.key !== identity)) await disconnect()
         if (!active) {
           const connection = transportOf(bot)
+          const peers = consumers.get(connection) ?? new Set<SourceContext>()
+          peers.add(ctx)
+          consumers.set(connection, peers)
           const offMessage = connection.onMessage(body => {
-            received++
-            queue = queue.then(() => receiveWecom(ctx, body)).then(result => { if (result !== 'ignored') ctx.report(SOURCE,
-              { state: 'ready', detail: `Connected to WeCom; ${received} messages received`, at: new Date().toISOString() }) })
+            if (signal.aborted || !ctx.config(SOURCE)) return
+            queue = queue.then(() => signal.aborted ? 'ignored' : receiveWecom(ctx, body, peers)).then(result => {
+              if (result === 'ignored') return
+              received++
+              ctx.report(SOURCE, { state: 'ready', detail: `Connected to WeCom; ${received} messages received`, at: new Date().toISOString() })
+            })
               .catch(error => { if (!signal.aborted) ctx.report(SOURCE, { state: 'error', detail: `Could not take in a WeCom message: ${messageOf(error)}` }) })
           })
           const offState = connection.onState(report)
           active = { key: identity, connection, offMessage, offState }
-          try { await connection.connect() }
+          try {
+            await connection.connect()
+            if (!signal.aborted && connection.connected) report({ state: 'ready', detail: 'Connected to WeCom' })
+          }
           catch (error) {
             await disconnect()
             if (!signal.aborted) {

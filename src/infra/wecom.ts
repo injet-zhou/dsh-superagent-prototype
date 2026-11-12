@@ -208,7 +208,7 @@ class WecomTransport implements WecomConnection {
 const transports = new Map<string, WecomTransport>()
 /** Returns the process-wide connection for one robot, so callbacks and replies share a single WebSocket. */
 export function wecomTransport(options: WecomConnectionOptions): WecomConnection {
-  const identity = createHash('sha256').update(JSON.stringify([options.secretFile, options.botId, options.wsUrl ?? '',
+  const identity = createHash('sha256').update(JSON.stringify([options.secretFile, options.botId, options.wsUrl || 'wss://openws.work.weixin.qq.com',
     options.connectTimeoutMs ?? AUTH_TIMEOUT_MS])).digest('hex')
   let transport = transports.get(identity)
   if (!transport) { transport = new WecomTransport(options); transports.set(identity, transport) }

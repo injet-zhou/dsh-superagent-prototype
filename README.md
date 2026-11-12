@@ -20,7 +20,7 @@ It asks one short question at a time, shows the full plan once, and then install
 
 For self-managed GitLab, see [GitLab setup and compatibility](docs/006-deployment.md#agent-gitlab-account). For self-hosted Gitea, see [Gitea setup and compatibility](docs/006-deployment.md#agent-gitea-account). The repository Source supports all three providers; its saved id remains `github` for compatibility. GitHub remains the default. Workers still run in DSH.
 
-For additional repositories on the same machine, see [Multiple local repositories](docs/006-deployment.md#multiple-local-repositories). Existing single-repository installations need no configuration or database migration.
+For additional repositories on the same machine, see [Multiple local repositories](docs/006-deployment.md#multiple-local-repositories). One Feishu, Discord or WeCom bot can serve multiple repositories through separate groups or channels. Existing single-repository installations need no configuration or database migration.
 
 Read the numbered documents in order; each builds only on the ones before it.
 
