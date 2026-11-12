@@ -48,9 +48,9 @@ beforeEach(() => {
 })
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); rmSync(directory, { recursive: true, force: true }) })
 
-function host() {
-  const store = new Store(join(directory, 'state.sqlite'))
-  store.saveSettings(SettingsSchema.parse({ sources: { discord: { enabled: true, config: { tokenFile, channels: [{ channelId: CHANNEL, listen: 'mentions' }] } } },
+function host(channelId = CHANNEL, database = 'state.sqlite') {
+  const store = new Store(join(directory, database))
+  store.saveSettings(SettingsSchema.parse({ sources: { discord: { enabled: true, config: { tokenFile, channels: [{ channelId, listen: 'mentions' }] } } },
     policy: { sources: { discord: { allowed: [{ id: USER, name: 'Alice' }] } } } }))
   const board = new HealthBoard(), sources = new SourceRegistry(() => store.settings(), board)
   sources.register(discordKind)
@@ -120,6 +120,20 @@ describe('Discord bot transport', () => {
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
     expect(fetcher).toHaveBeenCalledTimes(1)
   })
+  it('serializes separate repository clients and shares the bot rate limit between them', async () => {
+    const held = Promise.withResolvers<Response>()
+    fetcher.mockReturnValueOnce(held.promise).mockResolvedValueOnce(response({ ok: true }))
+    const first = commands().discord(z.unknown(), `channels/${CHANNEL}`)
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1))
+    const second = commands().discord(z.unknown(), 'channels/123')
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    const reset = Date.now()
+    held.resolve(response({ ok: true }, 200, { 'X-RateLimit-Remaining': '0', 'X-RateLimit-Reset-After': '0.04' }))
+    await Promise.all([first, second])
+    expect(Date.now() - reset).toBeGreaterThanOrEqual(30)
+    expect(fetcher).toHaveBeenCalledTimes(2)
+  })
   it('adds one reaction with a bodyless PUT, accepts its empty 204 answer and refuses any other PUT path', async () => {
     fetcher.mockResolvedValue(response(undefined, 204))
     await commands().discordReact(CHANNEL, '900000000000000001', DISCORD_REACTIONS.received)
@@ -138,6 +152,40 @@ describe('Discord bot transport', () => {
 })
 
 describe('Discord Source', () => {
+  it('uses one bot for separate repository channels with independent cursors and reply destinations', async () => {
+    const otherChannel = '800000000000000005'
+    const first = host(), second = host(otherChannel, 'second.sqlite')
+    const base = 9007199254740993000n
+    const rows = new Map([[CHANNEL, message(String(base + 1n))],
+      [otherChannel, message(String(base + 2n), { channel_id: otherChannel })]])
+    for (const [source, id] of [[first, CHANNEL], [second, otherChannel]] as const) source.store.set(`discord-cursor:${BOT}:${id}`, String(base))
+    fetcher.mockImplementation(async (url, init) => {
+      const path = new URL(String(url)).pathname, id = path.split('/')[4]!
+      if (init?.method === 'PUT') return new Response(null, { status: 204 })
+      if (init?.method === 'POST') return response({ id: '900000000000000099' })
+      if (path.endsWith('/messages')) return response([rows.get(id)])
+      return response(channel(id))
+    })
+    try {
+      await Promise.all([pollDiscord(first.ctx, signal()), pollDiscord(second.ctx, signal())])
+      for (const [source, id, other] of [[first, CHANNEL, otherChannel], [second, otherChannel, CHANNEL]] as const) {
+        expect(source.receive.mock.calls.map(([trigger]) => trigger.meta.channelId)).toEqual([id])
+        expect(source.store.get(`discord-cursor:${BOT}:${id}`)).toBe(rows.get(id)!.id)
+        expect(source.store.get(`discord-cursor:${BOT}:${other}`)).toBeUndefined()
+        await sendDiscord({ commands: source.ctx.commands }, { ...outgoing(`reply-${id}`), channel: {
+          source: 'discord', thread: `discord:${id}`, address: { channelId: id, messageId: rows.get(id)!.id },
+        } })
+      }
+      expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST').map(([url]) => String(url))).toEqual([
+        `https://discord.com/api/v10/channels/${CHANNEL}/messages`, `https://discord.com/api/v10/channels/${otherChannel}/messages`,
+      ])
+      first.store.saveSettings(SettingsSchema.parse({ ...first.store.settings(), sources: { discord: { enabled: false } } }))
+      rows.set(otherChannel, message(String(base + 3n), { channel_id: otherChannel }))
+      await Promise.all([pollDiscord(first.ctx, signal()), pollDiscord(second.ctx, signal())])
+      expect(first.receive).toHaveBeenCalledTimes(1)
+      expect(second.receive).toHaveBeenCalledTimes(2)
+    } finally { first.store.close(); second.store.close() }
+  })
   it('normalizes mentions, replies, attachments and large snowflakes without treating bots/webhooks as humans', () => {
     const input = message('9007199254740993001', { message_reference: { message_id: '9007199254740993000', channel_id: CHANNEL }, attachments: [{ filename: 'details.txt', url: 'https://cdn.discordapp.com/a' }] })
     const trigger = discordTrigger(input, BOT, GUILD)!

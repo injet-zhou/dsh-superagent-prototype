@@ -163,6 +163,37 @@ it('isolates GitLab subscriptions by instance root and full subgroup path', () =
   expect(() => assertRepositoryIsolation([first, entry('other-project', 'https://gitlab.example.test/code', 'group/other/project')])).not.toThrow()
 })
 
+it.each(['feishu', 'discord', 'wecom'])('shares a %s bot between distinct destinations while rejecting overlapping destinations', kind => {
+  const entry = (id: string, channel: string, directMessages = false) => ({ id, settings: SettingsSchema.parse({ sources: {
+    [kind]: { enabled: true, config: kind === 'discord'
+      ? { tokenFile: '/srv/bot.json', channels: [{ channelId: channel, listen: 'mentions' }] }
+      : { ...(kind === 'feishu' ? { cli: '/srv/lark-bot' } : { secretFile: '/srv/wecom.json' }),
+        chats: [{ chatId: channel, ...kind === 'feishu' ? { listen: 'mentions' } : {} }], directMessages, otherChats: 'none' } },
+  } }) })
+  const first = entry('first', kind === 'discord' ? '111' : 'oc_first', true)
+  const second = entry('second', kind === 'discord' ? '222' : 'oc_second')
+  expect(() => assertRepositoryIsolation([first, second])).not.toThrow()
+  expect(() => assertRepositoryIsolation([first, entry('duplicate', kind === 'discord' ? '111' : 'oc_first')])).toThrow('already assigned')
+  if (kind !== 'discord') {
+    expect(() => assertRepositoryIsolation([first, entry('direct', 'oc_second', true)])).toThrow('Turn off Direct messages')
+    expect(() => assertRepositoryIsolation([first, { ...second, settings: SettingsSchema.parse({ sources: {
+      [kind]: { ...second.settings.sources[kind], enabled: false },
+    } }) }])).not.toThrow()
+  }
+})
+
+it('requires explicit groups and the same endpoint only when WeCom repositories share a robot', () => {
+  const entry = (id: string, config: Record<string, unknown>) => ({ id, settings: SettingsSchema.parse({ sources: {
+    wecom: { enabled: true, config: { secretFile: '/srv/wecom.json', directMessages: false, ...config } },
+  } }) })
+  const first = entry('first', { chats: [{ chatId: 'group1' }] })
+  expect(() => assertRepositoryIsolation([first, entry('other', { otherChats: 'mentions' })])).toThrow('explicit chat lists')
+  expect(() => assertRepositoryIsolation([entry('first', { otherChats: 'mentions' }), entry('other', {})])).toThrow('explicit chat lists')
+  expect(() => assertRepositoryIsolation([first, entry('other', { wsUrl: 'wss://private.example.test' })])).toThrow('same WebSocket address')
+  expect(() => assertRepositoryIsolation([first, entry('other', { secretFile: '/srv/other.json', otherChats: 'mentions' })])).not.toThrow()
+  expect(() => assertRepositoryIsolation([first, entry('other', { wsUrl: 'wss://openws.work.weixin.qq.com' })])).not.toThrow()
+})
+
 it('starts default and fast Sources while another setup is pending and a locked repository reports a catalog error', async () => {
   const h = await startRuntime(undefined, { scopedEnvironment: true })
   onTestFinished(() => h.stop())

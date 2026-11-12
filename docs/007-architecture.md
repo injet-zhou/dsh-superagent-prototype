@@ -391,7 +391,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/infra/gitea.ts` | Gitea REST normalization behind the existing repository Source: notifications, Issues, PRs, reviews and pagination; uses the account-isolated Python CLI, without changing the DSH Executor |
 | `src/infra/environment.ts` | The agent's process environment: command shims, the git configuration and credential helper, `runAsWorker`, and the checks of the environment and of a Ticket's directory |
 | `src/infra/scoped-environment.ts` | Async-local execution environments and reference-counted subprocess adaptation for local repositories sharing a DSH host |
-| `src/app/repository-isolation.ts` | Rejects duplicate repository subscriptions and shared IM bot configurations or channel destinations before a settings commit |
+| `src/app/repository-isolation.ts` | Allows shared IM bots while rejecting duplicate repository subscriptions, overlapping channel destinations and ambiguous direct-message ownership before a settings commit |
 | `src/infra/paths.ts` | The package's root, where packaged files are |
 | `src/infra/text.ts` | Word counts and the chat message limit, `fill` and `sameName` |
 | `src/infra/health.ts` | The `HealthBoard`, every part's health entry, each claimed by its one writer |

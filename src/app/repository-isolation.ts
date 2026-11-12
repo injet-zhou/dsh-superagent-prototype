@@ -4,6 +4,7 @@ import { SettingsConflict } from './settings.ts'
 
 export function assertRepositoryIsolation(entries: readonly { id: string; settings: Settings }[], multi = entries.length > 1): void {
   const owners = new Map<string, string>()
+  const wecomBots = new Map<string, { id: string; endpoint: string; otherChats: boolean }>()
   const claim = (key: string, id: string) => {
     const previous = owners.get(key)
     if (previous && previous !== id) throw new SettingsConflict(`Subscription is already assigned to repository ${previous}; it cannot also belong to ${id}`)
@@ -22,10 +23,23 @@ export function assertRepositoryIsolation(entries: readonly { id: string; settin
         }
         claim(`repository:${instance}:${String(config.repository).toLowerCase()}`, id)
       }
-      // This first version has no cross-repository IM request routing: dedicate each bot configuration to one repository.
-      if (kind === 'feishu' && config.cli) claim(`feishu-cli:${config.cli}`, id)
-      if (kind === 'discord' && config.tokenFile) claim(`discord-token:${config.tokenFile}`, id)
-      if (kind === 'wecom' && config.secretFile) claim(`wecom-secret:${config.secretFile}`, id)
+      // Groups/channels select repositories. A shared bot's direct messages have no such selector.
+      const bot = kind === 'feishu' ? config.cli : kind === 'wecom' ? config.secretFile : undefined
+      if (bot && config.directMessages !== false) {
+        const key = `${kind}-direct:${bot}`
+        const previous = owners.get(key)
+        if (previous && previous !== id) throw new SettingsConflict(`This ${kind === 'feishu' ? 'Feishu' : 'WeCom'} bot's direct messages already belong to repository ${previous}. Turn off Direct messages in ${id} to share the bot`)
+        claim(key, id)
+      }
+      if (kind === 'wecom' && config.secretFile) {
+        const file = String(config.secretFile), endpoint = String(config.wsUrl || 'wss://openws.work.weixin.qq.com')
+        const previous = wecomBots.get(file)
+        if (previous && previous.id !== id) {
+          if (previous.otherChats || config.otherChats === 'mentions') throw new SettingsConflict('Sharing a WeCom robot requires explicit chat lists; otherChats must be none')
+          if (previous.endpoint !== endpoint) throw new SettingsConflict('Repositories sharing a WeCom robot must use the same WebSocket address')
+        }
+        wecomBots.set(file, { id, endpoint, otherChats: config.otherChats === 'mentions' })
+      }
       const rows = kind === 'feishu' ? config.chats : kind === 'discord' ? config.channels : kind === 'wecom' ? config.chats : undefined
       if (Array.isArray(rows)) for (const row of rows) {
         if (!row || typeof row !== 'object') continue

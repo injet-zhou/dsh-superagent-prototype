@@ -1043,7 +1043,7 @@ describe('feishu event consumer', () => {
    * A bot CLI whose `event consume` behaves as `mode` says: `never` gets ready, `warn` warns once ready, `ready` stays up,
    * and `flaky` exits after its first ready. It records each run and the PID of the latest.
    */
-  function cli(mode: 'never' | 'warn' | 'ready' | 'flaky' | 'events' | 'late-ready' | 'late'): string {
+  function cli(mode: 'never' | 'warn' | 'ready' | 'flaky' | 'events' | 'late-ready' | 'late' | 'shared'): string {
     const path = join(dir, 'lark-bot')
     writeFileSync(path, `#!/bin/sh
   [ "$1" = event ] || { echo '{"ok":true,"data":{}}'; exit 0; }
@@ -1057,6 +1057,11 @@ describe('feishu event consumer', () => {
     events) echo '[event] ready' >&2; cat '${dir}/events'; touch '${dir}/printed'; exec sleep 60 ;;
     late-ready) cat '${dir}/events'; echo '[event] ready' >&2; sleep 0.2; touch '${dir}/readied'; exec sleep 60 ;;
     late) echo '[event] ready' >&2; sleep 1; cat '${dir}/events'; touch '${dir}/printed'; exec sleep 60 ;;
+    shared) echo '[event] ready' >&2
+      while [ ! -e '${dir}/emit' ]; do sleep 0.05; done
+      cat '${dir}/events'
+      while [ ! -e '${dir}/continue' ]; do sleep 0.05; done
+      cat '${dir}/later'; exec sleep 60 ;;
   esac
   `, { mode: 0o755 })
     return path
@@ -1078,8 +1083,8 @@ describe('feishu event consumer', () => {
   })
   const alive = (pid: number) => { try { process.kill(pid, 0); return true } catch { return false } }
   /** The Feishu Source's context, on a fresh Store whose Feishu Source is on, with `cli` as the bot CLI. */
-  function consumerSource(path: string, config: Record<string, unknown> = { chats: [] }) {
-    const store = new Store(join(dir, 'db.sqlite'))
+  function consumerSource(path: string, config: Record<string, unknown> = { chats: [] }, database = 'db.sqlite') {
+    const store = new Store(join(dir, database))
     store.saveSettings(SettingsSchema.parse({ sources: { feishu: { enabled: true, config } } }))
     const board = new HealthBoard()
     const sources = new SourceRegistry(() => store.settings(), board)
@@ -1102,6 +1107,61 @@ describe('feishu event consumer', () => {
   const event = (id: string, chat: string, type: 'group' | 'p2p') => JSON.stringify({ message_id: id, chat_id: chat, chat_type: type,
     sender_id: 'ou_alice', sender_type: 'user', content: 'fix it', create_time: String(Date.now()),
     ...type === 'group' ? { mentions: [{ id: 'ou_bot', name: 'Bot' }] } : {} })
+  it('shares one consumer, routes groups and direct messages, and survives the first repository stopping', async () => {
+    const path = cli('shared')
+    const first = consumerSource(path, { chats: [{ chatId: 'oc_first', listen: 'mentions' }], directMessages: true })
+    const second = consumerSource(path, { chats: [{ chatId: 'oc_second', listen: 'mentions' }], directMessages: false }, 'second.sqlite')
+    const pending = Promise.withResolvers<void>()
+    const receive = first.ctx.receive
+    let draining = false
+    first.ctx.receive = async trigger => {
+      const result = await receive(trigger)
+      if (trigger.id === feishuTriggerId('om_drain')) { draining = true; await pending.promise }
+      return result
+    }
+    const stopFirst = new AbortController()
+    const firstRun = runFeishu(first.ctx, stopFirst.signal)
+    let secondRun: Promise<unknown> | undefined
+    let firstClosed = false
+    try {
+      await vi.waitFor(() => expect(first.health.feishu?.state).toBe('ready'), until)
+      secondRun = runFeishu(second.ctx, controller.signal)
+      running = Promise.all([firstRun, secondRun])
+      await vi.waitFor(() => expect(second.health.feishu?.state).toBe('ready'), until)
+      expect(runs()).toBe(1)
+      writeFileSync(join(dir, 'events'), [event('om_a', 'oc_first', 'group'), event('om_b', 'oc_second', 'group'),
+        event('om_dm', 'oc_dm', 'p2p'), event('om_unknown', 'oc_unknown', 'group'), event('om_drain', 'oc_first', 'group')].join('\n') + '\n')
+      writeFileSync(join(dir, 'emit'), '')
+      await vi.waitFor(() => {
+        expect(first.store.triggers.get(feishuTriggerId('om_a'))).toBeDefined()
+        expect(second.store.triggers.get(feishuTriggerId('om_b'))).toBeDefined()
+        expect(first.store.triggers.get(feishuTriggerId('om_dm'))).toBeDefined()
+        for (const source of [first, second]) expect(source.store.triggers.disposition(feishuTriggerId('om_unknown'))?.filtered).toBeDefined()
+      }, until)
+      expect(first.store.triggers.get(feishuTriggerId('om_b'))).toBeUndefined()
+      expect(second.store.triggers.get(feishuTriggerId('om_a'))).toBeUndefined()
+      expect(second.store.triggers.get(feishuTriggerId('om_dm'))).toBeUndefined()
+      await vi.waitFor(() => expect(draining).toBe(true), until)
+      let stopped = false
+      void firstRun.then(() => { stopped = true })
+      stopFirst.abort()
+      await new Promise(resolve => setTimeout(resolve, 10))
+      expect(stopped).toBe(false)
+      pending.resolve(); await firstRun
+      first.store.close(); firstClosed = true
+      expect(alive(Number(readFileSync(join(dir, 'pid'), 'utf8')))).toBe(true)
+      writeFileSync(join(dir, 'later'), event('om_after', 'oc_second', 'group') + '\n')
+      writeFileSync(join(dir, 'continue'), '')
+      await vi.waitFor(() => expect(second.store.triggers.get(feishuTriggerId('om_after'))).toBeDefined(), until)
+      expect(runs()).toBe(1)
+    } finally {
+      pending.resolve()
+      stopFirst.abort(); controller.abort()
+      await Promise.all([firstRun, secondRun])
+      if (!firstClosed) first.store.close()
+      second.store.close()
+    }
+  }, 20_000)
   it.each(['events', 'late-ready'] as const)('takes in the event lines (%s), records each chat as direct or not, and keeps malformed-line health after readiness', async mode => {
     writeFileSync(join(dir, 'events'), [event('om_1', 'oc_group', 'group'), event('om_2', 'oc_dm', 'p2p'), 'fixture-private-credential not json',
       event('om_3', 'oc_group', 'group')].join('\n') + '\n')
