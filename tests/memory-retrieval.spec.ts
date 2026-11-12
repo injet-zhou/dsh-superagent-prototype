@@ -1,4 +1,4 @@
-import { expect, it, vi } from 'vitest'
+import { expect, it, onTestFinished, vi } from 'vitest'
 import { MemoryConfigSchema } from '../src/policy.ts'
 import { MemoryStore } from '../src/app/memory/store.ts'
 import { MEMORY_BOUNDARY } from '../src/app/memory/types.ts'
@@ -151,8 +151,12 @@ it('bounds the search queue to eight waiters and reports only excess load as bus
   const f = memoryFixture()
   f.memory.create(exampleNote, [exampleEvidence], 'shared', 'verified', 'shared')
   f.service.configure(MemoryConfigSchema.parse({ enabled: true }))
+  // Test capacity independently of process startup latency; the next test advances the wait deadline explicitly.
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  onTestFinished(() => { vi.useRealTimers() })
   const results = await Promise.all(Array.from({ length: 10 }, () => f.service.search({ query: 'SQLite' })))
   expect(results.filter(result => result.degraded === 'memory_retrieval_busy')).toHaveLength(1)
+  expect(results.slice(0, 9).map(result => result.degraded)).toEqual(Array(9).fill(undefined))
   expect(results.slice(0, 9).every(result => result.items.length === 1)).toBe(true)
   expect(f.service.status().problem).toBeUndefined()
 })
