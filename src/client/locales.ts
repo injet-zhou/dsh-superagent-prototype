@@ -6,6 +6,20 @@ import { SETUP_PROBLEMS } from '../setup.ts'
 import { HEALTH_TEXT } from '../sources/host.ts'
 
 const TEXT = {
+  applications: ['应用', 'Applications'],
+  applicationRepositoryUsed: ['请先在“{name}”的应用设置中解除仓库关联。', 'Unlink this repository in the settings for “{name}” first.'],
+  'basis.application': ['应用派工', 'Application handoff'],
+  applicationTransfer: ['将所选群从仓库转交给此应用（群内不能有未结束的仓库任务）', 'Move selected chats from repositories to this application (finish existing repository tasks first)'],
+  applicationAdd: ['新增应用', 'Add application'], applicationEdit: ['应用设置', 'Application settings'],
+  applicationName: ['应用名称', 'Application name'], applicationEnabled: ['启用应用', 'Enable application'],
+  applicationRepositories: ['关联仓库', 'Linked repositories'], applicationDisabled: ['已停用', 'Disabled'],
+  applicationEmpty: ['添加应用，把相关仓库和报障群关联起来。', 'Add an application to connect its repositories and support chats.'],
+  applicationTasks: ['排查与修复', 'Diagnosis and fixes'], applicationNoTasks: ['还没有报障任务。', 'No requests yet.'],
+  applicationSession: ['查看排查会话', 'Open diagnosis session'], applicationStop: ['停止任务', 'Stop task'],
+  applicationFix: ['修复', 'Fix'], applicationInvestigate: ['排查', 'Investigation'],
+  'applicationState.queued': ['待排查', 'Queued'], 'applicationState.investigating': ['排查中', 'Investigating'],
+  'applicationState.waiting': ['等待补充信息', 'Waiting for information'], 'applicationState.working': ['处理中', 'Working'],
+  'applicationState.ready': ['结果已就绪', 'Ready'], 'applicationState.blocked': ['需要处理', 'Blocked'], 'applicationState.stopped': ['已停止', 'Stopped'],
   // Shared
   title: ['Superagent', 'Superagent'],
   repositorySelector: ['切换仓库', 'Switch repository'],

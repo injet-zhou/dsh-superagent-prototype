@@ -26,6 +26,8 @@ export function health(state: Health['state'], code: HealthCode, values: Record<
   return { state, detail: fill(HEALTH_TEXT[code], values), code, ...Object.keys(values).length ? { values } : {} }
 }
 export interface SourceHost {
+  /** Application contexts mount chat adapters only. */
+  sourceKinds?: readonly string[]
   readonly sources: SourceRegistry
   /** Local repository contexts; omitted by single-repository hosts and third-party fixtures. */
   repositoryHosts?(): readonly SourceHost[]
@@ -42,6 +44,7 @@ export function mountSource<C extends Record<string, unknown>>(ctx: Context & { 
   start: (source: SourceContext, signal: AbortSignal) => Promise<unknown>): void {
   ctx.effect(() => {
     const mount = (host: SourceHost) => {
+      if (host.sourceKinds && !host.sourceKinds.includes(kind.kind)) return () => {}
       const unregister = host.sources.register(kind)
       const source = sourceContext(host, kind), controller = new AbortController()
       let abort!: () => void

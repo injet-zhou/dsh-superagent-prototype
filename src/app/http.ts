@@ -31,8 +31,10 @@ import { executorLoad, ticketDetail, ticketList } from './views/tickets.ts'
 import type { MemoryService } from './memory/service.ts'
 import { MemoryBrowse, MemoryId, MemoryReview } from './memory/types.ts'
 import { MemoryConflict } from './memory/store.ts'
+import { ApplicationInvalid, ApplicationMissing } from './applications/service.ts'
 
 export interface HttpHost {
+  applications?: () => import('./applications/service.ts').Applications | undefined
   readonly memory?: Pick<MemoryService, 'requestConsolidation' | 'rebuildProjection' | 'browse' | 'details' | 'review'>
   readonly store: Store
   /** Feishu message links resolved since startup, used by search to match AppLink URLs. */
@@ -89,6 +91,8 @@ export function sameOrigin(req: Pick<IncomingMessage, 'headers'>, port: number):
 }
 /** Maps errors to HTTP status codes and structured payloads that the panel localizes in the interface language. */
 function failure(error: unknown): [number, Record<string, unknown>] {
+  if (error instanceof ApplicationMissing) return [404, { error: error.message }]
+  if (error instanceof ApplicationInvalid) return [400, { error: error.message }]
   if (error instanceof z.ZodError) {
     const issues = error.issues.map(issue => ({ path: issue.path.join('.'), message: issue.message }))
     return [400, { error: `Invalid settings: ${issues.map(issue => issue.path).join(', ')}`, issues }]
@@ -165,7 +169,20 @@ function routes(runtime: HttpHost, catalog: () => ApiResponse<'GET repositories'
   const ticket = (id: string) => { if (!store.tickets.get(id)) throw new RouteError(404, 'Ticket not found'); return id }
   const promptBody = (input: { body: (maxBytes?: number) => Promise<unknown> }) => input.body(4 * runtime.machine.promptMaxChars.get() + 4096)
   const memory = () => { if (!runtime.memory) throw new RouteError(503, 'Repository memory is unavailable'); return runtime.memory }
+  const apps = () => { const value = runtime.applications?.(); if (!value) throw new RouteError(503, 'Applications are unavailable'); return value }
   return {
+    'GET applications': () => apps().list(),
+    'POST applications': async ({ body }) => { const request = SaveRequest.extend({ transfer: z.boolean().default(false) }).parse(await body()); return apps().save(request.value, request.revision, request.transfer) },
+    'GET applications/:id': ({ params }) => apps().get(params.id),
+    'PUT applications/:id': async ({ params, body }) => {
+      const request = SaveRequest.extend({ transfer: z.boolean().default(false) }).parse(await body())
+      if ((request.value as { id?: string })?.id !== params.id) throw new RouteError(400, 'Application ID cannot change')
+      return apps().save(request.value, request.revision, request.transfer)
+    },
+    'GET applications/:id/tasks': ({ params }) => apps().listTasks(params.id),
+    'GET applications/:id/tasks/:taskId': ({ params }) => apps().task(params.id, params.taskId),
+    'POST applications/:id/tasks/:taskId/retry': ({ params }) => apps().retry(params.id, params.taskId),
+    'POST applications/:id/tasks/:taskId/stop': ({ params }) => apps().stop(params.id, params.taskId),
     'GET memory': ({ query }) => memory().browse(MemoryBrowse.parse(query)),
     'GET memory/:id': ({ params }) => {
       const details = memory().details(MemoryId.parse(params.id))
@@ -292,7 +309,8 @@ export function registerHttp(ctx: Context, runtime: HttpHost,
       }
     })
     const primary = entries.find(entry => entry.id === 'default')?.load
-    const globalLoad = complete && primary ? { running: entries.reduce((sum, entry) => sum + (entry.load?.running ?? 0), 0), maxWorkers: primary.maxWorkers } : undefined
+    const globalLoad = complete && primary ? { running: entries.reduce((sum, entry) => sum + (entry.load?.running ?? 0), 0)
+      + (runtime.applications?.()?.runningIds().length ?? 0), maxWorkers: primary.maxWorkers } : undefined
     return entries.map(entry => ({ ...entry, ...globalLoad ? { globalLoad } : {} }))
   }
   const table = routes(runtime, catalog)

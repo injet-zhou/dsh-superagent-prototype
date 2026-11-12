@@ -24,6 +24,7 @@ import type { MemoryService } from './memory/service.ts'
 
 /** Host dependencies used by `Sessions`. */
 export interface SessionsHost {
+  authorized?(ticket: Ticket): boolean
   /** DSH Cordis context: sessions, agents, persistence, and their events. */
   readonly context: Context
   readonly store: Pick<Store, 'tickets' | 'settings' | 'get' | 'set' | 'keys'>
@@ -303,7 +304,8 @@ export class Sessions {
     const allow = WORK_TOOLS.filter(name => agent.ctx.tools.get(name, parent))
     return [agent.ctx.tools.restrict({ allow }), agent.ctx.tools.guard(() => {
       const current = store.tickets.get(ticketId)
-      return !current || !liveTicket(current) ? 'Ticket ended; new work needs a new authorized ticket' : undefined
+      if (!current || !liveTicket(current)) return 'Ticket ended; new work needs a new authorized ticket'
+      return this.host.authorized?.(current) === false ? 'Application authorization was withdrawn' : undefined
     })]
   }
   /**

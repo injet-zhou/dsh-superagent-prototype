@@ -222,6 +222,8 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
     revalidate(mandate: Mandate) {
       // Revalidation rules follow docs/002 (Eval path; Resume revalidates).
       const { basis } = mandate
+      // Runtime additionally checks the originating application and its current membership.
+      if (basis.via === 'application') return !!allowedSender(settings, mandate.actor) && settings.sources[mandate.actor.source]?.enabled !== false
       const { source } = basis
       const current = source && basis.scope ? listened(sources, source, basis.scope) : undefined
       if (current && !current.listened) return false

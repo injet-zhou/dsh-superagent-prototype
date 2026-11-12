@@ -61,6 +61,7 @@ import { MemoryAttestor } from './memory/attestation.ts'
 declare module '@deepseek-ai/cordis' { interface Context { orchestrator: SourceHost } }
 const now = (): string => new Date().toISOString()
 export interface RuntimeOptions {
+  applications?: () => import('./applications/service.ts').Applications | undefined
   /** Explicit host injection for offline analysis; production never borrows a Worker Session. */
   memoryAnalyzer?: MemoryAnalyzer
   repositories?: () => readonly { id: string; name: string; runtime?: Runtime; error?: string }[]
@@ -151,6 +152,9 @@ export class Runtime extends Service implements SourceHost {
         promptVersion: id => this.sessions.promptVersion(id), mayRead: (id, revision) => this.sessions.mayRead(id, revision),
         feishuPageSize: () => feishuSettings(sources).readPageSize, sourceLink: link }
       const sessions = this.sessions = new Sessions({ context: ctx, store, prompts, effects, health: board.claim('models'), masterId,
+        authorized: ticket => ticket.mandate.basis.via !== 'application' || (!!allowedSender(store.settings(), ticket.mandate.actor)
+          && store.settings().sources[ticket.mandate.actor.source]?.enabled !== false && !store.settings().paused
+          && !!options.applications?.()?.authorized(ticket.mandate, machine.repositoryId ?? 'default')),
         lifetime: this.lifetime, memory, observeExecution: (context, sessionId) => attestor.bind(context, sessionId),
         closing: () => this.closing(), environment, ...machine.scopedEnvironment ? { executionEnvironment } : {},
         tools: (agent, ticket) => ticket ? executorTools(this.toolHost, ticket) : mainTools(this.toolHost, agent) })
@@ -186,7 +190,11 @@ export class Runtime extends Service implements SourceHost {
         deliver: (id, text) => sessions.prompt(masterId, id, text, 'steer'), candidateCard: candidate => candidateCard(links, candidate) })
       const outbox = this.outbox = new Outbox({ store, effects, sources, commands, paused: () => this.paused() })
       const { assessor, executor } = this
-      const policy = () => settingsPolicy(store.settings(), sources)
+      const policy = () => {
+        const base = settingsPolicy(store.settings(), sources)
+        return { ...base, revalidate: (mandate: import('../core/index.ts').Mandate) => base.revalidate(mandate)
+          && (mandate.basis.via !== 'application' || !!options.applications?.()?.authorized(mandate, machine.repositoryId ?? 'default')) }
+      }
       const engine = this.engine = new Engine({ repo: store, scope: sources, policy, assessor, executor, ...machine.repositoryId ? { namespace: machine.repositoryId } : {},
         outbox, prepareTicket: (ticket, outcome) => executor.prepare(ticket, outcome), emit: event => {
           // Notify the main Session only about domain events it did not initiate itself.
@@ -319,6 +327,7 @@ export class Runtime extends Service implements SourceHost {
     const runtime = this
     const { store, sources, prompts, sessions, settings, engine, executor, machine, masterId, sourceLinks, setup, passes } = this
     return { store, sources, prompts, sessions, settings, engine, executor, memory: this.memory, machine, masterId, sourceLinks,
+      applications: this.options.applications,
       checkWorkspace: path => checkWorkspace(path, executionRoot(store.settings(), machine.stateDir), setup.deployment,
         runtime.ctx.subprocess, runtime.lifetime, setup.executionEnvironment),
       get ready() { return runtime.ready }, get health() { return { ...runtime.health, ...runtime.options.aggregateHealth?.() } },

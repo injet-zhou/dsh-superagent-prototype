@@ -7,6 +7,17 @@ import { SettingsForms } from '@deepseek-ai/dsh-settings'
 import { Config, type DeploymentConfig, type Machine } from '../src/deployment.ts'
 import { apply } from '../src/index.ts'
 
+// Entry-point tests stub both composition roots; service behavior has integration coverage separately.
+vi.mock('../src/app/applications/service.ts', () => ({ Applications: class {
+  async start() {}
+  async close() {}
+  runningIds() { return [] }
+  isManaged() { return false }
+  hasApplications() { return false }
+  assertRepositoriesRetained() {}
+  validateRepository() {}
+} }))
+
 // Stub Runtime to capture the resolved Machine settings and restart callback.
 const runtimes = vi.hoisted(() => [] as { machine: Machine; restart: () => void; options: import('../src/app/runtime.ts').RuntimeOptions; stop: () => Promise<void> }[])
 vi.mock('../src/app/runtime.ts', () => ({ Runtime: class {
