@@ -398,7 +398,7 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     else if (source) {
       const { enabled, config: value } = SourceSave.parse(body.value)
       const config = source.schema.parse(value)
-      const optionalBot = source.kind === 'feishu' || source.kind === 'discord'
+      const optionalBot = source.kind === 'feishu' || source.kind === 'discord' || source.kind === 'wecom'
       // As on the server, a changed CLI that fails its check refuses the save with the setup problem.
       if (config.cli === 'lark-broken' && (enabled || !optionalBot)) {
         const refused = new SetupError('feishuCliFailed', { output: 'lark-cli: app secret missing' })

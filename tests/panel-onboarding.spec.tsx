@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
-import { expect, it, vi } from 'vitest'
+import { act } from 'react'
+import { expect, it, vi, onTestFinished } from 'vitest'
 import { zh, en } from '../src/client/locales.ts'
 import { recipePath } from '../src/client/onboarding.tsx'
 import { worktreeCommand } from '../src/workspace.ts'
-import { usePanel, mount, remount, click, type, field, find, text, tab } from './fixtures/panel.tsx'
-import { server, fakeForm } from './fixtures/panel-server.ts'
+import { usePanel, mount, remount, click, type, field, find, text, tab, settle } from './fixtures/panel.tsx'
+import { server, fakeForm, problemOf } from './fixtures/panel-server.ts'
 
 usePanel()
 async function open() {
@@ -100,4 +101,69 @@ it('does not classify custom commands that merely start like a generated recipe 
   const command = worktreeCommand('/tmp/repo', 'https://github.com/acme/widgets.git')
   expect(recipePath(command)).toBe('/tmp/repo')
   expect(recipePath(`${command} && echo custom`)).toBe('')
+})
+
+const advance = async (ms = 1000) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms) }); await settle() }
+it.each([false, true])('coordinates first-run saves across restart and setup recovery (leave wizard: %s)', async leaveWizard => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  onTestFinished(() => { vi.useRealTimers() })
+  server.setup = { ...server.setup, accounts: null, problem: problemOf('repositoryUnset') }
+  server.settings.sources.github!.config = {}
+  server.settings.policy.sources.github!.allowed = []
+  const original = fetch
+  let initializing = false
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    const response = await original(url, init)
+    if (url.endsWith('/settings/policy') && init?.method === 'PUT') return Response.json({ ...JSON.parse(await response.text()), restarting: true })
+    if (url.endsWith('/state') && !server.down && initializing) return Response.json({ ...JSON.parse(await response.text()), health: { runtime: { state: 'starting', detail: '' } } })
+    return response
+  }))
+  await open()
+  await type(field<HTMLInputElement>('监听的仓库'), 'acme/new')
+  await type(field<HTMLInputElement>('智能体的仓库 CLI'), 'gh-new')
+  await click(zh.addRow)
+  await type(field<HTMLInputElement>('账号'), 'alice')
+  await click(zh.onboardingNext)
+  const saves = (block: string) => server.requests.filter(request => request.method === 'PUT' && request.path === `settings/${block}`)
+  expect(saves('policy')).toHaveLength(1)
+  expect(saves('source:github')).toHaveLength(0)
+  // A settings poll can see the committed policy before teardown; that is not recovery.
+  await advance(5000)
+  expect((find(zh.onboardingNext) as HTMLButtonElement).disabled).toBe(true)
+  expect(saves('source:github')).toHaveLength(0)
+  if (leaveWizard) await click(zh.advanced)
+  server.down = true
+  await advance()
+  expect(saves('source:github')).toHaveLength(0)
+  server.down = false; initializing = true
+  await advance()
+  expect(saves('source:github')).toHaveLength(0)
+  initializing = false
+  await advance()
+  if (leaveWizard) { expect(saves('source:github')).toHaveLength(0); return }
+  expect(saves('source:github')).toHaveLength(1)
+  server.down = true
+  await advance()
+  server.down = false
+  await advance()
+  expect(saves('policy')).toHaveLength(1)
+  expect(saves('source:github')).toHaveLength(1)
+  expect(server.settings.sources.github!.config).toMatchObject({ repository: 'acme/new', cli: 'gh-new' })
+  expect(document.querySelector('.dt-onboarding-steps [aria-current="step"]')?.textContent).toBe(zh['onboarding.chat'])
+})
+it.each(['/srv/agent/wecom.json', ''])('persists disabling WeCom with secret path %j', async secretFile => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  onTestFinished(() => { vi.useRealTimers() })
+  server.settings.sources.wecom = { enabled: true, config: { secretFile } }
+  await open()
+  await click(zh['onboarding.chat'])
+  await click(find(zh.sourceEnable.replace('{name}', '企业微信'), '[role="switch"]'))
+  expect((find(zh.onboardingNext) as HTMLButtonElement).disabled).toBe(false)
+  await click(zh.onboardingNext)
+  expect(server.settings.sources.wecom.enabled).toBe(false)
+  server.down = true
+  await advance()
+  server.down = false
+  await advance()
+  expect(text()).toContain(zh.onboardingLocalPath)
 })

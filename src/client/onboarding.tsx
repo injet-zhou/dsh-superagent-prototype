@@ -107,7 +107,7 @@ function ChatStep({ source, next }: { source: SourceView; next: () => void }) {
       <SwitchRow label={t('sourceEnable', { name: localized(t, source.title) })} checked={draft.value.enabled}
         onChange={enabled => draft.edit({ ...draft.value, enabled })} />
       <ConfigFields source={source} value={config} onChange={edit} keys={['secretFile']} />
-      <div className="dt-actions"><Button disabled={draft.busy || !draft.dirty || !draft.value.enabled || !config.secretFile} onClick={() => { void draft.submit() }}>{t('onboardingConnect')}</Button></div>
+      <div className="dt-actions"><Button disabled={draft.busy || !draft.dirty || draft.value.enabled && !config.secretFile} onClick={() => { void draft.submit() }}>{t('onboardingConnect')}</Button></div>
       <WecomMessages config={config} allowed={part.allowed} onAllow={allow}
         onBind={chatId => edit({ ...config, chats: [...(config.chats ?? []) as object[], { chatId }] })} />
       <DisclosureRow icon={<Icon name="settings" />} title={t('onboardingManual')} open={manual} onToggle={() => setManual(!manual)}>
@@ -122,7 +122,7 @@ function ChatStep({ source, next }: { source: SourceView; next: () => void }) {
     <DraftError state={draft.state} /><DraftError state={policy.state} />
     {(draft.dirty || policy.dirty) && <Button disabled={draft.busy || policy.busy} onClick={() => { draft.discard(); policy.discard() }}>{t('discard')}</Button>}
     <div className="dt-actions"><Button disabled={draft.busy || policy.busy || draft.dirty || policy.dirty} onClick={next}>{t('onboardingSkip')}</Button>
-      <Button type="submit" variant="primary" disabled={draft.busy || policy.busy || !draft.value.enabled || !config.secretFile}>{t('onboardingNext')}</Button></div>
+      <Button type="submit" variant="primary" disabled={draft.busy || policy.busy || draft.value.enabled && !config.secretFile}>{t('onboardingNext')}</Button></div>
   </form>
 }
 
