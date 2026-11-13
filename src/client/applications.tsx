@@ -77,7 +77,7 @@ function ApplicationEditor({ app, repositories, close, saved }: {
             }} />
             {enabled && <>
               {source.fields.filter(field => ['cli', 'tokenFile', 'secretFile', 'wsUrl', 'chats', 'channels'].includes(field.key)).map(field => <SourceField
-                key={field.key} field={field} value={config[field.key]} saved={config[field.key]} fact={undefined} labels={{}} onChange={next => edit(field.key, next)} />)}
+                key={field.key} field={field} value={config[field.key]} saved={app?.sources[kind]?.config[field.key]} fact={undefined} labels={{}} onChange={next => edit(field.key, next)} />)}
               {source.policy?.fields.filter(field => field.key === 'allowed').map(field => <SourceField key={field.key} field={field}
                 value={value.allowed[kind] ?? []} saved={app?.allowed[kind] ?? []} fact={undefined} labels={{}}
                 onChange={next => setValue({ ...value, allowed: { ...value.allowed, [kind]: next as ApplicationConfig['allowed'][typeof kind] } })} />)}

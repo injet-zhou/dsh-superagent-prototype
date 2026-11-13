@@ -15,6 +15,7 @@ import { resolveDiscordBot, resolveFeishuBot, resolveWecomBot, workerProbe, type
 import { SourceRegistry } from '../../sources/registry.ts'
 import type { SourceContext, SourceHost } from '../../sources/host.ts'
 import { readRepositoryPath } from '../../sources/github-read.ts'
+import { githubPage } from '../../sources/github-trigger.ts'
 import { AgentDelivery } from '../delivery.ts'
 import { initializeRoleModel, resolveRoleModel } from '../role-models.ts'
 import { SettingsConflict } from '../settings.ts'
@@ -51,6 +52,7 @@ export class Applications {
   private readonly bindings = new Map<Agent, (() => void)[]>()
   private readonly running = new Set<string>()
   private readonly sessionIds = new Set<string>()
+  private readonly pendingRevisions = new Map<string, Promise<string>>()
   private readonly delivery: AgentDelivery
   private readonly listeners: (() => void)[] = []
   private readonly abort = new AbortController()
@@ -82,7 +84,7 @@ export class Applications {
     return this.allTasks().filter(t => t.applicationId === id).reverse().map(task => ({ ...task, children: task.children.map(child => {
       const repo = this.host.repositories().find(repo => repo.id === child.repositoryId)?.runtime, ticket = repo?.store.tickets.get(child.ticketId)
       const report = ticket && latestReport(ticket), number = ticket && pullOf(ticket)
-      const pr = number && repo?.configured() ? { number, url: `${repo.deployment.github.baseUrl ?? 'https://github.com'}/${repo.deployment.repository}/${repo.deployment.github.provider === 'gitlab' ? '-/merge_requests' : 'pull'}/${number}` } : undefined
+      const pr = number && repo?.configured() ? { number, url: githubPage(repo.deployment.repository, number, true, repo.deployment.github.baseUrl, repo.deployment.github.provider) } : undefined
       return { ...child, result: { state: report?.state, summary: report?.summary, ...pr ? { pr } : {} } }
     }) }))
   }
@@ -219,14 +221,14 @@ export class Applications {
     return !!app?.enabled && !!task && task.state !== 'stopped' && !!allowedSender(this.settings(app), mandate.actor)
       && (!repositoryId || app.repositories.includes(repositoryId) && task.repositories.includes(repositoryId))
   }
-  private authorizeTask(task: ApplicationTask): Application {
+  private authorizeTask(task: ApplicationTask, observeReady = false): Application {
     const app = this.get(task.applicationId)
-    if (!app.enabled || ['ready', 'stopped'].includes(task.state) || !allowedSender(this.settings(app), task.trigger.actor)) throw new Error('Application task ended or authorization was withdrawn')
+    if (!app.enabled || task.state === 'stopped' || task.state === 'ready' && !observeReady || !allowedSender(this.settings(app), task.trigger.actor)) throw new Error('Application task ended or authorization was withdrawn')
     if (this.host.primary.store.settings().paused) throw new Error('Automatic processing is paused')
     return app
   }
-  private repository(task: ApplicationTask, id: string): Runtime {
-    const app = this.authorizeTask(task)
+  private repository(task: ApplicationTask, id: string, observeReady = false): Runtime {
+    const app = this.authorizeTask(task, observeReady)
     if (!task.repositories.includes(id) || !app.repositories.includes(id)) throw new Error('Repository is outside this application task')
     const repo = this.host.repositories().find(repo => repo.id === id)?.runtime
     if (!repo?.configured()) throw new Error(`Repository unavailable: ${id}`)
@@ -240,7 +242,7 @@ export class Applications {
     if (!app.enabled || !source?.sources.scope(trigger).listened || !trigger.human || !allowedSender(this.settings(app), trigger.actor)) return 'filtered'
     const all = this.listTasks(appId)
     if (all.some(task => task.messages.some(message => message.id === trigger.id))) return 'duplicate'
-    const task = all.find(task => task.state !== 'stopped' && task.trigger.actor.id === trigger.actor.id
+    const task = all.find(task => active(task) && task.trigger.actor.id === trigger.actor.id
       && task.trigger.threads.some(ref => trigger.threads.some(other => threadKey(ref) === threadKey(other))))
     if (task) {
       task.messages.push(trigger); task.version++; task.state = 'queued'; this.saveTask(task)
@@ -254,11 +256,24 @@ export class Applications {
     return 'stored'
   }
   async read(task: ApplicationTask, repositoryId: string, path: string, kind: 'file' | 'directory', signal: AbortSignal, offset = 0) {
+    task = this.task(task.applicationId, task.id)
     const repo = this.repository(task, repositoryId), commands = repo.commands.withSignal(signal)
-    let revision = task.reads.find(read => read.repositoryId === repositoryId)?.revision
+    let revision = task.revisions?.[repositoryId] ?? task.reads.find(read => read.repositoryId === repositoryId)?.revision
     if (!revision) {
-      const head = await commands.api(z.object({ default_branch: z.string() }), '')
-      revision = (await commands.api(z.object({ sha: z.string() }), `commits/${encodeURIComponent(head.default_branch)}`)).sha
+      const pin = key(task.id, repositoryId)
+      let pending = this.pendingRevisions.get(pin)
+      if (!pending) {
+        pending = (async () => {
+          const head = await commands.api(z.object({ default_branch: z.string() }), '')
+          const sha = (await commands.api(z.object({ sha: z.string() }), `commits/${encodeURIComponent(head.default_branch)}`)).sha
+          const current = this.task(task.applicationId, task.id)
+          this.repository(current, repositoryId)
+          current.revisions = { ...current.revisions, [repositoryId]: sha }; this.saveTask(current)
+          return sha
+        })().finally(() => this.pendingRevisions.delete(pin))
+        this.pendingRevisions.set(pin, pending)
+      }
+      revision = await pending
     }
     const text = await readRepositoryPath(commands, path, kind, revision)
     this.repository(this.task(task.applicationId, task.id), repositoryId)
@@ -357,14 +372,14 @@ export class Applications {
       const source = this.hosts.get(task.applicationId)
       if (!source?.configured()) continue
       try {
-        if (active(task)) {
-          this.authorizeTask(task)
+        if (task.state !== 'stopped') {
+          this.authorizeTask(task, true)
           for (const child of task.children) {
-            this.handoff(task, child)
-            const repo = this.repository(task, child.repositoryId), ticket = repo.store.tickets.get(child.ticketId)
+            if (active(task)) this.handoff(task, child)
+            const repo = this.repository(task, child.repositoryId, true), ticket = repo.store.tickets.get(child.ticketId)
             if (!ticket) continue
             const report = latestReport(ticket)
-            const observation = JSON.stringify([report, ticket.ended, ticket.follows])
+            const observation = JSON.stringify([report, ticket.ended, ticket.follows, ...ticket.attention ? [ticket.attention] : []])
             if (child.observed !== observation) { child.observed = observation; task.version++; task.state = 'queued'; this.saveTask(task) }
           }
           if ((task.state === 'queued' || task.state === 'blocked' && !!task.error) && !this.running.has(task.id)

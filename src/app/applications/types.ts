@@ -27,5 +27,6 @@ export interface ApplicationTask {
   deliveryError?: string; deliveryRetryAt?: number;
   messages: Trigger[]; children: ApplicationChild[]; summary: string; error?: string;
   reads: { repositoryId: string; revision: string; path: string }[];
+  revisions?: Record<string, string>;
   notifications: { id: string; text: string; sent?: boolean }[];
 }

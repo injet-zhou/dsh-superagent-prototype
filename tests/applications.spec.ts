@@ -6,12 +6,13 @@ import { feishuKind } from '../src/sources/feishu.ts'
 import { startRuntime, feishu, MEMBER, type Host } from './fixtures/host.ts'
 import type { SourceHost } from '../src/sources/host.ts'
 import { Commands } from '../src/infra/commands.ts'
-import { discordKind } from '../src/sources/discord.ts'
+import { discordKind, discordTrigger } from '../src/sources/discord.ts'
 import { wecomKind } from '../src/sources/wecom.ts'
-import { DiscordApi } from '../src/infra/discord.ts'
+import { DiscordApi, DiscordMessage } from '../src/infra/discord.ts'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import { deferred } from './fixtures/async.ts'
 
 let fixture: Host | undefined, apps: Applications | undefined
 const others: Host[] = []
@@ -46,6 +47,32 @@ it('admits a single app request, deduplicates deliveries, and attaches authorize
   expect(apps.listTasks('shop')[0]!.messages).toHaveLength(2)
   expect(apps.receive('shop', { ...trigger('a3'), actor: { source: 'feishu', id: 'ou_other' } })).toBe('filtered')
   expect(apps.receive('shop', { ...trigger('a4'), human: false })).toBe('filtered')
+})
+
+it('starts a separate task and repair for a new Discord request after the previous task is ready', async () => {
+  const { apps, config, runtime } = await setup()
+  vi.spyOn(DiscordApi.prototype, 'request').mockResolvedValue({ id: '123', bot: true, username: 'Shop Bot' })
+  await apps.save({ ...config, allowed: { ...config.allowed, discord: [{ id: '456' }] }, sources: { ...config.sources,
+    discord: { enabled: true, config: { tokenFile: '/tmp/discord-test-token', channels: [{ channelId: '789', listen: 'mentions' }] } } } }, 1)
+  const settings = runtime.store.settings()
+  runtime.store.saveSettings({ ...settings, policy: { ...settings.policy, sources: { ...settings.policy.sources, discord: { allowed: [{ id: '456' }] } } } })
+  const request = (id: string, content: string) => discordTrigger(DiscordMessage.parse({ id, channel_id: '789', content,
+    author: { id: '456', username: 'Alice', bot: false }, mentions: [{ id: '123', username: 'Shop Bot', bot: true }], timestamp: new Date().toISOString() }), '123')!
+  const original = request('1001', 'Fix checkout')
+  apps.receive('shop', original)
+  const previous = apps.listTasks('shop')[0]!
+  const oldChild = apps.dispatch(previous, 'default', 'Fix checkout', 'fix')
+  runtime.engine.report(oldChild.ticketId, { state: 'ready', summary: 'Checkout fixed' })
+  apps.report(apps.task('shop', previous.id), 'ready', 'Checkout fixed')
+  const next = request('1002', 'Fix search')
+  expect(apps.receive('shop', next)).toBe('stored')
+  const fresh = apps.listTasks('shop').find(task => task.trigger.id === next.id)
+  expect(fresh).toBeDefined()
+  expect(apps.task('shop', previous.id).state).toBe('ready')
+  expect(apps.receive('shop', next)).toBe('duplicate')
+  const newChild = apps.dispatch(fresh!, 'default', 'Fix search', 'fix')
+  expect(newChild.ticketId).not.toBe(oldChild.ticketId)
+  expect(runtime.store.tickets.get(newChild.ticketId)!.mandate.scope).toBe('Fix search')
 })
 
 it('rejects overlapping subscriptions and supports an explicit, durable chat transfer', async () => {
@@ -85,6 +112,96 @@ it('requires repository permission before reading or dispatch, and records exact
   await expect(apps.read(task, 'default', 'src/checkout.ts', 'file', new AbortController().signal)).rejects.toThrow('not authorized')
   expect(() => apps.dispatch(task, 'default', 'Fix checkout', 'fix')).toThrow('not authorized')
   expect(() => apps.dispatch(task, 'unknown', 'Fix checkout', 'fix')).toThrow('outside this application')
+})
+
+it.each(['HEAD', 'content'] as const)('pins one revision while the first %s request is pending', async phase => {
+  const { apps, trigger } = await setup()
+  apps.receive('shop', trigger())
+  const task = apps.listTasks('shop')[0]!, started = deferred(), release = deferred()
+  let commits = 0, files = 0
+  vi.spyOn(Commands.prototype, 'api').mockImplementation((async (schema: unknown, path?: string) => {
+    if (path === '') {
+      if (phase === 'HEAD') { started.resolve(); await release.promise }
+      return { default_branch: 'main' }
+    }
+    if (path === 'commits/main') return { sha: `revision-${++commits}` }
+    if (typeof schema === 'string' && schema.startsWith('contents/')) {
+      files++
+      if (phase === 'content') { started.resolve(); await release.promise }
+      return 'Source content'
+    }
+    throw new Error('Unexpected repository request')
+  }) as Commands['api'])
+  const first = apps.read(task, 'default', 'src/a.ts', 'file', new AbortController().signal)
+  await started.promise
+  const second = apps.read(task, 'default', 'src/b.ts', 'file', new AbortController().signal)
+  try { if (phase === 'content') await vi.waitFor(() => expect(files).toBe(2)) }
+  finally { release.resolve(); await Promise.allSettled([first, second]) }
+  const results = await Promise.all([first, second])
+  expect(results.map(result => result.revision)).toEqual(['revision-1', 'revision-1'])
+  expect(commits).toBe(1)
+  expect(apps.task('shop', task.id).reads.map(read => read.revision)).toEqual(['revision-1', 'revision-1'])
+})
+
+it('can retry pinning a revision after a failed HEAD lookup', async () => {
+  const { apps, trigger } = await setup()
+  apps.receive('shop', trigger())
+  const task = apps.listTasks('shop')[0]!
+  let failed = false
+  vi.spyOn(Commands.prototype, 'api').mockImplementation((async (_schema: unknown, path?: string) => {
+    if (!failed) { failed = true; throw new Error('Temporary lookup failure') }
+    if (path === '') return { default_branch: 'main' }
+    if (path === 'commits/main') return { sha: 'pinned-revision' }
+    return 'Source content'
+  }) as Commands['api'])
+  await expect(apps.read(task, 'default', 'src/a.ts', 'file', new AbortController().signal)).rejects.toThrow('Temporary lookup failure')
+  expect((await apps.read(task, 'default', 'src/a.ts', 'file', new AbortController().signal)).revision).toBe('pinned-revision')
+})
+
+it.each([
+  ['github', undefined, 'https://github.com/acme/widgets/pull/42'],
+  ['gitea', 'https://code.example.test/git', 'https://code.example.test/git/acme/widgets/pulls/42'],
+  ['gitlab', 'https://code.example.test/git', 'https://code.example.test/git/acme/widgets/-/merge_requests/42'],
+] as const)('uses the %s PR URL in application results', async (provider, baseUrl, expected) => {
+  const { apps, trigger, runtime } = await setup()
+  apps.receive('shop', trigger())
+  const task = apps.listTasks('shop')[0]!
+  const child = apps.dispatch(task, 'default', 'Fix checkout', 'fix')
+  runtime.engine.bindThread(child.ticketId, { source: 'github', id: '42' }, true)
+  const deployment = runtime.deployment
+  vi.spyOn(runtime, 'deployment', 'get').mockReturnValue({ ...deployment, github: { ...deployment.github, provider, baseUrl } })
+  expect(apps.listTasks('shop')[0]!.children[0]!.result!.pr!.url).toBe(expected)
+})
+
+it.each(['question', 'blocked', 'merged'] as const)('observes a child %s after application readiness and replies in the original chat', async change => {
+  const { apps, trigger, runtime, mounted } = await setup()
+  const send = vi.spyOn(mounted.get('app')!.sources, 'send').mockResolvedValue('sent')
+  apps.receive('shop', trigger())
+  const task = apps.listTasks('shop')[0]!, child = apps.dispatch(task, 'default', 'Fix checkout', 'fix')
+  runtime.engine.bindThread(child.ticketId, { source: 'github', id: '42' }, true)
+  runtime.engine.report(child.ticketId, { state: 'ready', summary: 'PR ready for review' })
+  await apps.tick()
+  await fixture!.runTool(task.sessionId, 'application_report', { state: 'ready', summary: 'PR ready for review' })
+  fixture!.agents.get(task.sessionId)!.status = 'idle'
+  await vi.waitFor(() => expect(apps.runningIds()).toEqual([]))
+  await apps.tick()
+  expect(apps.task('shop', task.id).state).toBe('ready')
+  const before = fixture!.relays(task.sessionId).length
+  if (change === 'merged') runtime.engine.threadClosed({ source: 'github', id: '42' }, 'merged', new Date(Date.now() + 1000).toISOString())
+  else runtime.engine.report(child.ticketId, { state: change === 'blocked' ? 'blocked' : 'progress', summary: 'Review follow-up',
+    ...change === 'question' ? { question: 'Which checkout flow should be supported?' } : {} })
+  await apps.tick()
+  const prompts = fixture!.relays(task.sessionId) as { children: { ticket: { attention?: { question: string }; ended?: { outcome: string } } }[] }[]
+  expect(prompts).toHaveLength(before + 1)
+  if (change === 'question') expect(prompts.at(-1)!.children[0]!.ticket.attention?.question).toBe('Which checkout flow should be supported?')
+  if (change === 'merged') expect(prompts.at(-1)!.children[0]!.ticket.ended?.outcome).toBe('merged')
+  await fixture!.runTool(task.sessionId, 'application_report', { state: change === 'merged' ? 'ready' : 'waiting', summary: 'The PR has a follow-up update.' })
+  await apps.tick()
+  expect(send.mock.calls.at(-1)![0]).toMatchObject({ channel: task.trigger.channel, text: 'The PR has a follow-up update.' })
+  apps.stop('shop', task.id)
+  const stopped = fixture!.relays(task.sessionId).length
+  await apps.tick()
+  expect(fixture!.relays(task.sessionId)).toHaveLength(stopped)
 })
 
 it('creates an idempotent repository ticket with the original actor and no chat reply channels', async () => {
