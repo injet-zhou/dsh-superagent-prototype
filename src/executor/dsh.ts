@@ -180,7 +180,7 @@ export class WorkerSlots {
    * @param running - Returns the ticket IDs whose worker holds a slot (see `DshExecutor.running`).
    * @param max - Returns the configured maximum number of concurrent worker slots.
    */
-  constructor(private readonly running: () => string[], private readonly max: () => number, private readonly humanOverflow = 1,
+  constructor(private readonly running: () => string[], private readonly max: () => number, private readonly humanOverflow: number | (() => number) = 1,
     private readonly shared?: WorkerSlots) {}
   /** Number of slots currently in use across running workers and starting reservations. */
   used(): number { return new Set([...this.running(), ...this.starting.keys()]).size }
@@ -197,7 +197,8 @@ export class WorkerSlots {
    */
   reserve(ticketId: string, by: 'launch' | 'wake' | 'person'): void {
     if (this.starting.has(ticketId)) return
-    if (this.used() >= this.max() + (by === 'person' ? this.humanOverflow : 0)) throw new Later('No worker slot is free')
+    const overflow = typeof this.humanOverflow === 'function' ? this.humanOverflow() : this.humanOverflow
+    if (this.used() >= this.max() + (by === 'person' ? overflow : 0)) throw new Later('No worker slot is free')
     this.shared?.reserve(ticketId, by)
     this.starting.set(ticketId, by)
   }

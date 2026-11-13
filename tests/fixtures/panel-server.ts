@@ -24,6 +24,7 @@ import { wecomKind } from '../../src/sources/wecom.ts'
 import type { Health } from '../../src/sources/host.ts'
 import type { SourceKind } from '../../src/sources/kind.ts'
 import { testDeployment } from './deployment.ts'
+import { ApplicationSchema, type Application, type ApplicationTask } from '../../src/app/applications/types.ts'
 
 export const MEMBER = 'ou_alice'
 const ALLOWED: Record<string, { id: string; name?: string }[]> = { feishu: [{ id: MEMBER, name: 'Alice' }], github: [{ id: 'alice' }] }
@@ -88,6 +89,7 @@ export const MACHINE = { stateDir: '/srv/dsh-superagent', promptMaxChars: 100000
 
 type Settings = ReturnType<typeof SettingsSchema.parse>
 export interface PanelServer {
+  applications: Application[]; applicationTasks: ApplicationTask[]
   memory: Record<string, MemoryDetails>
   discovery?: ApiResponse<'GET sources/:id/discovery'>
   workspaceCheck?: ApiResponse<'POST setup/workspace/check'>
@@ -257,7 +259,7 @@ function initial(): PanelServer {
     en: 'Feishu message' } }
   const defaults = { revision: 0, previousRevision: null, savedAt: '', source: 'defaults' }
   return {
-    memory: {}, consolidated: 0, rebuilt: 0,
+    memory: {}, consolidated: 0, rebuilt: 0, applications: [], applicationTasks: [],
     extraKinds: [], health: {}, down: false, pending: 0, opened: [], requests: [], misuse: [], queued: new Set(), dropped: [], failing: [],
     setup: { machine: MACHINE, problem: null, feishuProblem: null,
       accounts: { repository: 'acme/widgets', agent: 'agent-bot', feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
@@ -302,6 +304,31 @@ const ticketOf = (id: string) =>
 const SourceSave = z.object({ enabled: z.boolean(), config: z.unknown() })
 
 const ROUTES: { [K in keyof Api]: Route<K> } = {
+  'GET applications': { answer: () => server.applications },
+  'POST applications': { body: true, answer: ({ body }) => {
+    const app = { ...ApplicationSchema.parse(body.value), revision: 1 }
+    server.applications.push(app); return app
+  } },
+  'GET applications/:id': { answer: ({ params }) => server.applications.find(app => app.id === params.id) ?? refuse(404, 'Application not found') },
+  'PUT applications/:id': { body: true, answer: ({ params, body }) => {
+    const index = server.applications.findIndex(app => app.id === params.id)
+    if (index < 0) return refuse(404, 'Application not found')
+    if (server.applications[index]!.revision !== body.revision) return refuse(409, 'Application changed')
+    const app = { ...ApplicationSchema.parse(body.value), revision: body.revision + 1 }
+    server.applications[index] = app; return app
+  } },
+  'GET applications/:id/tasks': { answer: ({ params }) => server.applicationTasks.filter(task => task.applicationId === params.id) },
+  'GET applications/:id/tasks/:taskId': { answer: ({ params }) => server.applicationTasks.find(task => task.id === params.taskId && task.applicationId === params.id) ?? refuse(404, 'Task not found') },
+  'POST applications/:id/tasks/:taskId/retry': { answer: ({ params }) => {
+    const task = server.applicationTasks.find(task => task.id === params.taskId && task.applicationId === params.id)
+    if (!task) return refuse(404, 'Task not found')
+    task.state = 'queued'; return task
+  } },
+  'POST applications/:id/tasks/:taskId/stop': { answer: ({ params }) => {
+    const task = server.applicationTasks.find(task => task.id === params.taskId && task.applicationId === params.id)
+    if (!task) return refuse(404, 'Task not found')
+    task.state = 'stopped'; return task
+  } },
   'GET memory': { query: ['status', 'query', 'offset', 'limit'], answer: ({ query }) => {
     const all = Object.values(server.memory), counts = { candidate: 0, verified: 0, stale: 0, retracted: 0 }
     for (const { note } of all) counts[note.status]++

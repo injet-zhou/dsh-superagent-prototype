@@ -34,7 +34,7 @@ Startup registers management routes and runs Setup. After setup resolves, it ins
 
 Shutdown cancels turns, waits for passes, effects and agents, restores the process environment, closes the Store and releases the lock. Source plugins inject Runtime as the `orchestrator` service through the narrow `SourceHost` interface. Source plugin entries should use `mountSource(ctx, kind, start)` to cover current and future repository contexts.
 
-When additional repositories are configured, `src/index.ts` publishes the default Runtime without waiting for multi-repository setup, then mounts additional Runtimes in independent Cordis fibers and service scopes. Runtime readiness is observed separately; a slow probe does not delay other Source loops. A child constructor failure is retained in the catalog, and an asynchronous startup failure becomes that Runtime's error health. Management reads remain available during setup. The original Runtime remains `default`, using the original state directory and Session IDs; additional runtimes use `repositories/<id>` below it and namespace newly generated Ticket IDs by repository ID. Their separate Stores isolate native Trigger IDs, Thread keys, source cursors, settings, receipts and Effects. Source plugins use `mountSource` to subscribe to `SourceHost.watchRepositories()`, mounting adapters for both current and subsequently created Runtimes. A one-time `repositoryHosts()` snapshot is insufficient for dynamic startup. This version keeps a router Session per repository and one Worker per Ticket; it adds neither distributed workers nor task decomposition.
+When additional repositories are configured, `src/index.ts` publishes the default Runtime without waiting for multi-repository setup, then mounts additional Runtimes in independent Cordis fibers and service scopes. Runtime readiness is observed separately; a slow probe does not delay other Source loops. A child constructor failure is retained in the catalog, and an asynchronous startup failure becomes that Runtime's error health. Management reads remain available during setup. The original Runtime remains `default`, using the original state directory and Session IDs; additional runtimes use `repositories/<id>` below it and namespace newly generated Ticket IDs by repository ID. Their separate Stores isolate native Trigger IDs, Thread keys, source cursors, settings, receipts and Effects. Source plugins use `mountSource` to subscribe to `SourceHost.watchRepositories()`, mounting adapters for both current and subsequently created Runtimes. A one-time `repositoryHosts()` snapshot is insufficient for dynamic startup. Repository execution keeps a router Session per repository and one Worker per Ticket. The optional application coordinator adds bounded cross-repository diagnosis and durable handoffs, described in Applications (`docs/010-applications.md`); it adds no distributed workers.
 
 The default repository's `maxWorkers` is a shared ceiling for automatic launch/wake dispatch, not a hard limit on all Session activity. Each runtime also applies its own local limit. Startup reservations and running Sessions from every repository count against the shared `WorkerSlots`. Automatically delivered human follow-ups respect this ceiling. A person can still start a turn directly in a Worker Session, and handed-off background jobs may continue outside these slots; these paths are not admission-controlled by WorkerSlots.
 
@@ -302,6 +302,9 @@ Some generic modules still refer directly to GitHub or Feishu:
 
 | Path | Responsibility |
 | --- | --- |
+| `src/app/applications/service.ts` | Application chat contexts, diagnosis Sessions, authorized handoffs, dependency ordering and durable recovery |
+| `src/app/applications/types.ts` | Application configuration and persisted task types |
+| `src/client/applications.tsx` | Application configuration forms and cross-repository task progress |
 | `src/index.ts` | The main plugin entry: reads the machine settings, starts the Runtime, and gives it the restart that a save of a Source's account uses |
 | `src/deployment.ts` | The plugin `Config` and `Machine`; `resolveDeployment`, `resolveFeishuBot` and `resolveDiscordBot` read the repository and the accounts from the Source settings, each CLI run as Executor shells run it; `SETUP_FIELDS` lists the Source fields setup reads. The code names no person, account or organization |
 | `src/setup.ts` | Setup problems: `SetupError`, with a code, the place that fixes it and the English text the log, the main Session and the panel share |
@@ -347,7 +350,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/memory/dreaming.ts` | Strict proposal publisher, evidence provenance, atomic CAS batches and durable consolidation scheduling |
 | `src/app/memory/projection.ts` | Private atomic Markdown projections, symlink refusal and rebuild coalescing |
 | `src/app/store-read.ts` | `storeReads`: the Store's read queries for the views, the tools and the Sources' polls, which never write |
-| `src/app/migration.ts` | Transactional upgrades from supported schemas 10/11 to 12, retaining the legacy shape migration and adding memory |
+| `src/app/migration.ts` | Transactional upgrades from supported schemas 10–12 to 13, retaining the legacy shape migration, memory tables and application authorization compatibility boundary |
 | `src/app/effects.ts` | Effects |
 | `src/app/versions.ts` | `Versions`: a record kept as numbered snapshots with a pointer to the current one, for the settings and the prompts |
 | `src/app/cache.ts` | `TextCache`: texts kept in memory within a size, the least recently used dropped first |
@@ -445,6 +448,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 
 | Test | Covers |
 | --- | --- |
+| `tests/applications.spec.ts` | Application intake, all chat channels, permissions, idempotent handoffs, dependencies, recovery, PR results and unified replies |
+| `tests/panel-applications.spec.tsx` | Application creation and editing through the management panel |
 | `tests/core-engine.spec.ts` | Domain rules on in-memory repositories: receiving, Eval, fan-out, resume and stop, interrupted Assignments, the pause, Policy changes, reports and outcomes, attaching, replies, failed deliveries and dismissed problems |
 | `tests/stage.spec.ts` | The Ticket stages, row by row |
 | `tests/policy.spec.ts` | Source scope, the gate, the admission table, Mandate revalidation, the Policy version, settings migrations and assessment outcomes |
@@ -553,7 +558,7 @@ Read caches use bounded in-memory `TextCache` instances and are lost on restart.
 
 Nothing deletes old records yet, so these grow without bound: the `trigger`, `disposition` and `decision` rows; ended Tickets and their Threads; the outbox's receipts; and in `kv`, every saved settings revision and prompt version, the prompt revisions each Session worked under, and the Sources' records per Thread and per Issue or pull request.
 
-`SCHEMA_VERSION` only increases. A newer database refuses to start; `src/app/migration.ts` upgrades schemas 10 and 11 to 12 once at startup, and refuses an older one.
+`SCHEMA_VERSION` only increases. A newer database refuses to start; `src/app/migration.ts` upgrades schemas 10–12 to 13 once at startup, and refuses an older one. Schema 13 prevents older binaries from executing application Mandates without their host authorization check.
 
 ## Model-facing interfaces
 

@@ -19,6 +19,14 @@ interface Paged { offset?: number; limit?: number }
 type Delivery = 'injected' | 'pending'
 
 export interface Api {
+  'GET applications': { response: import('./applications/types.ts').Application[] }
+  'POST applications': { body: { value: import('./applications/types.ts').ApplicationConfig; revision: number; transfer?: boolean }; response: import('./applications/types.ts').Application }
+  'GET applications/:id': { response: import('./applications/types.ts').Application }
+  'PUT applications/:id': { body: { value: import('./applications/types.ts').ApplicationConfig; revision: number; transfer?: boolean }; response: import('./applications/types.ts').Application }
+  'GET applications/:id/tasks': { response: import('./applications/types.ts').ApplicationTask[] }
+  'GET applications/:id/tasks/:taskId': { response: import('./applications/types.ts').ApplicationTask }
+  'POST applications/:id/tasks/:taskId/retry': { response: import('./applications/types.ts').ApplicationTask }
+  'POST applications/:id/tasks/:taskId/stop': { response: import('./applications/types.ts').ApplicationTask }
   'GET memory': { query?: MemoryBrowse; response: MemoryPage & { health: MemoryHealth } }
   'GET memory/:id': { response: MemoryDetails }
   'POST memory/:id/review': { body: MemoryReview; response: MemoryDetails }

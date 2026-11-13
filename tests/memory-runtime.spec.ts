@@ -5,7 +5,7 @@ import { policyVersion } from '../src/policy.ts'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Runtime } from '../src/app/runtime.ts'
-import { Store } from '../src/app/store.ts'
+import { SCHEMA_VERSION, Store } from '../src/app/store.ts'
 import { testMachine } from './fixtures/deployment.ts'
 import { credentialHelper, workerGitConfig } from '../src/infra/environment.ts'
 import { vi } from 'vitest'
@@ -23,7 +23,7 @@ it('leaves default Workers and Router unchanged, then enables repository memory 
   })
   onTestFinished(() => h.stop())
   const a = await h.acceptedTicket(feishu('1', '修复迁移'))
-  expect(h.runtime.store.get(KV.store.schema)).toBe(12)
+  expect(h.runtime.store.get(KV.store.schema)).toBe(SCHEMA_VERSION)
   expect(h.tools.get(a.sessionId)?.has('orchestrator_memory_search')).toBe(false)
   const oldVersion = policyVersion(h.runtime.store.settings())
   const saved = await h.api('PUT', 'settings/memory', { revision: 0, value: { enabled: true } })
@@ -79,7 +79,7 @@ it('keeps default, backend and frontend memory, scoped settings and health isola
     const runtime = new Runtime(h.ctx.isolate('orchestrator'), testMachine({ stateDir, repositoryId: id, scopedEnvironment: true }), vi.fn(), { http: false })
     entries.push({ id, name: id, runtime }); await runtime.ready
     expect(runtime.configured()).toBe(true)
-    expect(runtime.store.get(KV.store.schema)).toBe(12)
+    expect(runtime.store.get(KV.store.schema)).toBe(SCHEMA_VERSION)
   }
   for (const { id, runtime } of entries) {
     const path = id === 'default' ? 'settings/memory' : `/orchestrator/repositories/${id}/api/settings/memory`

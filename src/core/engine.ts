@@ -1,6 +1,8 @@
 /** The domain Engine: the single entry point of the core, and the role interfaces its callers receive. */
 import { UserError } from './errors.ts'
 import { isoTime, liveTicket } from './model.ts'
+import { key } from './ids.ts'
+import type { Mandate } from './model.ts'
 import type { ChannelRef, Decision, PolicyEffect, ThreadRef, Ticket, Trigger } from './model.ts'
 import type { Candidate, Repositories } from './ports.ts'
 import type { EngineOptions } from './part.ts'
@@ -46,6 +48,21 @@ export class Engine {
    * Triggers that arrive while an Eval of that Thread runs wait together for the next one.
    */
   receive(trigger: Trigger): ReceiveResult { return this.repo.atomic(() => this.intake.receive(trigger)) }
+  /** Internal, already authorized application handoff. Never exposed as a Source event or model tool. */
+  delegate(id: string, trigger: Trigger, mandate: Mandate, title: string, scope: string): Ticket {
+    return this.repo.atomic(() => {
+      const existing = this.repo.tickets.get(id)
+      if (existing) return existing
+      const at = this.options.now?.() ?? new Date().toISOString()
+      const decisionId = key('application-decision', id)
+      this.repo.triggers.save(trigger)
+      this.repo.decisions.save({ id: decisionId, evalId: decisionId, threadKey: `application:${id}`, triggerIds: [trigger.id],
+        policyVersion: mandate.policyVersion, at, kind: 'accept', reason: [], strength: 'explicit', ticketId: id, mandate })
+      this.tickets.create(id, decisionId, mandate, { triggerIds: [trigger.id], primary: trigger.id },
+        { kind: 'accept', title, scope, reason: 'Application handoff', name: `app-${id.slice(-12)}` }, at)
+      return this.repo.tickets.get(id)!
+    })
+  }
   /**
    * A Source's request to make an open ticket follow one of its Threads, such as a pull request's, `own` when the ticket
    * opened it: the ticket subscribes to it, and a ready report ends it only once `followsDone` holds (see `Tickets.followsDone`).

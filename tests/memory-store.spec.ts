@@ -1,16 +1,16 @@
 import { expect, it } from 'vitest'
 import { DatabaseSync } from 'node:sqlite'
-import { Store } from '../src/app/store.ts'
+import { SCHEMA_VERSION, Store } from '../src/app/store.ts'
 import { KV } from '../src/kv.ts'
 import { MemoryConflict, MemoryStore } from '../src/app/memory/store.ts'
 import { exampleEvidence, exampleNote, memoryFixture } from './fixtures/memory.ts'
 
-it('migrates an actual v11 database atomically without rewriting its records, and reopens v12', () => {
+it('migrates an actual v11 database atomically without rewriting its records, and reopens the current schema', () => {
   const { store, path } = memoryFixture()
   store.db.exec('DROP TABLE memory_note_fts; DROP TABLE memory_revision; DROP TABLE memory_evidence; DROP TABLE memory_capture_checkpoint; DROP TABLE memory_note')
   store.set(KV.store.schema, 11); store.set('preserved', { answer: 42 })
   const upgraded = new Store(path)
-  expect(upgraded.get(KV.store.schema)).toBe(12)
+  expect(upgraded.get(KV.store.schema)).toBe(SCHEMA_VERSION)
   expect(upgraded.get('preserved')).toEqual({ answer: 42 })
   upgraded.close()
   const reopened = new Store(path)
@@ -27,7 +27,7 @@ it('rolls back failed v12 DDL and can retry after the conflicting table is remov
   expect(store.db.prepare("SELECT 1 FROM sqlite_master WHERE name='memory_note'").get()).toBeUndefined()
   store.db.exec('DROP TABLE memory_evidence')
   const recovered = new Store(path)
-  expect(recovered.get(KV.store.schema)).toBe(12)
+  expect(recovered.get(KV.store.schema)).toBe(SCHEMA_VERSION)
   recovered.close()
 })
 

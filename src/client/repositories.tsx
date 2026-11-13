@@ -11,9 +11,10 @@ import { SettingsPage } from './settings.tsx'
 import { Field, Fields, numberOf, SettingsProvider, useSettings } from './settings-kit.tsx'
 import { healthText, valueLabel } from './text.ts'
 import { Hint, LoadState, SetupMessage } from './widgets.tsx'
+import { ApplicationsPage } from './applications.tsx'
 
 export type RepositoryCatalog = ApiResponse<'GET repositories'>
-export type ManagementView = 'repositories' | 'configuration'
+export type ManagementView = 'repositories' | 'applications' | 'configuration'
 export function repositoryState(entry: RepositoryCatalog[number]) {
   const problems = entry.problems ?? []
   const missing = new Set(['repositoryUnset', 'agentCliUnset'])
@@ -108,7 +109,7 @@ function RepositoryList({ entries, configure, open, remove, editable }: {
 }
 
 export function ManagementPanel({ view, entries, error, form, scope, configurationRoute, onScope, onView, onOpen, reload }: ManagementProps) {
-  const { t, notify, restart } = usePanel()
+  const { t, notify, restart, call } = usePanel()
   const [adding, setAdding] = useState(false)
   const [removing, setRemoving] = useState<RepositoryCatalog[number]>()
   const [id, setId] = useState('')
@@ -133,6 +134,10 @@ export function ManagementPanel({ view, entries, error, form, scope, configurati
     return () => clearTimeout(timer)
   }, [pending])
   const mutation = useAction(async (next: RepositoryConfig[], target: { id: string; adding: boolean }) => {
+    if (!target.adding) {
+      const app = (await call('GET applications')).find(app => app.repositories.includes(target.id))
+      if (app) throw new Error(t('applicationRepositoryUsed', { name: app.name }))
+    }
     if (!editable || !form || !await form.mutate([{ op: 'set', path: ['repositories'], value: next }], snapshot.revision)) {
       throw new Error(t('repositorySaveRefused'))
     }
@@ -165,7 +170,7 @@ export function ManagementPanel({ view, entries, error, form, scope, configurati
       </div>
     </header>
     <SegmentedTabs value={view} onChange={onView} label={t('title')}
-      items={(['repositories', 'configuration'] as const).map(value => ({ value, label: t(value === 'repositories' ? 'repositoryOverview' : 'repositorySettings'),
+      items={(['repositories', 'applications', 'configuration'] as const).map(value => ({ value, label: t(value === 'repositories' ? 'repositoryOverview' : value === 'applications' ? 'applications' : 'repositorySettings'),
         id: `dt-management-${value}`, panelId: 'dt-management' }))} />
     <main id="dt-management" role="tabpanel" aria-labelledby={`dt-management-${view}`} className="dt-main">
       {error && <LoadState error={error} loading={false} />}
@@ -175,7 +180,7 @@ export function ManagementPanel({ view, entries, error, form, scope, configurati
         {pending.timedOut && <Button size="sm" onClick={() => { setPending({ ...pending, timedOut: false }); void reload() }}>{t('repositoryCheckAgain')}</Button>}
         <Button size="sm" onClick={() => setPending(undefined)}>{t('repositoryStopWaiting')}</Button>
       </div>}
-      {view === 'repositories' ? <>
+      {view === 'applications' ? <ApplicationsPage repositories={entries ?? []} /> : view === 'repositories' ? <>
         {!editable && <Hint>{readOnly}</Hint>}
         {entries ? <RepositoryList entries={entries} configure={configure} open={onOpen} editable={!!editable && !mutation.busy && !pending}
           remove={setRemoving} /> : !error && <LoadState loading />}
