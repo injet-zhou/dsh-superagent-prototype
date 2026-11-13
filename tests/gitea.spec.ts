@@ -179,7 +179,8 @@ it('rewrites Gitea SSH origins through the configured proxy prefix and refuses u
   const marker = join(directory, 'operator-ssh-used')
   const ssh = join(directory, 'operator-ssh')
   writeFileSync(ssh, `#!/bin/sh\ntouch '${marker}'\nexit 1\n`, { mode: 0o755 })
-  const run = new Commands(() => deployment, { ...agentVariables(directory), GIT_SSH_COMMAND: ssh }, new AbortController().signal)
+  // Keep Git diagnostics in English for the assertions below, regardless of the operator's locale.
+  const run = new Commands(() => deployment, { ...agentVariables(directory), GIT_SSH_COMMAND: ssh, LC_ALL: 'C' }, new AbortController().signal)
   await run.git(['init', '-q', 'checkout'], directory)
   const checkout = join(directory, 'checkout')
   const host = new URL(baseUrl).hostname
