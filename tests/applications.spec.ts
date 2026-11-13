@@ -49,6 +49,30 @@ it('admits a single app request, deduplicates deliveries, and attaches authorize
   expect(apps.receive('shop', { ...trigger('a4'), human: false })).toBe('filtered')
 })
 
+it.each([undefined, 'om_topic'])('resumes a ready Feishu task on a direct topic reply without a new mention (root %s)', async topic => {
+  const { apps, runtime } = await setup()
+  const original = feishu('a1', '修复下单失败', { chat_id: 'oc_app', ...topic ? { root_id: topic } : {} })
+  apps.receive('shop', original)
+  const task = apps.listTasks('shop')[0]!, child = apps.dispatch(task, 'default', 'Fix checkout', 'fix')
+  runtime.engine.report(child.ticketId, { state: 'ready', summary: 'Checkout fixed' })
+  apps.report(apps.task('shop', task.id), 'ready', '下单问题已修复。')
+  const reply = feishu('a2', '仍然失败', { chat_id: 'oc_app', root_id: topic ?? 'om_a1', parent_id: 'om_bot_result', mentions: [] })
+  expect(reply.addressed).toBeUndefined()
+  expect(apps.receive('shop', reply)).toBe('stored')
+  expect(apps.receive('shop', reply)).toBe('duplicate')
+  expect(apps.listTasks('shop')).toHaveLength(1)
+  expect(apps.task('shop', task.id).state).toBe('queued')
+  await apps.tick()
+  const prompts = fixture!.relays(task.sessionId) as { task: ApplicationTask }[]
+  expect(prompts.at(-1)!.task.messages.at(-1)).toEqual(reply)
+  await fixture!.runTool(task.sessionId, 'application_followup', { repositoryId: 'default', text: 'The original user says checkout still fails. Continue within the original repair scope.' })
+  expect(runtime.store.tickets.get(child.ticketId)!.ended).toBeUndefined()
+  expect(runtime.store.tickets.list()).toHaveLength(1)
+  apps.stop('shop', task.id)
+  const afterStop = feishu('a3', '仍然失败', { chat_id: 'oc_app', root_id: topic ?? 'om_a1', mentions: [] })
+  expect(apps.receive('shop', afterStop)).toBe('filtered')
+})
+
 it('starts a separate task and repair for a new Discord request after the previous task is ready', async () => {
   const { apps, config, runtime } = await setup()
   vi.spyOn(DiscordApi.prototype, 'request').mockResolvedValue({ id: '123', bot: true, username: 'Shop Bot' })
@@ -73,6 +97,11 @@ it('starts a separate task and repair for a new Discord request after the previo
   const newChild = apps.dispatch(fresh!, 'default', 'Fix search', 'fix')
   expect(newChild.ticketId).not.toBe(oldChild.ticketId)
   expect(runtime.store.tickets.get(newChild.ticketId)!.mandate.scope).toBe('Fix search')
+  const reply = discordTrigger(DiscordMessage.parse({ id: '1003', channel_id: '789', content: 'Checkout still fails',
+    author: { id: '456', username: 'Alice', bot: false }, message_reference: { message_id: '1001', channel_id: '789' }, timestamp: new Date().toISOString() }), '123')!
+  expect(apps.receive('shop', reply)).toBe('stored')
+  expect(apps.task('shop', previous.id).messages.at(-1)).toEqual(reply)
+  expect(apps.task('shop', fresh!.id).messages).toEqual([next])
 })
 
 it('rejects overlapping subscriptions and supports an explicit, durable chat transfer', async () => {
@@ -202,6 +231,107 @@ it.each(['question', 'blocked', 'merged'] as const)('observes a child %s after a
   const stopped = fixture!.relays(task.sessionId).length
   await apps.tick()
   expect(fixture!.relays(task.sessionId)).toHaveLength(stopped)
+})
+
+it.each([false, true])('preserves ready state across a processing pause without rerunning diagnosis (child %s)', async withChild => {
+  const { apps, trigger, runtime, mounted } = await setup()
+  vi.spyOn(mounted.get('app')!.sources, 'send').mockResolvedValue('sent')
+  apps.receive('shop', trigger())
+  const task = apps.listTasks('shop')[0]!
+  if (withChild) {
+    const child = apps.dispatch(task, 'default', 'Fix checkout', 'fix')
+    runtime.engine.bindThread(child.ticketId, { source: 'github', id: '42' }, true)
+    runtime.engine.report(child.ticketId, { state: 'ready', summary: 'PR ready' })
+    await apps.tick()
+  }
+  apps.report(apps.task('shop', task.id), 'ready', 'PR ready')
+  const agent = fixture!.agents.get(task.sessionId)
+  if (agent) { agent.status = 'idle'; await vi.waitFor(() => expect(apps.runningIds()).toEqual([])) }
+  await apps.tick()
+  const ready = apps.task('shop', task.id), before = fixture!.relays(task.sessionId).length
+  runtime.store.saveSettings({ ...runtime.store.settings(), paused: true })
+  await apps.tick(); await apps.tick()
+  expect(apps.task('shop', task.id)).toEqual(ready)
+  runtime.store.saveSettings({ ...runtime.store.settings(), paused: false })
+  await apps.tick()
+  expect(apps.task('shop', task.id)).toEqual(ready)
+  expect(fixture!.relays(task.sessionId)).toHaveLength(before)
+  expect(apps.runningIds()).toEqual([])
+})
+
+it('records a direct reply during a pause and delivers it once processing resumes', async () => {
+  const { apps, trigger, runtime, mounted } = await setup()
+  vi.spyOn(mounted.get('app')!.sources, 'send').mockResolvedValue('sent')
+  apps.receive('shop', trigger())
+  const task = apps.listTasks('shop')[0]!
+  apps.report(task, 'ready', 'Checkout fixed')
+  await apps.tick()
+  runtime.store.saveSettings({ ...runtime.store.settings(), paused: true })
+  const reply = feishu('a2', '仍然失败', { chat_id: 'oc_app', root_id: 'om_a1', mentions: [] })
+  expect(apps.receive('shop', reply)).toBe('stored')
+  await apps.tick()
+  expect(apps.task('shop', task.id).state).toBe('queued')
+  expect(fixture!.relays(task.sessionId)).toHaveLength(0)
+  runtime.store.saveSettings({ ...runtime.store.settings(), paused: false })
+  await apps.tick()
+  const prompts = fixture!.relays(task.sessionId) as { task: ApplicationTask }[]
+  expect(prompts).toHaveLength(1)
+  expect(prompts[0]!.task.messages.at(-1)).toEqual(reply)
+})
+
+it('observes a real child update on resume without treating the pause as new work', async () => {
+  const { apps, trigger, runtime, mounted } = await setup()
+  vi.spyOn(mounted.get('app')!.sources, 'send').mockResolvedValue('sent')
+  apps.receive('shop', trigger())
+  const task = apps.listTasks('shop')[0]!, child = apps.dispatch(task, 'default', 'Fix checkout', 'fix')
+  runtime.engine.bindThread(child.ticketId, { source: 'github', id: '42' }, true)
+  runtime.engine.report(child.ticketId, { state: 'ready', summary: 'PR ready' })
+  await apps.tick()
+  apps.report(apps.task('shop', task.id), 'ready', 'PR ready')
+  fixture!.agents.get(task.sessionId)!.status = 'idle'
+  await vi.waitFor(() => expect(apps.runningIds()).toEqual([]))
+  await apps.tick()
+  const ready = apps.task('shop', task.id), before = fixture!.relays(task.sessionId).length
+  runtime.store.saveSettings({ ...runtime.store.settings(), paused: true })
+  runtime.engine.report(child.ticketId, { state: 'blocked', summary: 'New review blocker' })
+  await apps.tick()
+  expect(apps.task('shop', task.id)).toEqual(ready)
+  runtime.store.saveSettings({ ...runtime.store.settings(), paused: false })
+  await apps.tick()
+  const prompts = fixture!.relays(task.sessionId) as { children: { ticket: { assignments: { report?: { summary: string } }[] } }[] }[]
+  expect(prompts).toHaveLength(before + 1)
+  expect(prompts.at(-1)!.children[0]!.ticket.assignments.at(-1)!.report?.summary).toBe('New review blocker')
+})
+
+it('keeps a ready application settled while its child repository is paused', async () => {
+  const { apps, config, trigger, repositories, mounted } = await setup()
+  vi.spyOn(mounted.get('app')!.sources, 'send').mockResolvedValue('sent')
+  const backend = await startRuntime(undefined, { repositoryId: 'backend' }, { applications: () => apps })
+  others.push(backend)
+  const settings = backend.runtime.store.settings()
+  backend.runtime.store.saveSettings({ ...settings, sources: { ...settings.sources,
+    github: { enabled: true, config: { ...settings.sources.github!.config, repository: 'acme/backend' } },
+    feishu: { enabled: true, config: { ...settings.sources.feishu!.config, chats: [], directMessages: false } } } })
+  repositories.push({ id: 'backend', runtime: backend.runtime })
+  await apps.save({ ...config, repositories: ['default', 'backend'] }, 1)
+  vi.spyOn(mounted.get('app')!.sources, 'send').mockResolvedValue('sent')
+  apps.receive('shop', trigger())
+  const task = apps.listTasks('shop')[0]!, child = apps.dispatch(task, 'backend', 'Fix checkout', 'fix')
+  backend.runtime.engine.bindThread(child.ticketId, { source: 'github', id: '42' }, true)
+  backend.runtime.engine.report(child.ticketId, { state: 'ready', summary: 'PR ready' })
+  await apps.tick()
+  apps.report(apps.task('shop', task.id), 'ready', 'PR ready')
+  fixture!.agents.get(task.sessionId)!.status = 'idle'
+  await vi.waitFor(() => expect(apps.runningIds()).toEqual([]))
+  await apps.tick()
+  const ready = apps.task('shop', task.id), before = fixture!.relays(task.sessionId).length
+  backend.runtime.store.saveSettings({ ...backend.runtime.store.settings(), paused: true })
+  await apps.tick()
+  expect(apps.task('shop', task.id)).toEqual(ready)
+  backend.runtime.store.saveSettings({ ...backend.runtime.store.settings(), paused: false })
+  await apps.tick()
+  expect(apps.task('shop', task.id)).toEqual(ready)
+  expect(fixture!.relays(task.sessionId)).toHaveLength(before)
 })
 
 it('creates an idempotent repository ticket with the original actor and no chat reply channels', async () => {

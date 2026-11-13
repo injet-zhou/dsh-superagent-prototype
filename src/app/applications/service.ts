@@ -242,8 +242,11 @@ export class Applications {
     if (!app.enabled || !source?.sources.scope(trigger).listened || !trigger.human || !allowedSender(this.settings(app), trigger.actor)) return 'filtered'
     const all = this.listTasks(appId)
     if (all.some(task => task.messages.some(message => message.id === trigger.id))) return 'duplicate'
-    const task = all.find(task => active(task) && task.trigger.actor.id === trigger.actor.id
+    const matching = all.filter(task => task.state !== 'stopped' && task.trigger.actor.id === trigger.actor.id
       && task.trigger.threads.some(ref => trigger.threads.some(other => threadKey(ref) === threadKey(other))))
+    const parent = source.sources.repliesTo(trigger)
+    const task = matching.find(task => task.messages.some(message => message.id === parent))
+      ?? matching.find(task => active(task) || typeof trigger.meta.rootId === 'string')
     if (task) {
       task.messages.push(trigger); task.version++; task.state = 'queued'; this.saveTask(task)
       return 'stored'
@@ -368,13 +371,14 @@ export class Applications {
       this.hosts.set(app.id, source); this.host.mount(source)
     }
     for (let task of this.allTasks()) {
-      if (this.abort.signal.aborted) return
+      if (this.abort.signal.aborted || this.host.primary.store.settings().paused) return
       const source = this.hosts.get(task.applicationId)
       if (!source?.configured()) continue
       try {
         if (task.state !== 'stopped') {
           this.authorizeTask(task, true)
           for (const child of task.children) {
+            if (this.host.repositories().find(repo => repo.id === child.repositoryId)?.runtime?.store.settings().paused) continue
             if (active(task)) this.handoff(task, child)
             const repo = this.repository(task, child.repositoryId, true), ticket = repo.store.tickets.get(child.ticketId)
             if (!ticket) continue
