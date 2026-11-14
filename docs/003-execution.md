@@ -79,6 +79,48 @@ Workers reach GitHub through the agent account's `gh` and Feishu through the bot
 
 These wrappers and directories establish defaults, not a security boundary. A worker can still execute a program by absolute path.
 
+## Independent PR reviews
+
+When a worker reports an agent-authored PR on its Ticket branch, the host queues an independent review. Repository polling
+also recovers missing bindings and observes new revisions. Draft PRs wait until they are ready for review. Adopted PRs by
+other authors and forks are excluded. The provider must supply the base and head commit IDs; a review always names both.
+
+Each `ReviewRun` belongs to the original Ticket, without creating another Ticket or claiming its PR. A fresh root Session
+uses `dsh-superagent-reviewer`, the configured Worker model, and a separate checkout under `<stateDir>/reviews`. The host
+fetches committed state from the configured remote, excluding worker dirt, untracked files and local git configuration.
+The complete reviewer prompt receives original requests, human follow-ups and the full human messages they reply to,
+including reply chains. Referenced messages are deduplicated and marked as context, with reply links preserved.
+It does not inherit Worker/router history,
+reports, skills or repository memory. Applicable `AGENTS.md` instructions are read explicitly from the base commit, so a
+PR cannot replace the review procedure through changed instructions. The preset exposes reads, search, local shell checks
+and the dedicated `orchestrator_review_report` tool, without editing or delegation tools. Shell access and directories
+are not an OS security boundary.
+
+Reviewers share local and global worker slots, including preparation and background checks. Workers finish their own
+checks and end their turn without polling or waiting for reviewers, so a deployment with one slot can progress. A reviewer
+that ends without a result, encounters a model error or exceeds 30 minutes records an incomplete review. Preparation and
+launch failures are tried up to three times. A restart requeues interrupted work in a fresh Session and checkout.
+
+Checkouts are temporary. Completed, superseded and failed attempts queue durable `review-cleanup` work, which waits for
+host preparation, the reviewer Session and its checks to exit before deleting the managed attempt directory. Cleanup runs
+even while processing is paused, retries failures, and resumes after a restart, including attempts left by older versions.
+Review records, results and Session history remain available. Checkout paths are derived from validated review identities;
+cleanup refuses paths redirected outside the managed directory.
+
+Results distinguish no actionable findings, issues and incomplete review, and retain evidence and checks actually run.
+The host rechecks the PR revision before accepting and publishing results. A push, base revision change, draft conversion,
+close or ended Ticket supersedes old work. Publication uses a marked PR conversation comment, supports the configured
+GitHub/Gitea/GitLab account, and reconciles retries before posting. The result is also delivered once as an internal note
+to the original worker, because the repository Source skips comments from its own account. Ticket detail API responses
+include review records and reviewer Session IDs. If the PR is locked against comments, the result is retained and still
+delivered internally. Disabling processing or the repository Source holds queued launches and publication.
+
+For open GitLab MRs, revision checks read the target branch's current commit from the Branches API. MR diff-version refs
+are not used as the current base, so target-only updates invalidate previous reviews even when the MR diff is unchanged.
+
+Reviews are advisory: they do not grant new implementation authority, change `ready`, satisfy required approvals or enable
+merging. Formal approvals and an automatic repair loop are separate policies.
+
 ## Merging
 
 Auto-merge is governed by the **Delivery requirements** prompt. The host has no merge-specific decision logic.

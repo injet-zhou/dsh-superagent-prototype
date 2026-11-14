@@ -7,6 +7,7 @@ import type { SettingsVersion } from './app/store.ts'
 import type { SettingsSave } from './policy.ts'
 import type { Retry } from './sources/github.ts'
 import type { MemoryExecutionReceipt, MemoryImportanceRecord, MemoryTopic, MemoryReviewRequest, MemoryUsage } from './app/memory/types.ts'
+import type { ReviewRun } from './app/review-types.ts'
 
 /** Key of a KV record whose value has type `V`; a plain string represents an untyped key. */
 export type Key<V> = string & { readonly __value?: V }
@@ -20,6 +21,9 @@ export function family<V, A extends unknown[] = [string]>(prefix: string, format
 }
 
 export const KV = {
+  /** Independent PR reviews: immutable revision identity, latest observation and Session ownership. */
+  reviews: { run: family<ReviewRun>('pr-review:'), latest: family<string, [number: number]>('pr-review-latest:'),
+    session: family<string>('pr-review-session:'), cleaned: family<boolean>('pr-review-cleaned:') },
   /** Memory: immutable repository binding; private memory is never inherited by another context. */
   memory: { repository: record<string>('memory-repository'),
     usage: record<MemoryUsage>('memory-usage'),

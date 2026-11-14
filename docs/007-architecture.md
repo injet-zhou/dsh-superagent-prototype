@@ -9,6 +9,7 @@ Core classes own domain concepts and external boundaries behind small interfaces
 ```mermaid
 flowchart TB
   plugins[Source plugins] -->|SourceContext| engine
+  plugins -->|owned PR revision| reviews[Reviews]
   tools[Session tools] --> engine
   http[Management routes] --> engine
   engine[Engine] -->|Repositories| store[Store]
@@ -20,7 +21,7 @@ flowchart TB
   engine -->|Outbox| outbox[Outbox]
   executor -->|assignmentStarted, inputsDelivered, report| engine
   settings[Settings] -->|policyChanged| engine
-  assessor & executor & sessions[Sessions] & outbox -->|enqueue| effects[Effects]
+  assessor & executor & reviews & sessions[Sessions] & outbox -->|enqueue| effects[Effects]
   effects --> store
 ```
 
@@ -244,7 +245,7 @@ Validation inherits an omitted base from the saved override, drops removed parts
 
 ### Sessions
 
-`Sessions` (`src/app/sessions.ts`) manages DeepSeek Harness Sessions for both roles. `ensure` creates a Session with its role's model. `install` follows agent events and registers prompts, skills and tools for managed Sessions.
+`Sessions` (`src/app/sessions.ts`) manages router, worker and independent reviewer Sessions. `ensure` creates a Session with its role's model; reviewers use the Worker model. `install` follows agent events and registers prompts, skills and tools for managed Sessions. Reviewers have a complete prompt and dedicated tools, without Worker/router context, skills or memory; see Independent PR reviews in [003 Execution](003-execution.md#independent-pr-reviews).
 
 `prompt` delivers once per request id. `relay` and `notify` enqueue main-Session messages handled by the `relay` and `notice` effects. `src/app/notices.ts` defines their content; `delivery` checks whether a message arrived.
 
@@ -352,6 +353,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/store-read.ts` | `storeReads`: the Store's read queries for the views, the tools and the Sources' polls, which never write |
 | `src/app/migration.ts` | Transactional upgrades from supported schemas 10–12 to 13, retaining the legacy shape migration, memory tables and application authorization compatibility boundary |
 | `src/app/effects.ts` | Effects |
+| `src/app/reviews.ts` | Independent ReviewRun scheduling, isolated snapshots, revision checks, publication and worker feedback |
+| `src/app/review-types.ts` | Durable ReviewRun records and structured result validation |
 | `src/app/versions.ts` | `Versions`: a record kept as numbered snapshots with a pointer to the current one, for the settings and the prompts |
 | `src/app/cache.ts` | `TextCache`: texts kept in memory within a size, the least recently used dropped first |
 | `src/app/settings.ts` | Settings |
@@ -462,6 +465,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |
 | `tests/assessment.spec.ts` | What the MasterAssessor keeps per Eval, and when it lets go |
 | `tests/background.spec.ts` | Waiting for a worker's shell jobs and subagents: an end that woke it, and a host that stops |
+| `tests/reviews.spec.ts` | Independent PR review triggers, clean context/checkouts, revision races, publication, shared slots and recovery |
 | `tests/bundle-patch.spec.ts` | The bundle's patch, read as DeepSeek Harness reads it, and the agent preset of Executor Sessions it defines |
 | `tests/effects.spec.ts` | The effect queue: coalescing, limits, retries with backoff, health and shutdown |
 | `tests/passes.spec.ts` | Passes: one at a time, the ones asked for during a pass run as one after it, and the runtime health a failed pass reports |

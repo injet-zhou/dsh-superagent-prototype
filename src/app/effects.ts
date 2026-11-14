@@ -10,6 +10,12 @@ import type { Store } from './store.ts'
 import type { CaptureBatch } from './memory/capture.ts'
 
 export interface EffectPayloads {
+  /** Start a fresh independent reviewer; keys name durable ReviewRuns. */
+  review: { runId: string }
+  /** Publish a version-checked review and deliver its result to the original worker. */
+  'review-publish': { runId: string }
+  /** Reclaim one review attempt's checkout after its preparation, Session and checks have stopped. */
+  'review-cleanup': { sessionId: string }
   /** One stable settled-turn boundary; each boundary has its own key. */
   'memory-capture': CaptureBatch
   /** One bounded maintenance snapshot; publication is CAS checked and replayable. */

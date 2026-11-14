@@ -7,8 +7,10 @@ import type { SourceContext } from '../sources/host.ts'
 import type { SourceRegistry } from '../sources/registry.ts'
 import type { Outbox } from './outbox.ts'
 import type { Store } from './store.ts'
+import type { Pull } from '../sources/github-pull.ts'
 
 export interface SourceContextDeps {
+  reviewPull?(ticketId: string | undefined, pull: Pull): void
   readonly store: Pick<Store, 'atomic' | 'get' | 'set' | 'delete' | 'keys' | 'threads' | 'tickets' | 'triggers' | 'read'>
   readonly outbox: Pick<Outbox, 'send'>
   readonly engine: Pick<EngineForSources, 'bindThread' | 'threadClosed'>
@@ -39,6 +41,7 @@ export function sourceContextOf(deps: SourceContextDeps, kind: { kind: string; h
   const { store } = deps
   const health = deps.sources.healthEntries(kind.health)
   return {
+    ...deps.reviewPull ? { reviewPull: (ticketId: string | undefined, pull: Pull) => deps.reviewPull!(ticketId, pull) } : {},
     get deployment() { return deps.deployment },
     commands: deps.commands,
     get commandEnvironment() { return deps.commandEnvironment },

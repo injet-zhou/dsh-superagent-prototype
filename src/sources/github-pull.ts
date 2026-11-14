@@ -10,6 +10,7 @@ const PullSchema = z.looseObject({
   title: z.string().optional(), state: z.string(), html_url: z.string(), user: UserSchema,
   body: z.string().nullish(), created_at: z.string().optional(),
   merged: z.boolean().optional(), merged_at: z.string().nullish(), closed_at: z.string().nullish(), auto_merge: z.unknown().optional(),
+  draft: z.boolean().optional(), base: z.looseObject({ ref: z.string(), sha: z.string().optional() }).optional(),
   head: z.looseObject({ sha: z.string(), ref: z.string(), repo: z.looseObject({ full_name: z.string() }).nullish() }),
 })
 export type Pull = z.infer<typeof PullSchema> & { number: number }
@@ -46,6 +47,7 @@ export function claimPull(ctx: SourceContext, ticketId: string, pr: Pull): strin
   if (owner && owner.id !== ticketId) return 'PR already belongs to another active ticket'
   const follow = ticket.follows?.find(item => item.thread === `${SOURCE}:${pr.number}`)
   if (pr.state === 'open' && (!follow || follow.closed || (opened && !follow.own))) bind(ctx, ticketId, pr, opened)
+  if (opened) ctx.reviewPull?.(ticketId, pr)
   return undefined
 }
 /**
@@ -56,6 +58,7 @@ export function claimPull(ctx: SourceContext, ticketId: string, pr: Pull): strin
  */
 export async function observePull(ctx: SourceContext, pr: Pull): Promise<boolean> {
   const ended = pr.state === 'closed' || !!pr.merged
+  ctx.reviewPull?.(undefined, pr)
   if (ended) closePull(ctx, pr)
   else {
     const candidates = agentPull(pr, ctx.deployment) ? ctx.tickets.open().filter(ticket => ticketBranch(ticket, pr.head.ref)) : []

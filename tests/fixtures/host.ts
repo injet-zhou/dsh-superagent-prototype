@@ -178,7 +178,7 @@ export async function startRuntime(seed?: (store: Store) => void, machine: Parti
       const register = (tool: RegisteredTool) => { sessionTools.set(tool.name, tool); return () => sessionTools.delete(tool.name) }
       agentCtx.reflect.provide('tools', { register, get: () => undefined, presentAs: vi.fn(() => () => {}), restrict: vi.fn(() => () => {}), guard: vi.fn(() => () => {}) })
       agentCtx.reflect.provide('skills', { register: () => () => {} })
-      agentCtx.reflect.provide('systemPrompt', { section: () => () => {} })
+      agentCtx.reflect.provide('systemPrompt', { section: vi.fn(() => () => {}) })
       const inbox = { nextTurn: [] as UserMessage[], nextStep: [] as UserMessage[],
         // A pending message taken out, as DSH's inbox does by its id.
         remove: (id: string) => [inbox.nextTurn, inbox.nextStep].some(list => {

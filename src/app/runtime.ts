@@ -56,6 +56,7 @@ import { DshMemoryAnalyzer } from './memory/dsh-analyzer.ts'
 import { MemoryDreaming } from './memory/dreaming.ts'
 import { MemoryProjection } from './memory/projection.ts'
 import { MemoryAttestor } from './memory/attestation.ts'
+import { Reviews } from './reviews.ts'
 
 // Source plugins interact with dsh-superagent exclusively through the `SourceHost` service interface.
 declare module '@deepseek-ai/cordis' { interface Context { orchestrator: SourceHost } }
@@ -91,6 +92,7 @@ export class Runtime extends Service implements SourceHost {
   readonly sessions: Sessions
   readonly settings: Settings
   readonly executor: DshExecutor
+  readonly reviews: Reviews
   readonly assessor: MasterAssessor
   readonly outbox: Outbox
   readonly engine: Engine
@@ -152,6 +154,7 @@ export class Runtime extends Service implements SourceHost {
         promptVersion: id => this.sessions.promptVersion(id), mayRead: (id, revision) => this.sessions.mayRead(id, revision),
         feishuPageSize: () => feishuSettings(sources).readPageSize, sourceLink: link }
       const sessions = this.sessions = new Sessions({ context: ctx, store, prompts, effects, health: board.claim('models'), masterId,
+        reviewer: id => this.reviews?.session(id),
         authorized: ticket => ticket.mandate.basis.via !== 'application' || (!!allowedSender(store.settings(), ticket.mandate.actor)
           && store.settings().sources[ticket.mandate.actor.source]?.enabled !== false && !store.settings().paused
           && !!options.applications?.()?.authorized(ticket.mandate, machine.repositoryId ?? 'default')),
@@ -180,11 +183,19 @@ export class Runtime extends Service implements SourceHost {
         },
         ...options.validateSettings ? { validateSettings: options.validateSettings } : {} })
       this.executor = new DshExecutor({ context: ctx, get engine() { return runtime.engine }, store, effects, health: board.claim('worker'), machine,
+        additionalRunning: () => this.reviews?.activeIds() ?? [],
         get onTurnSettled(): ExecutorHost['onTurnSettled'] { return memory.captureEnabled() ? (ticketId, assignmentId, event) => { capture.enqueue(ticketId, assignmentId, event) } : undefined },
         onMemoryError: () => { memory.degraded('memory_settlement_failed') },
         lifetime: this.lifetime, sessions, closing: () => this.closing(), paused: () => this.paused(), environment, sourceLink: link,
         repliedTo: trigger => repliedTo({ store, sources }, trigger), ...options.slots ? { slots: options.slots } : {},
         ...machine.scopedEnvironment ? { executionEnvironment: () => setup.executionEnvironment } : {} })
+      this.reviews = new Reviews({ context: ctx, store, effects, sessions, commands, slots: this.executor.slots, stateDir: machine.stateDir,
+        repliedTo: trigger => repliedTo({ store, sources }, trigger),
+        get github() { return runtime.context({ kind: 'github', health: ['github'] }) }, get engine() { return runtime.engine },
+        lifetime: this.lifetime, paused: () => this.paused() || !sources.instance('github')?.enabled, closing: () => this.closing(),
+        authorized: ticket => ticket.mandate.basis.via !== 'application' || (!!allowedSender(store.settings(), ticket.mandate.actor)
+          && store.settings().sources[ticket.mandate.actor.source]?.enabled !== false
+          && !!options.applications?.()?.authorized(ticket.mandate, machine.repositoryId ?? 'default')) })
       this.assessor = new MasterAssessor({ get engine() { return runtime.engine }, commands, get deployment() { return setup.deployment }, effects,
         settings: () => store.settings(), paused: () => this.paused(), threadContext: trigger => sources.threadContext(trigger),
         deliver: (id, text) => sessions.prompt(masterId, id, text, 'steer'), candidateCard: candidate => candidateCard(links, candidate) })
@@ -207,6 +218,7 @@ export class Runtime extends Service implements SourceHost {
           if (followup) sessions.relay(followup.id, followup.text)
           // Notify the ticket's conversations whenever it ends via a pull request.
           const ended = event.type === 'ticket.ended' ? store.tickets.get(event.data.ticketId) : undefined
+          if (ended) this.reviews.endTicket(ended.id)
           if (ended && setup.configured()) {
             const request = store.triggers.get(ended.origin.triggerId)?.text ?? ''
             for (const message of pullEndNotices(ended, request, setup.deployment.repository, setup.deployment.github.baseUrl, setup.deployment.github.provider)) outbox.send(message)
@@ -229,6 +241,7 @@ export class Runtime extends Service implements SourceHost {
       const passes = this.passes = new Passes({ engine: { receive: trigger => engine.receive(trigger), evaluateDue }, effects,
         health: this.runtimeHealth, lifetime: this.lifetime, configured: () => setup.configured(), closing: () => this.closing() })
       this.sourceDeps = { store, engine, outbox, commands, sources, get ready() { return runtime.ready },
+        reviewPull: (ticketId, pull) => this.reviews.observe(ticketId, pull),
         get commandEnvironment() { return setup.sourceEnvironment },
         get deployment() { return setup.deployment }, configured: () => runtime.configured(),
         get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem }, get discordProblem() { return setup.discordProblem }, get wecomProblem() { return setup.wecomProblem }, receive: trigger => passes.receive(trigger),
@@ -309,6 +322,7 @@ export class Runtime extends Service implements SourceHost {
     this.sessions.install()
     this.startupStage = 'executor.install'
     this.executor.install()
+    this.reviews.install()
     this.startupStage = 'sessions.ensure'
     await this.sessions.ensure(this.masterId, this.machine.stateDir, 'dsh-superagent orchestrator', 'orchestrator')
     this.startupStage = 'settings.sync'
@@ -317,6 +331,7 @@ export class Runtime extends Service implements SourceHost {
     if (this.closing()) return
     this.startupStage = 'executor.resume'
     this.executor.resume()
+    this.reviews.resume()
     this.startupStage = 'passes.start'
     this.passes.start()
     this.startupStage = 'effects.start'
@@ -350,6 +365,7 @@ export class Runtime extends Service implements SourceHost {
       await Promise.allSettled([passes, this.effects.drain(), ...agents.map(agent => agent.whenIdle())])
       // The workers' jobs and subagents stop too: their ends would start worker turns without the tool limits released below.
       await this.executor.shutdown()
+      await this.reviews.shutdown()
       await this.memoryAttestation.idle()
       await this.memoryProjection.idle()
       this.executor.dispose()

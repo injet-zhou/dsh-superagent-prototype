@@ -57,7 +57,8 @@ export async function apply(ctx: Context, config: DeploymentConfig): Promise<voi
   const multi = configured.length > 0
   const managedSession = (id: string): boolean => {
     for (let depth = 0; id && depth < 16; depth++) {
-      if (applications?.isManaged(id) || repositories.some(({ runtime }) => runtime && (runtime.masterId === id || !!runtime.store.tickets.get(ticketOfSession(id) ?? '')))) return true
+      if (applications?.isManaged(id) || repositories.some(({ runtime }) => runtime && (runtime.masterId === id
+        || !!runtime.store.tickets.get(ticketOfSession(id) ?? '') || !!runtime.reviews.session(id)))) return true
       id = String(ctx.agents.get(id as SessionId)?.session.header.parentSession ?? '')
     }
     return false
