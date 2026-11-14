@@ -73,6 +73,7 @@ beforeEach(async () => {
   route('GET', 'users/1', { id: 1, username: 'alice', bot: false })
   route('GET', 'users/7', { id: 7, username: 'agent_bot', bot: false })
   route('GET', 'user', { username: 'agent_bot', id: 7, email: 'agent@example.test' })
+  route('GET', `${project}/repository/branches/main`, { commit: { id: 'a'.repeat(40) } })
   route('GET', 'projects/acme%2Fteam%2Fwidgets', { id: 42, path_with_namespace: 'acme/team/widgets', permissions: { project_access: { access_level: 30 }, group_access: null }, default_branch: 'main' })
   const probe = new Commands(() => deployment, {}, new AbortController().signal)
   deployment = await resolveDeployment(testMachine({ stateDir: directory }),
@@ -84,6 +85,42 @@ afterEach(async () => {
   rmSync(directory, { recursive: true, force: true })
 })
 const commands = () => new Commands(() => deployment, {}, new AbortController().signal)
+
+it.each(['main', 'release/v1'])('reads the current target branch %s even when the MR diff version does not change', async target => {
+  const oldBase = 'a'.repeat(40), newBase = 'b'.repeat(40)
+  const mr = { ...mergeRequest(1), target_branch: target, diff_refs: { start_sha: oldBase, base_sha: oldBase, head_sha: 'abc1234' } }
+  route('GET', `${project}/merge_requests/1`, mr)
+  const endpoint = `${project}/repository/branches/${encodeURIComponent(target)}`
+  route('GET', endpoint, { commit: { id: oldBase } })
+  const h = host()
+  try {
+    const before = await readPull(h.ctx, 1)
+    expect(before.base).toEqual({ ref: target, sha: oldBase })
+    route('GET', endpoint, { commit: { id: newBase } })
+    expect(await readPull(h.ctx, 1)).toMatchObject({
+      base: { ref: target, sha: newBase }, head: before.head, diff_refs: mr.diff_refs,
+    })
+    expect(requests.filter(item => item.url.pathname.endsWith(`/repository/branches/${encodeURIComponent(target)}`))).toHaveLength(2)
+  } finally { h.store.close() }
+})
+
+it('does not accept a cached diff base when the current target branch cannot be read', async () => {
+  route('GET', `${project}/merge_requests/1`, { ...mergeRequest(1), diff_refs: { start_sha: 'a'.repeat(40) } })
+  routes.delete(`GET ${project}/repository/branches/main`)
+  const h = host()
+  try { await expect(readPull(h.ctx, 1)).rejects.toMatchObject({ code: 404 }) }
+  finally { h.store.close() }
+})
+
+it('still observes a closed MR after its target branch has been deleted', async () => {
+  route('GET', `${project}/merge_requests/1`, { ...mergeRequest(1), state: 'closed' })
+  routes.delete(`GET ${project}/repository/branches/main`)
+  const h = host()
+  try {
+    expect(await readPull(h.ctx, 1)).toMatchObject({ state: 'closed' })
+    expect(requests.some(item => item.url.pathname.includes('/repository/branches/'))).toBe(false)
+  } finally { h.store.close() }
+})
 
 /** Runs Git's credential protocol with stdin, so the same helper used by private clones is exercised. */
 function credential(url: string): Promise<string> {

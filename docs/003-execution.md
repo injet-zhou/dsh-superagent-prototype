@@ -101,6 +101,12 @@ checks and end their turn without polling or waiting for reviewers, so a deploym
 that ends without a result, encounters a model error or exceeds 30 minutes records an incomplete review. Preparation and
 launch failures are tried up to three times. A restart requeues interrupted work in a fresh Session and checkout.
 
+Checkouts are temporary. Completed, superseded and failed attempts queue durable `review-cleanup` work, which waits for
+host preparation, the reviewer Session and its checks to exit before deleting the managed attempt directory. Cleanup runs
+even while processing is paused, retries failures, and resumes after a restart, including attempts left by older versions.
+Review records, results and Session history remain available. Checkout paths are derived from validated review identities;
+cleanup refuses paths redirected outside the managed directory.
+
 Results distinguish no actionable findings, issues and incomplete review, and retain evidence and checks actually run.
 The host rechecks the PR revision before accepting and publishing results. A push, base revision change, draft conversion,
 close or ended Ticket supersedes old work. Publication uses a marked PR conversation comment, supports the configured
@@ -108,6 +114,9 @@ GitHub/Gitea/GitLab account, and reconciles retries before posting. The result i
 to the original worker, because the repository Source skips comments from its own account. Ticket detail API responses
 include review records and reviewer Session IDs. If the PR is locked against comments, the result is retained and still
 delivered internally. Disabling processing or the repository Source holds queued launches and publication.
+
+For open GitLab MRs, revision checks read the target branch's current commit from the Branches API. MR diff-version refs
+are not used as the current base, so target-only updates invalidate previous reviews even when the MR diff is unchanged.
 
 Reviews are advisory: they do not grant new implementation authority, change `ready`, satisfy required approvals or enable
 merging. Formal approvals and an automatic repair loop are separate policies.

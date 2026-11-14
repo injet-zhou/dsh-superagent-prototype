@@ -1,7 +1,7 @@
 /** Independent PR review scheduling, isolated checkouts, result publication and worker feedback. */
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, realpath, rm } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { key, liveTicket, type Engine, type Ticket, type Trigger } from '../core/index.ts'
 import type { WorkerSlots } from '../executor/dsh.ts'
@@ -85,6 +85,7 @@ export function reviewText(run: ReviewRun): string {
  */
 export class Reviews {
   private readonly active = new Set<string>()
+  private readonly launching = new Set<string>()
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly settling = new Map<string, AbortController>()
   private readonly cleanup = new Set<Promise<void>>()
@@ -94,6 +95,7 @@ export class Reviews {
     host.effects.handle('review', ({ runId }) => this.launch(runId), {
       limit: () => host.paused() ? 0 : host.slots.launches(), retry: [5000, 60_000] })
     host.effects.handle('review-publish', ({ runId }) => this.publish(runId), { limit: () => host.paused() ? 0 : 1 })
+    host.effects.handle('review-cleanup', ({ sessionId }) => this.reclaim(sessionId))
   }
   list(ticketId?: string): ReviewRun[] {
     return this.host.store.keys(KV.reviews.run).map(name => this.host.store.get(name)!)
@@ -182,6 +184,7 @@ export class Reviews {
   resume(): void {
     this.host.store.atomic(() => {
       for (const run of this.list()) {
+        for (let attempt = 1; attempt <= run.attempt; attempt++) this.queueCleanup(`reviewer-${run.id}-${attempt}`)
         if (!this.owned(run)) { if (run.state !== 'stale') this.stale(run); continue }
         if (run.state === 'running') { run.state = 'queued'; this.save(run) }
         if (run.state === 'queued') this.host.effects.enqueue('review', run.id, { runId: run.id })
@@ -197,6 +200,7 @@ export class Reviews {
     const sessionId = `reviewer-${id}-${run.attempt + 1}`
     this.host.slots.reserve(sessionId, 'launch')
     this.active.add(sessionId)
+    this.launching.add(sessionId)
     try {
       run = { ...run, attempt: run.attempt + 1, sessionId, directory: join(this.host.stateDir, 'reviews', id, String(run.attempt + 1)) }
       this.host.store.atomic(() => { this.save(run!); this.host.store.set(KV.reviews.session(sessionId), id) })
@@ -227,8 +231,10 @@ export class Reviews {
       }
       this.complete(current, { verdict: 'incomplete', summary: 'The reviewer could not prepare or start its isolated checkout after three attempts.', findings: [], checks: [] })
     } finally {
+      this.launching.delete(sessionId)
       this.host.slots.free(sessionId)
       if (this.get(id)?.state !== 'running') this.stop(sessionId)
+      this.host.effects.kick()
     }
   }
   private incomplete(sessionId: string, summary: string): void {
@@ -273,7 +279,8 @@ export class Reviews {
   private stop(sessionId: string): void {
     clearTimeout(this.timers.get(sessionId)); this.timers.delete(sessionId)
     this.settling.get(sessionId)?.abort()
-    if (!this.active.has(sessionId) || this.stopping.has(sessionId)) return
+    if (!this.active.has(sessionId)) { this.queueCleanup(sessionId); return }
+    if (this.stopping.has(sessionId)) return
     this.stopping.add(sessionId)
     this.track((async () => {
       const agent = this.host.context.agents.get(sessionId as SessionId)
@@ -283,13 +290,51 @@ export class Reviews {
         try {
           agent?.cancel({ kind: 'user' }, { keepInbox: false })
           if (agent) await until(agent.whenIdle(), undefined, 10_000)
-        } finally { this.active.delete(sessionId); this.stopping.delete(sessionId); this.host.effects.kick() }
+        } finally {
+          this.active.delete(sessionId); this.stopping.delete(sessionId)
+          this.queueCleanup(sessionId); this.host.effects.kick()
+        }
       }
     })())
   }
+  private queueCleanup(sessionId: string): void {
+    if (!this.host.store.get(KV.reviews.cleaned(sessionId)) && !this.host.effects.pending('review-cleanup', sessionId)) {
+      this.host.effects.enqueue('review-cleanup', sessionId, { sessionId })
+    }
+  }
+  private async reclaim(sessionId: string): Promise<void> {
+    if (this.host.store.get(KV.reviews.cleaned(sessionId))) return
+    const match = /^reviewer-([a-f0-9]{32})-([1-9]\d*)$/.exec(sessionId)
+    const run = match && this.get(match[1]!)
+    const attempt = Number(match?.[2])
+    if (!run || run.id !== match?.[1] || !Number.isSafeInteger(attempt) || attempt > run.attempt) throw new Error('Invalid review checkout identity')
+    if (this.launching.has(sessionId) || this.active.has(sessionId)) throw new Later('Review checkout is still in use')
+    const agent = this.host.context.agents.get(sessionId as SessionId)
+    if (agent?.status === 'running' || runningJobs(this.host.context, sessionId).length) {
+      try { await stopBackground(this.host.context, sessionId, 'Reclaiming independent review checkout') }
+      finally {
+        agent?.cancel({ kind: 'user' }, { keepInbox: false })
+        if (agent) await until(agent.whenIdle(), undefined, 10_000)
+      }
+    }
+    if (agent && agent.status !== 'idle' || runningJobs(this.host.context, sessionId).length) throw new Later('Review processes have not exited')
+    const directory = join(this.host.stateDir, 'reviews', run.id, String(attempt))
+    const actual = await realpath(directory).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error
+    })
+    if (actual && actual !== join(await realpath(this.host.stateDir), 'reviews', run.id, String(attempt))) {
+      throw new Error('Review checkout is outside its managed directory')
+    }
+    await rm(directory, { recursive: true, force: true, maxRetries: 3 })
+    this.host.store.set(KV.reviews.cleaned(sessionId), true)
+  }
   async shutdown(): Promise<void> {
     for (const dispose of this.disposers.splice(0)) dispose()
-    for (const id of this.active) this.stop(id)
+    const ids = [...this.active]
+    for (const id of ids) this.stop(id)
     await Promise.all([...this.cleanup])
+    await Promise.all(ids.map(id => this.reclaim(id).catch(() => {
+      this.host.context.logger.warn('dsh-superagent: review checkout cleanup remains queued')
+    })))
   }
 }

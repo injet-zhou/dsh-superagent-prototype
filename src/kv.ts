@@ -23,7 +23,7 @@ export function family<V, A extends unknown[] = [string]>(prefix: string, format
 export const KV = {
   /** Independent PR reviews: immutable revision identity, latest observation and Session ownership. */
   reviews: { run: family<ReviewRun>('pr-review:'), latest: family<string, [number: number]>('pr-review-latest:'),
-    session: family<string>('pr-review-session:') },
+    session: family<string>('pr-review-session:'), cleaned: family<boolean>('pr-review-cleaned:') },
   /** Memory: immutable repository binding; private memory is never inherited by another context. */
   memory: { repository: record<string>('memory-repository'),
     usage: record<MemoryUsage>('memory-usage'),

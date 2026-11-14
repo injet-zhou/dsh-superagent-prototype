@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, expect, it, vi, type Mock } from 'vitest'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { CliError, Commands } from '../src/infra/commands.ts'
@@ -15,7 +15,7 @@ import { ReviewResultSchema } from '../src/app/review-types.ts'
 import { testDeployment } from './fixtures/deployment.ts'
 import { gitEnv } from './fixtures/git.ts'
 import { feishu, startRuntime, type Host } from './fixtures/host.ts'
-import { waitUntil } from './fixtures/async.ts'
+import { deferred, waitUntil } from './fixtures/async.ts'
 
 let h: Host
 let pull: Pull
@@ -42,7 +42,10 @@ function repositoryApi() {
     if (args[1]?.includes('/commits/')) return [[]]
     return { login: 'agent-bot', default_branch: 'master', permissions: { push: true } }
   })
-  vi.mocked(Commands.prototype.git).mockImplementation(async args => args[0] === 'show' ? 'one\ntwo\n' : '')
+  vi.mocked(Commands.prototype.git).mockImplementation(async args => {
+    if (args[0] === 'init') mkdirSync(args.at(-1)!, { recursive: true })
+    return args[0] === 'show' ? 'one\ntwo\n' : ''
+  })
 }
 async function ownedPull(trigger = feishu('1', '修复登录回归，保留现有接口。')) {
   const work = await h.acceptedTicket(trigger)
@@ -286,11 +289,22 @@ it('keeps automatic reviews queued while processing or the repository Source is 
 
 it('invalidates a reviewed base even when the head commit has not changed', async () => {
   const { review } = await startReview()
-  pull = { ...pull, base: { ref: 'release', sha: 'd'.repeat(40) } }
+  pull = { ...pull, base: { ...pull.base!, sha: 'd'.repeat(40) } }
   await observePull(source(), pull)
   await waitUntil(() => latest().state === 'running')
-  expect(latest()).toMatchObject({ base: 'd'.repeat(40), baseRef: 'release', head })
+  expect(latest()).toMatchObject({ base: 'd'.repeat(40), baseRef: 'main', head })
   expect(latest().sessionId).not.toBe(review.sessionId)
+})
+
+it('rejects an old result when only the target branch advances before the next poll', async () => {
+  const { review } = await startReview()
+  pull = { ...pull, base: { ...pull.base!, sha: 'd'.repeat(40) } }
+  await expect(h.runTool(review.sessionId!, 'orchestrator_review_report', result)).rejects.toThrow('no longer current')
+  expect(runs().find(run => run.id === review.id)!.state).toBe('stale')
+  expect(comments).toHaveLength(0)
+  await observePull(source(), pull)
+  await waitUntil(() => latest().state === 'running')
+  expect(latest()).toMatchObject({ base: 'd'.repeat(40), baseRef: 'main', head })
 })
 
 it('stops a reviewer and its background jobs as soon as the original Ticket ends', async () => {
@@ -301,6 +315,115 @@ it('stops a reviewer and its background jobs as soon as the original Ticket ends
   expect(h.jobs.service.kill).toHaveBeenCalledWith(job, review.sessionId, expect.any(String))
   expect(latest().state).toBe('stale')
   expect(comments).toHaveLength(0)
+})
+
+it('reclaims a completed checkout while retaining its result, Session record and worker directory', async () => {
+  const { ticket, review } = await startReview()
+  expect(existsSync(review.directory!)).toBe(true)
+  await h.runTool(review.sessionId!, 'orchestrator_review_report', result)
+  await h.runtime.idle()
+  await waitUntil(() => !existsSync(review.directory!))
+  expect(latest()).toMatchObject({ result, sessionId: review.sessionId })
+  expect(h.runtime.store.get(KV.reviews.cleaned(review.sessionId!))).toBe(true)
+  expect(h.agents.has(review.sessionId!)).toBe(true)
+  expect(existsSync(ticket.execution!.directory)).toBe(true)
+})
+
+it.each(['push', 'ticket end', 'model error', 'shutdown'] as const)('waits for checks to exit before reclaiming a checkout after %s', async reason => {
+  const { ticket, review } = await startReview()
+  const job = h.jobs.run(review.sessionId!, 'slow check')
+  h.jobs.service.kill.mockImplementation(() => 'requested')
+  let stopped: Promise<void> | undefined
+  try {
+    if (reason === 'push') {
+      pull = { ...pull, head: { ...pull.head, sha: nextHead } }
+      await observePull(source(), pull)
+    } else if (reason === 'ticket end') h.runtime.engine.stopTicket(ticket.id, 'panel')
+    else if (reason === 'model error') h.ctx.emit('agent/error', { agent: h.agents.get(review.sessionId!)!, error: new Error('Model unavailable') } as never)
+    else stopped = h.runtime.stop()
+    await waitUntil(() => h.jobs.service.kill.mock.calls.some(([id]) => id === job))
+    expect(existsSync(review.directory!)).toBe(true)
+  } finally { h.jobs.end(job, 'killed') }
+  await stopped
+  await waitUntil(() => !existsSync(review.directory!))
+})
+
+it('does not remove a checkout while its host fetch is still running', async () => {
+  const { ticket } = await ownedPull()
+  const started = deferred(), finish = deferred()
+  const git = vi.mocked(Commands.prototype.git), normal = git.getMockImplementation()!
+  git.mockImplementation(async (args, cwd) => {
+    const output = await normal(args, cwd)
+    if (args[0] === 'fetch') { started.resolve(); await finish.promise; expect(existsSync(cwd)).toBe(true) }
+    return output
+  })
+  claimPull(source(), ticket.id, pull)
+  await started.promise
+  const review = latest()
+  try {
+    pull = { ...pull, state: 'closed' }
+    await observePull(source(), pull)
+    await waitUntil(() => h.runtime.effects.pending('review-cleanup', review.sessionId))
+    expect(existsSync(review.directory!)).toBe(true)
+  } finally { finish.resolve() }
+  await h.runtime.idle()
+  h.runtime.store.db.prepare("UPDATE effect SET due = 0 WHERE kind = 'review-cleanup'").run()
+  await h.runtime.idle()
+  await waitUntil(() => !existsSync(review.directory!))
+})
+
+it('reclaims a failed preparation attempt before a fresh retry creates another checkout', async () => {
+  const { ticket } = await ownedPull()
+  const git = vi.mocked(Commands.prototype.git), normal = git.getMockImplementation()!
+  let failed = false
+  git.mockImplementation(async (args, cwd) => {
+    const output = await normal(args, cwd)
+    if (args[0] === 'fetch' && !failed) { failed = true; throw new Error('Fetch failed') }
+    return output
+  })
+  claimPull(source(), ticket.id, pull); await h.runtime.idle()
+  const first = latest()
+  expect(first.state).toBe('queued')
+  await waitUntil(() => h.runtime.store.get(KV.reviews.cleaned(first.sessionId!)) === true)
+  expect(existsSync(first.directory!)).toBe(false)
+  h.runtime.store.db.prepare("UPDATE effect SET due = 0 WHERE kind = 'review'").run()
+  await h.runtime.idle()
+  expect(latest()).toMatchObject({ state: 'running', attempt: 2 })
+  expect(existsSync(latest().directory!)).toBe(true)
+})
+
+it('recovers legacy completed-attempt directories on resume without repeating cleanup already recorded', async () => {
+  const { review } = await startReview()
+  await h.runTool(review.sessionId!, 'orchestrator_review_report', result); await h.runtime.idle()
+  await waitUntil(() => h.runtime.store.get(KV.reviews.cleaned(review.sessionId!)) === true)
+  const directories = [1, 2, 3].map(attempt => join(h.directory, 'reviews', review.id, String(attempt)))
+  for (const directory of directories) mkdirSync(directory, { recursive: true })
+  h.runtime.store.delete(KV.reviews.cleaned(review.sessionId!))
+  h.runtime.store.set(KV.reviews.run(review.id), { ...latest(), attempt: 3, sessionId: `reviewer-${review.id}-3`, directory: directories[2] })
+  h.runtime.reviews.resume(); await h.runtime.idle()
+  expect(directories.some(directory => existsSync(directory))).toBe(false)
+  expect(latest().result).toEqual(result)
+  h.runtime.reviews.resume()
+  expect(h.runtime.effects.pending('review-cleanup')).toBe(false)
+})
+
+it('refuses a checkout symlink escape and retries the durable cleanup after it is repaired', async () => {
+  const { review } = await startReview()
+  const outside = join(h.directory, 'protected')
+  renameSync(review.directory!, outside)
+  writeFileSync(join(outside, 'keep.txt'), 'Do not delete outside the managed checkout')
+  symlinkSync(outside, review.directory!, 'dir')
+  await h.runTool(review.sessionId!, 'orchestrator_review_report', result); await h.runtime.idle()
+  await waitUntil(() => h.runtime.reviews.activeIds().length === 0)
+  await h.runtime.idle()
+  expect(existsSync(join(outside, 'keep.txt'))).toBe(true)
+  expect(h.runtime.store.get(KV.reviews.cleaned(review.sessionId!))).toBeUndefined()
+  expect(h.runtime.effects.pending('review-cleanup', review.sessionId)).toBe(true)
+  unlinkSync(review.directory!); renameSync(outside, review.directory!)
+  h.runtime.store.db.prepare("UPDATE effect SET due = 0 WHERE kind = 'review-cleanup'").run()
+  await h.runtime.idle()
+  expect(existsSync(review.directory!)).toBe(false)
+  expect(h.runtime.store.get(KV.reviews.cleaned(review.sessionId!))).toBe(true)
 })
 
 it('bounds failed launch attempts and publishes an incomplete review instead of silently passing', async () => {

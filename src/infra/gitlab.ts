@@ -57,7 +57,7 @@ export async function gitlabApi(run: Run, deployment: Deployment, path: string, 
       ...pr ? { pull_request: { url: item.web_url }, merged: item.state === 'merged',
         head: { sha: item.sha ?? (item.diff_refs as Item | null)?.head_sha ?? '', ref: item.source_branch,
           repo: item.source_project_id === item.target_project_id ? { full_name: deployment.repository } : null },
-        base: { ref: item.target_branch, sha: (item.diff_refs as Item | null)?.start_sha },
+        base: { ref: item.target_branch },
         draft: item.draft === true || item.work_in_progress === true } : {} }
   }
   const note = async (item: Item, iid: string, pr: boolean, root?: number): Promise<Item> => {
@@ -102,7 +102,16 @@ export async function gitlabApi(run: Run, deployment: Deployment, path: string, 
       result = await request(`${endpoint}/notes`, false, writeFlags)
     } else if (section === 'reviews') result = [] // Approval rules vary by edition; never invent a review decision.
     else if (section === 'comments') result = kind === 'pulls' ? await discussions(iid!) : await notes(iid!, pr)
-    else result = await page(record.parse(await request(endpoint)), pr)
+    else {
+      const item = await page(record.parse(await request(endpoint)), pr)
+      if (pr && item.state === 'open') {
+        const base = z.object({ ref: z.string().min(1) }).parse(item.base)
+        const branch = z.object({ commit: z.object({ id: z.string().min(1) }) })
+          .parse(await request(`repository/branches/${encodeURIComponent(base.ref)}`))
+        item.base = { ...base, sha: branch.commit.id }
+      }
+      result = item
+    }
   } else if (resource === 'notifications') {
     const info = z.object({ id: z.number() }).parse(await request(''))
     result = (await listGlobalTodos()).filter(item => item.target_type === 'Issue' || item.target_type === 'MergeRequest').map(item => ({
