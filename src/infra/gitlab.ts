@@ -57,7 +57,8 @@ export async function gitlabApi(run: Run, deployment: Deployment, path: string, 
       ...pr ? { pull_request: { url: item.web_url }, merged: item.state === 'merged',
         head: { sha: item.sha ?? (item.diff_refs as Item | null)?.head_sha ?? '', ref: item.source_branch,
           repo: item.source_project_id === item.target_project_id ? { full_name: deployment.repository } : null },
-        base: { ref: item.target_branch } } : {} }
+        base: { ref: item.target_branch, sha: (item.diff_refs as Item | null)?.start_sha },
+        draft: item.draft === true || item.work_in_progress === true } : {} }
   }
   const note = async (item: Item, iid: string, pr: boolean, root?: number): Promise<Item> => {
     const position = item.position && typeof item.position === 'object' ? record.parse(item.position) : undefined

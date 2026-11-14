@@ -10,6 +10,7 @@ Decide every person's message on this ticket's own threads yourself: do a reques
 Retain the assignment’s original source trigger when work moves to GitHub.
 Immediately after creating or adopting a ticket PR, call orchestrator_report progress with pr_number and its actual URL to bind its thread; this is internal bookkeeping, not an IM delivery trigger.
 Continue checks and review silently until ready.
+The host schedules independent PR reviews; do not poll or wait for a reviewer, and end your turn when your own checks and work are finished.
 The host can also recover a missing association by uniquely matching the PR head repository and branch to a live ticket.
 Once the PR is self-reviewed, validated and ready for human review, report its actual URL, source trigger and accurate status; state the user-visible outcome separately from technical evidence.
 Do not wait for approval or merge to report an available reviewed PR.

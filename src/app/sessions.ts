@@ -24,6 +24,7 @@ import type { MemoryService } from './memory/service.ts'
 
 /** Host dependencies used by `Sessions`. */
 export interface SessionsHost {
+  reviewer?(sessionId: string): { prompt: string; active(): boolean; tools: Tool[] } | undefined
   authorized?(ticket: Ticket): boolean
   /** DSH Cordis context: sessions, agents, persistence, and their events. */
   readonly context: Context
@@ -51,7 +52,7 @@ export interface SessionsHost {
 interface SessionBinding { disposers: (() => void)[]; memoryTools?: (() => void)[]; scope?: Context; skills?: { revision: number; dispose: () => void }; subagent?: true }
 
 /** The agent presets Executor Sessions and the main Session are created with, which the bundle's patch defines. */
-export const WORKER_PRESET = 'dsh-superagent-worker', ROUTER_PRESET = 'dsh-superagent-router'
+export const WORKER_PRESET = 'dsh-superagent-worker', ROUTER_PRESET = 'dsh-superagent-router', REVIEWER_PRESET = 'dsh-superagent-reviewer'
 declare module '@deepseek-ai/cordis' {
   interface Events {
     /** DSH's agent preset registry selected `agentPreset` for a Session. */
@@ -131,7 +132,8 @@ export class Sessions {
     ctx.inject(['agentPresets'], child => {
       child.on('agent-preset/selected', (sessionId, preset) => {
         const ticketId = ticketOfSession(sessionId), agent = ctx.agents.get(sessionId as SessionId)
-        const ours = sessionId === this.host.masterId ? ROUTER_PRESET : ticketId && this.host.store.tickets.get(ticketId) ? WORKER_PRESET : undefined
+        const ours = sessionId === this.host.masterId ? ROUTER_PRESET : this.host.reviewer?.(sessionId) ? REVIEWER_PRESET
+          : ticketId && this.host.store.tickets.get(ticketId) ? WORKER_PRESET : undefined
         if (!ours || preset === ours || !agent) return
         const presets = child.get('agentPresets') as { select(agent: Agent, preset: string): Promise<string> }
         presets.select(agent, ours).catch(() => {})
@@ -142,14 +144,14 @@ export class Sessions {
     })
   }
   /** Resolves or creates session `id` in workspace `cwd`, initializes its role model, decorates it with prompts/skills/tools, sets `danger-full-access` permissions, and renames it to `title`. */
-  async ensure(id: string, cwd: string, title: string, role: 'orchestrator' | 'worker'): Promise<Agent> {
+  async ensure(id: string, cwd: string, title: string, role: 'orchestrator' | 'worker' | 'reviewer'): Promise<Agent> {
     const ctx = this.ctx
     let result = await ctx.sessionController.resolveAgent(id as SessionId)
     if ('error' in result && result.error.code === 'session/not-found') {
       const workspace = await ctx.workspaceRegistry.create(cwd)
       // A Session keeps the preset it was created with, one of the bundle's own (cordis.patch.yml).
       await ctx.sessionController.create({ sessionId: id as SessionId, workspaceId: workspace.id,
-        agentPreset: role === 'worker' ? WORKER_PRESET : ROUTER_PRESET })
+        agentPreset: role === 'reviewer' ? REVIEWER_PRESET : role === 'worker' ? WORKER_PRESET : ROUTER_PRESET })
       result = await ctx.sessionController.resolveAgent(id as SessionId)
     }
     if ('error' in result) throw result.error
@@ -239,6 +241,22 @@ export class Sessions {
   private async decorate(agent: Agent): Promise<void> {
     if (this.bindings.has(agent)) return
     const host = this.host
+    const review = host.reviewer?.(agent.id)
+    if (review) {
+      const binding: SessionBinding = { disposers: [] }
+      this.bindings.set(agent, binding)
+      this.retryHealth.restore(agent.id, agent.session.snapshotEvents())
+      binding.disposers.push(agent.ctx.systemPrompt.section({ name: 'dsh-superagent-reviewer', order: 9999,
+        interpolate: false, complete: true, text: () => review.prompt }))
+      this.scopeEnvironment(agent, binding)
+      const register = this.registerTool(agent, binding)
+      for (const tool of review.tools) register(tool.name, tool.description, tool.schema, tool.execute)
+      const allow = ['read', 'read_image', 'glob', 'grep', 'bash', 'pwsh', 'job_output', 'job_list', 'job_kill']
+        .filter(name => agent.ctx.tools.get(name, scopeParentOf(agent)))
+      binding.disposers.push(agent.ctx.tools.restrict({ allow }), agent.ctx.tools.guard(() =>
+        review.active() ? undefined : 'This independent review ended or its PR revision is obsolete'))
+      return
+    }
     const master = agent.id === host.masterId
     const ticket = master ? undefined : this.ticketOf(agent)
     if (!master && !ticket) { this.limitSubagent(agent); return }

@@ -8,6 +8,7 @@ import type { SourceRegistry } from './registry.ts'
 import type { SetupProblem } from '../setup.ts'
 import type { Family, Key } from '../kv.ts'
 import { fill } from '../infra/text.ts'
+import type { Pull } from './github-pull.ts'
 
 /** Fixed English health templates (`{name}` placeholders); the panel localizes each `code` in the interface language. */
 export const HEALTH_TEXT = {
@@ -64,6 +65,8 @@ export function mountSource<C extends Record<string, unknown>>(ctx: Context & { 
 export interface ThreadDescription { label?: string; url?: string; facts?: Record<string, ThreadFact | null> }
 /** Application capabilities exposed to a Source kind for reading state, ingesting triggers, managing threads/tickets, and reporting health. */
 export interface SourceContext {
+  /** Observe an owned PR revision for independent review; an unowned observation only invalidates stale runs. */
+  reviewPull?(ticketId: string | undefined, pull: Pull): void
   readonly deployment: Deployment
   readonly commands: Commands
   /** Sanitized environment for long-lived native Source subprocesses, not a Worker shell environment. */

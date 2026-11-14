@@ -6,6 +6,7 @@ import type { Store } from '../store.ts'
 import { channelLink, decisionView, newestFirst, page, snapshot, threadSummary, ticketLine, type Snapshot,
   type ViewHost } from './records.ts'
 import { markdown, preview } from './text.ts'
+import { KV } from '../../kv.ts'
 
 export type BasisFact =
   | { name: 'addressed'; value: 'mention' | 'direct' } | { name: 'followup' } | { name: 'admission'; value: AdmissionCell } | { name: 'observation' }
@@ -51,7 +52,8 @@ export function ticketRow(view: Snapshot, ticket: Ticket) {
 export interface ExecutorLoad { running: number; queued: number }
 export function executorLoad(store: Store, running: number): ExecutorLoad {
   const queued = (ticket: Ticket) => { const stage = ticketStage(ticket); return stage.stage === 'working' && stage.action === 'queued' }
-  return { running, queued: store.tickets.open().filter(queued).length }
+  return { running, queued: store.tickets.open().filter(queued).length
+    + store.keys(KV.reviews.run).filter(name => store.get(name)?.state === 'queued').length }
 }
 export function ticketDetail(host: ViewHost, id: string) {
   const { store } = host
@@ -71,7 +73,9 @@ export function ticketDetail(host: ViewHost, id: string) {
   }
   // Pass `human = false` for bot-originated mandates so the Source kind still labels the actor as a bot if removed from the policy list.
   const human = ticket.mandate.basis.via !== 'bot'
+  const reviews = store.keys(KV.reviews.run).map(name => store.get(name)!).filter(run => run.ticketId === id)
   return { ...ticketLine(view, ticket), mandate: { ...ticket.mandate, actor: view.actor(ticket.mandate.actor, human) },
+    ...reviews.length ? { reviews } : {},
     basis: basisFacts(ticket.mandate.basis, view.rule), paused: store.settings().paused,
     channels: ticket.channels.map(channel => channelLink(view, channel)),
     decision: decision ? decisionView(view, decision) : undefined,

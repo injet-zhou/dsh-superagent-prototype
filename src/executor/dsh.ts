@@ -57,6 +57,8 @@ export function transient(error: unknown): boolean {
 const ticketWorktreeName = (name: string, id: string): string => `${WorktreeNameSchema.parse(name)}-${id.slice(0, 12)}`
 /** Host dependencies used by `DshExecutor`. */
 export interface ExecutorHost {
+  /** Independent reviewers consume the same execution slots as ticket workers. */
+  additionalRunning?(): string[]
   /** DSH Cordis context: agents and their events, and the subprocess service used to run prepare commands. */
   readonly context: Context
   /** Where the Executor reports what happened to Assignments and Inputs. */
@@ -215,7 +217,7 @@ export class WorkerSlots {
 export class DshExecutor implements Executor {
   private readonly turnEnds = new Map<string, SessionEvent<'turn/end'>>()
   private readonly disposers: (() => void)[] = []
-  private readonly slots: WorkerSlots
+  readonly slots: WorkerSlots
   /** Transient failure counts tried so far: keyed by `assignment.id` for worker turns and `launch:<assignment.id>` for launches. */
   private readonly transient = new Map<string, number>()
   /** Assignment IDs currently waiting on a transient-failure backoff timer before resuming their worker turn. */
@@ -235,7 +237,7 @@ export class DshExecutor implements Executor {
   private readonly timers = new Set<ReturnType<typeof setTimeout>>()
   /** Registers the `launch` and `delivery` effect handlers; both are held (concurrency limit 0) while processing is paused. */
   constructor(private readonly host: ExecutorHost) {
-    this.slots = new WorkerSlots(() => host.store.tickets.open().filter(ticket => this.running(ticket)).map(ticket => ticket.id),
+    this.slots = new WorkerSlots(() => this.activeTicketIds(),
       () => host.store.settings().executor.maxWorkers, host.slots ? 0 : 1, host.slots)
     // Each launch reserves a worker slot so launches run concurrently while slots are free.
     host.effects.handle('launch', payload => this.launchQueued(payload), { limit: () => host.paused() ? 0 : this.slots.launches(),
@@ -413,9 +415,11 @@ export class DshExecutor implements Executor {
     }
     await until(stop(), undefined, SHUTDOWN_STOP_MS)
   }
-  /** Number of open tickets whose worker holds a worker slot: its turn runs, or its shell jobs or subagents still run after its turn ended. */
-  activeCount(tickets: readonly Ticket[] = this.host.store.tickets.open()): number { return tickets.filter(ticket => this.running(ticket)).length }
-  activeTicketIds(): string[] { return this.host.store.tickets.open().filter(ticket => this.running(ticket)).map(ticket => ticket.id) }
+  /** Worker slots held by active ticket work (including background work) and independent reviews. */
+  activeCount(tickets: readonly Ticket[] = this.host.store.tickets.open()): number { return this.activeTicketIds(tickets).length }
+  activeTicketIds(tickets: readonly Ticket[] = this.host.store.tickets.open()): string[] {
+    return [...tickets.filter(ticket => this.running(ticket)).map(ticket => ticket.id), ...this.host.additionalRunning?.() ?? []]
+  }
   /** Whether a ticket's worker holds a worker slot: its turn runs, or its shell jobs or subagents do after its turn ended. */
   private running(ticket: Ticket): boolean {
     if (!runningAssignment(ticket)) return false

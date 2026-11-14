@@ -170,6 +170,8 @@ const TEXT = {
   'health.memory': ['仓库记忆', 'Repository memory'],
   'health.memory-capture': ['记忆提取', 'Memory capture'],
   'health.memory-consolidate': ['记忆整理', 'Memory consolidation'],
+  'health.review': ['PR 自动审查', 'Independent PR review'],
+  'health.review-publish': ['审查结果发布', 'Review publication'],
   'health.evals': ['未完成的评估', 'Unavailable Evals'],
   none: ['暂无。', 'None.'],
   openSession: ['打开 Session', 'Open Session'],
