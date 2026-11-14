@@ -190,6 +190,7 @@ export class Runtime extends Service implements SourceHost {
         repliedTo: trigger => repliedTo({ store, sources }, trigger), ...options.slots ? { slots: options.slots } : {},
         ...machine.scopedEnvironment ? { executionEnvironment: () => setup.executionEnvironment } : {} })
       this.reviews = new Reviews({ context: ctx, store, effects, sessions, commands, slots: this.executor.slots, stateDir: machine.stateDir,
+        repliedTo: trigger => repliedTo({ store, sources }, trigger),
         get github() { return runtime.context({ kind: 'github', health: ['github'] }) }, get engine() { return runtime.engine },
         lifetime: this.lifetime, paused: () => this.paused() || !sources.instance('github')?.enabled, closing: () => this.closing(),
         authorized: ticket => ticket.mandate.basis.via !== 'application' || (!!allowedSender(store.settings(), ticket.mandate.actor)

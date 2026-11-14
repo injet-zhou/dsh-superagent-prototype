@@ -3,7 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { key, liveTicket, type Engine, type Ticket } from '../core/index.ts'
+import { key, liveTicket, type Engine, type Ticket, type Trigger } from '../core/index.ts'
 import type { WorkerSlots } from '../executor/dsh.ts'
 import { runningJobs, stopBackground, until, untilQuiet } from '../executor/background.ts'
 import type { Commands } from '../infra/commands.ts'
@@ -37,6 +37,7 @@ export interface ReviewsHost {
   paused(): boolean
   closing(): boolean
   authorized?(ticket: Ticket): boolean
+  repliedTo(trigger: Trigger): Trigger | undefined
 }
 
 /** Fetch only committed repository state into an independent repository, never copying a worker's files or git config. */
@@ -48,15 +49,25 @@ export async function prepareReview(commands: Commands, run: Pick<ReviewRun, 'ba
   await commands.git(['checkout', '--detach', run.head], run.directory)
 }
 
-/** Only original request data and human follow-ups are offered; routing notes, reports, transcripts and memory stay out. */
-export function reviewRequests(store: Pick<Store, 'triggers'>, ticket: Ticket) {
+/** Include original requests, human follow-ups and their human reply context, without Session history or reports. */
+export function reviewRequests(store: Pick<Store, 'triggers'>, ticket: Ticket, repliedTo: ReviewsHost['repliedTo']) {
   const ids = [...new Set([...ticket.origin.triggerIds, ticket.origin.triggerId, ...ticket.inputs.flatMap(input =>
     input.kind === 'trigger' && input.human && !input.context ? [input.triggerId] : [])])]
-  return ids.flatMap(id => {
+  const pending = ids.flatMap(id => {
     const trigger = store.triggers.get(id)
-    return trigger && (trigger.human || id === ticket.origin.triggerId)
-      ? [{ id, at: trigger.at, text: trigger.text }] : []
+    return trigger && (trigger.human || id === ticket.origin.triggerId) ? [trigger] : []
   })
+  const requests = new Map<string, { id: string; at: string; text: string; context?: true; replies_to?: string }>(pending
+    .map(trigger => [trigger.id, { id: trigger.id, at: trigger.at, text: trigger.text }]))
+  for (let index = 0; index < pending.length; index++) {
+    const trigger = pending[index]!, parent = repliedTo(trigger)
+    if (!parent?.human) continue
+    requests.get(trigger.id)!.replies_to = parent.id
+    if (requests.has(parent.id)) continue
+    requests.set(parent.id, { id: parent.id, at: parent.at, text: parent.text, context: true })
+    pending.push(parent)
+  }
+  return [...requests.values()]
 }
 
 export function reviewText(run: ReviewRun): string {
@@ -202,7 +213,7 @@ export class Reviews {
       this.timers.set(sessionId, setTimeout(() => this.incomplete(sessionId, 'The independent review exceeded its 30-minute time limit.'), REVIEW_LIMIT_MS))
       this.timers.get(sessionId)!.unref?.()
       const request = JSON.stringify({ review_id: id, pr: run.number, base: run.base, head: run.head,
-        requests: reviewRequests(this.host.store, ticket) })
+        requests: reviewRequests(this.host.store, ticket, trigger => this.host.repliedTo(trigger)) })
       await this.host.sessions.prompt(agent.id, `review:${id}:${run.attempt}`, request, 'queue', () => {
         if (this.host.paused() || this.get(id)?.state !== 'running' || !this.owned(run!)) throw new Later('Review authorization changed')
       })

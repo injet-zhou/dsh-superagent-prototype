@@ -44,16 +44,16 @@ function repositoryApi() {
   })
   vi.mocked(Commands.prototype.git).mockImplementation(async args => args[0] === 'show' ? 'one\ntwo\n' : '')
 }
-async function ownedPull() {
-  const work = await h.acceptedTicket(feishu('1', '修复登录回归，保留现有接口。'))
+async function ownedPull(trigger = feishu('1', '修复登录回归，保留现有接口。')) {
+  const work = await h.acceptedTicket(trigger)
   pull = { number: 9, state: 'open', draft: false, html_url: 'https://github.com/acme/widgets/pull/9',
     user: { login: 'agent-bot' }, head: { sha: head, ref: `agent/${work.ticket.execution!.name}`, repo: { full_name: 'acme/widgets' } },
     base: { sha: base, ref: 'main' } }
   repositoryApi()
   return work
 }
-async function startReview() {
-  const work = await ownedPull()
+async function startReview(trigger?: ReturnType<typeof feishu>) {
+  const work = await ownedPull(trigger)
   await h.runTool(work.sessionId, 'orchestrator_report', { state: 'progress', summary: 'Worker self-review claims everything is correct.', pr_number: 9 })
   await h.runtime.idle()
   return { ...work, review: latest() }
@@ -88,6 +88,49 @@ it('automatically starts one fresh root reviewer with only original requirements
   expect(section.text()).toContain('independent code reviewer')
   expect(section.text()).not.toContain('repository experience')
   expect(h.runtime.executor.activeCount()).toBe(2)
+})
+
+it('includes the full referenced human reply chain even when those messages are not Ticket inputs', async () => {
+  const original = feishu('1', `${'需求背景。'.repeat(100)}最后一个要求：保留现有接口。`, { mentions: [] })
+  const parent = feishu('2', '第二个方案是只改登录状态判断。', { mentions: [], root_id: 'om_1', parent_id: 'om_1' })
+  h.runtime.store.triggers.save(original); h.runtime.store.triggers.save(parent)
+  const { review, ticket } = await startReview(feishu('3', '修这个，用第二个方案。', { root_id: 'om_1', parent_id: 'om_2' }))
+  expect(ticket.origin.triggerIds).not.toContain(parent.id)
+  expect(ticket.inputs.some(input => input.kind === 'trigger' && input.triggerId === original.id)).toBe(false)
+  expect(h.relays(review.sessionId!)[0]!.requests).toEqual([
+    { id: ticket.origin.triggerId, at: expect.any(String), text: '修这个，用第二个方案。', replies_to: parent.id },
+    { id: parent.id, at: parent.at, text: parent.text, context: true, replies_to: original.id },
+    { id: original.id, at: original.at, text: original.text, context: true },
+  ])
+})
+
+it('preserves human follow-up reply links and deduplicates shared parents and original requests', async () => {
+  const { ticket, sessionId } = await ownedPull()
+  const parent = feishu('2', '方案一：重写接口。方案二：保留接口，只修状态判断。', { mentions: [], root_id: 'om_1', parent_id: 'om_1' })
+  h.runtime.store.triggers.save(parent)
+  const followup = feishu('3', '用第二个方案。', { mentions: [], root_id: 'om_1', parent_id: 'om_2' })
+  const confirmation = feishu('4', '就按这个来。', { mentions: [], root_id: 'om_1', parent_id: 'om_2' })
+  h.runtime.receive(followup); h.runtime.receive(confirmation)
+  await h.runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: 'Worker claims the chosen plan is implemented.', pr_number: 9 })
+  await h.runtime.idle()
+  const packet = h.relays(latest().sessionId!)[0]!
+  expect(packet.requests).toEqual([
+    { id: ticket.origin.triggerId, at: expect.any(String), text: '修复登录回归，保留现有接口。' },
+    { id: followup.id, at: followup.at, text: followup.text, replies_to: parent.id },
+    { id: confirmation.id, at: confirmation.at, text: confirmation.text, replies_to: parent.id },
+    { id: parent.id, at: parent.at, text: parent.text, context: true, replies_to: ticket.origin.triggerId },
+  ])
+  expect(JSON.stringify(packet)).not.toContain('Worker claims')
+})
+
+it('excludes bot or agent reply context and unrelated human conversations', async () => {
+  const parent = { ...feishu('1', 'Worker implementation report must not enter the review context.'), human: false }
+  const unrelated = feishu('2', 'An unrelated private discussion.')
+  h.runtime.store.triggers.save(parent); h.runtime.store.triggers.save(unrelated)
+  const { review, ticket } = await startReview(feishu('3', '修复登录回归。', { parent_id: 'om_1' }))
+  expect(h.relays(review.sessionId!)[0]!.requests).toEqual([
+    { id: ticket.origin.triggerId, at: expect.any(String), text: '修复登录回归。' },
+  ])
 })
 
 it('recovers a missing worker PR report from repository polling and waits for Draft PRs to become reviewable', async () => {

@@ -88,7 +88,9 @@ other authors and forks are excluded. The provider must supply the base and head
 Each `ReviewRun` belongs to the original Ticket, without creating another Ticket or claiming its PR. A fresh root Session
 uses `dsh-superagent-reviewer`, the configured Worker model, and a separate checkout under `<stateDir>/reviews`. The host
 fetches committed state from the configured remote, excluding worker dirt, untracked files and local git configuration.
-The complete reviewer prompt receives original requests and human follow-ups; it does not inherit Worker/router history,
+The complete reviewer prompt receives original requests, human follow-ups and the full human messages they reply to,
+including reply chains. Referenced messages are deduplicated and marked as context, with reply links preserved.
+It does not inherit Worker/router history,
 reports, skills or repository memory. Applicable `AGENTS.md` instructions are read explicitly from the base commit, so a
 PR cannot replace the review procedure through changed instructions. The preset exposes reads, search, local shell checks
 and the dedicated `orchestrator_review_report` tool, without editing or delegation tools. Shell access and directories
