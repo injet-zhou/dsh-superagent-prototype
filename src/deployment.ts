@@ -60,7 +60,10 @@ export const GithubAccountsSchema = z.object({
   repository: z.string().trim().regex(/^([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+)?$/, 'namespace/name').default(''),
   cli: z.string().trim().default(''),
 })
-export const DiscordBotSchema = z.object({ tokenFile: z.string().trim().refine(value => !value || isAbsolute(value), 'Expected an absolute token file path').default('') })
+export const DiscordBotSchema = z.object({
+  tokenFile: z.string().trim().refine(value => !value || isAbsolute(value), 'Expected an absolute token file path').default(''),
+  proxyUrl: z.string().trim().refine(value => !value || z.url({ protocol: /^https?$/ }).safeParse(value).success, 'Expected an http:// or https:// proxy URL').default(''),
+})
 export const FeishuBotSchema = z.object({ cli: z.string().trim().default('') })
 /** A WeCom robot's private secret file, and the WebSocket address of a private deployment. */
 export const WecomBotSchema = z.object({
@@ -75,7 +78,7 @@ export interface Deployment extends Machine {
   /** Repository account. The legacy `github` key is retained for saved settings and Source identifiers. */
   github: { cli: string; login: string; noreply: string; provider?: 'github' | 'gitea' | 'gitlab'; baseUrl?: string }
   feishu?: FeishuBot
-  discord?: { tokenFile: string; botId: string; name: string }
+  discord?: { tokenFile: string; botId: string; name: string; proxyUrl?: string }
   wecom?: WecomBot
 }
 export interface FeishuBot { cli: string; appId: string; brand: 'feishu' | 'lark'; botId: string; name: string }
@@ -209,13 +212,15 @@ export async function resolveFeishuBot(machine: Machine, feishu: unknown, probe:
 
 /** Reads a dedicated bot token file; Discord rejects user tokens because requests always use Bot authentication. */
 export async function resolveDiscordBot(config: unknown, signal: AbortSignal): Promise<Deployment['discord']> {
-  const { tokenFile } = DiscordBotSchema.parse(config ?? {})
+  const { tokenFile, proxyUrl } = DiscordBotSchema.parse(config ?? {})
   if (!tokenFile) return undefined
+  const api = new DiscordApi(tokenFile)
   try {
-    const user = await new DiscordApi(tokenFile).request(DiscordUser, 'users/@me', signal)
+    const user = await api.request(DiscordUser, 'users/@me', signal, undefined, { proxyUrl })
     if (!user.bot) throw new Error('Discord account is not a bot')
-    return { tokenFile, botId: user.id, name: user.username }
+    return { tokenFile, botId: user.id, name: user.username, ...(proxyUrl ? { proxyUrl } : {}) }
   } catch (error) { throw new SetupError('discordBotFailed', { output: reason(error) }) }
+  finally { await api.close() }
 }
 
 /** Verifies the private secret file and records the robot it names; the secret itself never enters the resolved deployment. */

@@ -264,6 +264,7 @@ export const discordKind: SourceKind<DiscordConfig> = {
   schema: DiscordConfigSchema, health: [SOURCE],
   fields: [
     { key: 'tokenFile', type: 'text', label: { zh: 'Bot Token 文件', en: 'Bot token file' }, hint: { zh: '私有 JSON 文件的绝对路径，内容为 {"token":"…"}；不要在此填写 Token。保存时校验机器人身份。', en: 'Absolute path of a private JSON file containing {"token":"…"}; enter the path, never the token. Saving verifies the bot identity.' } },
+    { key: 'proxyUrl', type: 'text', label: { zh: '代理地址（可选）', en: 'Proxy URL (optional)' }, hint: { zh: '支持 HTTP / HTTPS 代理，例如 http://127.0.0.1:7890；留空使用默认网络连接。', en: 'HTTP or HTTPS proxy, for example http://127.0.0.1:7890. Leave blank to use the default connection.' } },
     { key: 'channels', type: 'rows', label: { zh: '接收的频道和线程', en: 'Channels and threads' }, hint: { zh: '启用开发者模式后复制频道或线程 ID；首次只接收启用后的新消息，线程需要单独添加。', en: 'Copy channel/thread IDs with Developer Mode enabled. First activation receives new messages only; add threads separately.' }, columns: [
       { key: 'channelId', type: 'text', pattern: '[0-9]{1,20}', label: { zh: '频道 / 线程 ID', en: 'Channel / thread ID' } },
       { key: 'listen', type: 'select', label: { zh: '接收', en: 'Receive' }, options: [{ value: 'mentions', label: { zh: '仅 @', en: '@ only' } }, { value: 'all', label: { zh: '全部消息', en: 'All messages' } }] },

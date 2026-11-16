@@ -2,6 +2,7 @@
 import { readFile, stat } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
+import { ProxyAgent } from 'undici'
 import { z } from 'zod'
 import { CliError } from './errors.ts'
 
@@ -28,13 +29,15 @@ const REACTION_PATH = /^channels\/[0-9]{1,20}\/messages\/[0-9]{1,20}\/reactions\
 export class DiscordApi {
   private queue: Promise<unknown> = Promise.resolve()
   private resumeAt = 0
+  private proxies = new Map<string, ProxyAgent>()
   constructor(readonly tokenFile: string) {}
   async request<T>(schema: z.ZodType<T>, path: string, signal: AbortSignal, body?: unknown,
-    method: 'GET' | 'POST' | 'PUT' = body === undefined ? 'GET' : 'POST'): Promise<T> {
+    options: { method?: 'GET' | 'POST' | 'PUT'; proxyUrl?: string } = {}): Promise<T> {
+    const method = options.method ?? (body === undefined ? 'GET' : 'POST')
     // A body-carrying message endpoint is the only POST; adding a reaction is the only PUT this Source needs.
     if (!(method === 'PUT' ? REACTION_PATH : CHANNEL_PATH).test(path)) throw new Error('Unsupported Discord API path')
     const bounded = AbortSignal.any([signal, AbortSignal.timeout(30_000)])
-    const result = this.queue.then(() => this.perform(schema, path, bounded, body, method))
+    const result = this.queue.then(() => this.perform(schema, path, bounded, body, method, options.proxyUrl))
     this.queue = result.catch(() => {})
     return new Promise<T>((resolve, reject) => {
       const stop = () => reject(bounded.reason)
@@ -43,18 +46,19 @@ export class DiscordApi {
       result.then(resolve, reject).finally(() => bounded.removeEventListener('abort', stop))
     })
   }
+  async close(): Promise<void> { await Promise.all([...this.proxies.values()].map(proxy => proxy.close())) }
   /**
    * Adds one emoji reaction as the bot. Discord answers 204 without a body and treats adding the same reaction again as success.
    * @throws CliError with the HTTP status when Discord refuses the message or the bot's permissions.
    */
-  async react(channel: string, message: string, emoji: string, signal: AbortSignal): Promise<void> {
+  async react(channel: string, message: string, emoji: string, signal: AbortSignal, proxyUrl?: string): Promise<void> {
     // A dot-only segment would normalize the reaction URL back onto the message endpoint.
     if (!emoji || /^\.{1,2}$/.test(emoji)) throw new Error('Invalid Discord reaction emoji')
     const path = `channels/${Snowflake.parse(channel)}/messages/${Snowflake.parse(message)}/reactions/${encodeURIComponent(emoji)}/@me`
-    await this.request(z.void(), path, signal, undefined, 'PUT')
+    await this.request(z.void(), path, signal, undefined, { method: 'PUT', proxyUrl })
   }
   private async perform<T>(schema: z.ZodType<T>, path: string, signal: AbortSignal, body: unknown,
-    method: 'GET' | 'POST' | 'PUT'): Promise<T> {
+    method: 'GET' | 'POST' | 'PUT', proxyUrl?: string): Promise<T> {
     signal.throwIfAborted()
     if (!isAbsolute(this.tokenFile)) throw new Error('Discord token file must be an absolute path')
     let token: string
@@ -72,10 +76,15 @@ export class DiscordApi {
       if (this.resumeAt > Date.now()) await delay(this.resumeAt - Date.now(), undefined, { signal })
       let response: Response
       try {
+        let dispatcher: ProxyAgent | undefined
+        if (proxyUrl) {
+          dispatcher = this.proxies.get(proxyUrl)
+          if (!dispatcher) { dispatcher = new ProxyAgent(proxyUrl); this.proxies.set(proxyUrl, dispatcher) }
+        }
         response = await fetch(`https://discord.com/api/v10/${path}`, {
           method, redirect: 'error',
           headers: { Authorization: `Bot ${token}`, 'Content-Type': 'application/json', 'User-Agent': 'DiscordBot (https://github.com/injet-zhou/dsh-superagent-prototype, 0.1.0)' },
-          ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal,
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal, ...(dispatcher ? { dispatcher } : {}),
         })
       } catch {
         signal.throwIfAborted()

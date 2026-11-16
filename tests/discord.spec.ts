@@ -1,7 +1,9 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { ProxyAgent } from 'undici'
 import { z } from 'zod'
 import { Engine, type Candidate, type OutboundMessage, type Ticket, type Trigger } from '../src/core/index.ts'
 import { SetupError } from '../src/setup.ts'
@@ -25,6 +27,7 @@ import { setupChanged } from '../src/app/setup.ts'
 import { testDeployment } from './fixtures/deployment.ts'
 
 const BOT = '800000000000000001', USER = '800000000000000002', CHANNEL = '800000000000000003', GUILD = '800000000000000004'
+const nativeFetch = globalThis.fetch
 let directory: string, tokenFile: string
 let fetcher: ReturnType<typeof vi.fn<typeof fetch>>
 const signal = () => new AbortController().signal
@@ -71,11 +74,75 @@ describe('Discord bot transport', () => {
     fetcher.mockResolvedValue(response({ id: BOT, username: 'Agent', bot: true }))
     expect(await resolveDiscordBot({ tokenFile }, signal())).toEqual({ tokenFile, botId: BOT, name: 'Agent' })
     expect(fetcher).toHaveBeenCalledWith('https://discord.com/api/v10/users/@me', expect.objectContaining({ redirect: 'error', headers: expect.objectContaining({ Authorization: 'Bot test_bot_secret' }) }))
+    expect(fetcher.mock.calls[0]![1]).not.toHaveProperty('dispatcher')
     fetcher.mockResolvedValue(response({ id: USER, username: 'Alice' }))
     await expect(resolveDiscordBot({ tokenFile }, signal())).rejects.toMatchObject({ code: 'discordBotFailed', place: 'discord' })
     expect(await resolveDiscordBot({}, signal())).toBeUndefined()
     expect(DiscordConfigSchema.parse({ tokenFile })).not.toHaveProperty('token')
     expect(() => DiscordConfigSchema.parse({ token: 'secret' })).toThrow()
+  })
+  it('accepts optional HTTP/HTTPS proxy URLs and restarts setup when the proxy changes or is cleared', () => {
+    expect(DiscordConfigSchema.parse({ tokenFile }).proxyUrl).toBe('')
+    for (const proxyUrl of ['http://127.0.0.1:7890', 'https://proxy.example.com:8443']) {
+      expect(DiscordConfigSchema.parse({ tokenFile, proxyUrl: ` ${proxyUrl} ` }).proxyUrl).toBe(proxyUrl)
+    }
+    for (const proxyUrl of ['127.0.0.1:7890', 'socks5://127.0.0.1:1080', 'ftp://proxy.example.com', 'https://']) {
+      expect(() => DiscordConfigSchema.parse({ tokenFile, proxyUrl })).toThrow('Expected an http:// or https:// proxy URL')
+    }
+    const direct = SettingsSchema.parse({ sources: { discord: { enabled: true, config: { tokenFile } } } })
+    const proxied = SettingsSchema.parse({ sources: { discord: { enabled: true, config: { tokenFile, proxyUrl: 'http://127.0.0.1:7890' } } } })
+    expect(setupChanged(direct, proxied)).toBe(true)
+    expect(setupChanged(proxied, direct)).toBe(true)
+  })
+  it('checks the bot through its proxy and closes the setup connection after success or failure', async () => {
+    const proxyUrl = 'http://127.0.0.1:7890', close = vi.spyOn(ProxyAgent.prototype, 'close')
+    fetcher.mockResolvedValueOnce(response({ id: BOT, username: 'Agent', bot: true })).mockRejectedValueOnce(new Error('proxy secret'))
+    expect(await resolveDiscordBot({ tokenFile, proxyUrl }, signal())).toEqual({ tokenFile, proxyUrl, botId: BOT, name: 'Agent' })
+    expect(fetcher.mock.calls[0]![1]).toMatchObject({ dispatcher: expect.any(ProxyAgent) })
+    await expect(resolveDiscordBot({ tokenFile, proxyUrl }, signal())).rejects.toMatchObject({ code: 'discordBotFailed', values: { output: 'Discord API connection failed' } })
+    expect(new Set(close.mock.contexts).size).toBe(2)
+  })
+  it('routes reads, replies and reactions through each repository proxy and restores the default connection when cleared', async () => {
+    const clients = new Map<string, DiscordApi>(), resolved = deployment()
+    const api = new Commands(() => resolved, {}, signal(), clients)
+    const direct = new Commands(deployment, {}, signal(), clients)
+    fetcher.mockImplementation(async (_url, init) => init?.method === 'PUT' ? new Response(null, { status: 204 }) : response({ ok: true }))
+    try {
+      resolved.discord!.proxyUrl = 'http://127.0.0.1:7890'
+      await api.discord(z.unknown(), `channels/${CHANNEL}/messages`)
+      await api.withSignal(signal()).discord(z.unknown(), `channels/${CHANNEL}/messages`, { content: 'Reply' })
+      await api.discordReact(CHANNEL, '900000000000000001', DISCORD_REACTIONS.received)
+      const dispatcher = (fetcher.mock.calls[0]![1] as RequestInit & { dispatcher: ProxyAgent }).dispatcher
+      expect(dispatcher).toBeInstanceOf(ProxyAgent)
+      for (const [, init] of fetcher.mock.calls) expect(init).toMatchObject({ dispatcher })
+      await direct.discord(z.unknown(), `channels/${CHANNEL}`)
+      expect(fetcher.mock.calls[3]![1]).not.toHaveProperty('dispatcher')
+      resolved.discord!.proxyUrl = 'https://proxy.example.com:8443'
+      await api.discord(z.unknown(), `channels/${CHANNEL}`)
+      const next = fetcher.mock.calls[4]![1] as RequestInit & { dispatcher: ProxyAgent }
+      expect(next.dispatcher).toBeInstanceOf(ProxyAgent)
+      expect(next.dispatcher).not.toBe(dispatcher)
+      resolved.discord!.proxyUrl = ''
+      await api.discord(z.unknown(), `channels/${CHANNEL}`)
+      expect(fetcher.mock.calls[5]![1]).not.toHaveProperty('dispatcher')
+      expect(clients.size).toBe(1)
+    } finally { await Promise.all([...clients.values()].map(client => client.close())) }
+  })
+  it('opens a real CONNECT tunnel to Discord and reports proxy failure without leaking credentials', async () => {
+    const connects: { url: string | undefined; authorization: string | undefined }[] = []
+    const proxy = createServer()
+    proxy.on('connect', (request, socket) => {
+      connects.push({ url: request.url, authorization: request.headers['proxy-authorization'] })
+      socket.end('HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n')
+    })
+    await new Promise<void>((resolve, reject) => { proxy.once('error', reject); proxy.listen(0, '127.0.0.1', resolve) })
+    vi.stubGlobal('fetch', nativeFetch)
+    try {
+      const port = (proxy.address() as { port: number }).port
+      const proxyUrl = `http://proxy-user:proxy-secret@127.0.0.1:${port}`
+      await expect(resolveDiscordBot({ tokenFile, proxyUrl }, signal())).rejects.toMatchObject({ code: 'discordBotFailed', values: { output: 'Discord API connection failed' } })
+      expect(connects).toEqual([{ url: 'discord.com:443', authorization: `Basic ${Buffer.from('proxy-user:proxy-secret').toString('base64')}` }])
+    } finally { await new Promise<void>((resolve, reject) => proxy.close(error => error ? reject(error) : resolve())) }
   })
   it('rejects malformed token files and unsafe paths without sending credentials or leaking response bodies', async () => {
     await expect(new DiscordApi(tokenFile).request(z.unknown(), 'https://evil.test', signal())).rejects.toThrow('Unsupported Discord API path')
@@ -125,7 +192,9 @@ describe('Discord bot transport', () => {
     fetcher.mockReturnValueOnce(held.promise).mockResolvedValueOnce(response({ ok: true }))
     const first = commands().discord(z.unknown(), `channels/${CHANNEL}`)
     await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1))
-    const second = commands().discord(z.unknown(), 'channels/123')
+    const proxied = deployment()
+    proxied.discord!.proxyUrl = 'http://127.0.0.1:7890'
+    const second = new Commands(() => proxied, {}, signal()).discord(z.unknown(), 'channels/123')
     await new Promise(resolve => setTimeout(resolve, 10))
     expect(fetcher).toHaveBeenCalledTimes(1)
     const reset = Date.now()
@@ -143,9 +212,9 @@ describe('Discord bot transport', () => {
     fetcher.mockResolvedValueOnce(response({}, 403))
     await expect(commands().discordReact(CHANNEL, '900000000000000001', DISCORD_REACTIONS.received)).rejects.toMatchObject({ code: 403 })
     await expect(commands().discordReact(CHANNEL, '900000000000000001', '..')).rejects.toThrow('Invalid Discord reaction emoji')
-    await expect(new DiscordApi(tokenFile).request(z.unknown(), `channels/${CHANNEL}/messages`, signal(), undefined, 'PUT'))
+    await expect(new DiscordApi(tokenFile).request(z.unknown(), `channels/${CHANNEL}/messages`, signal(), undefined, { method: 'PUT' }))
       .rejects.toThrow('Unsupported Discord API path')
-    await expect(new DiscordApi(tokenFile).request(z.void(), `channels/${CHANNEL}/messages/1/reactions/../@me`, signal(), undefined, 'PUT'))
+    await expect(new DiscordApi(tokenFile).request(z.void(), `channels/${CHANNEL}/messages/1/reactions/../@me`, signal(), undefined, { method: 'PUT' }))
       .rejects.toThrow('Unsupported Discord API path')
     expect(fetcher).toHaveBeenCalledTimes(2)
   })
