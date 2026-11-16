@@ -19,6 +19,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -143,7 +144,13 @@ def browser_url(args, pids):
                             return match[1]
             except OSError:
                 pass
-    return args.url
+    return args.url or 'http://127.0.0.1:3082'
+
+
+def health_url(args, pids):
+    """Follow the running instance's address unless the operator supplied a health-check URL."""
+    parsed = urllib.parse.urlsplit(args.url or browser_url(args, pids))
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, '', '')).rstrip('/')
 
 
 def url(args):
@@ -156,8 +163,9 @@ def url(args):
 
 def status(args):
     pids = processes(args.profile)
-    current = state(args.url) if pids else None
-    print(json.dumps({'pids': pids, 'cwd': str(ROOT), 'url': browser_url(args, pids),
+    check_url = health_url(args, pids)
+    current = state(check_url) if pids else None
+    print(json.dumps({'pids': pids, 'cwd': str(ROOT), 'url': browser_url(args, pids), 'health_url': check_url,
                       'manually_stopped': stopped(args.profile), 'health': current and current['health'],
                       'errors': current and current['errors'], 'setup': current and current['setup'],
                       'feishu': current and current['feishu'], 'discord': current and current['discord'],
@@ -204,7 +212,7 @@ def start(args):
             raise RuntimeError('Both dsh and tmux must be on PATH.')
         exists = subprocess.run(['tmux', 'has-session', '-t', '=' + session],
                                 capture_output=True).returncode == 0
-        if state(args.url) is not None:
+        if state(health_url(args, pids)) is not None:
             raise RuntimeError('An existing orchestrator answers at this URL; refusing duplicate startup.')
         stamp = time.strftime('%Y%m%d-%H%M%S')
         log = ARTIFACTS / f'dsh-superagent-{args.profile}-{stamp}-{os.getpid()}.log'
@@ -227,8 +235,9 @@ def start(args):
     (control(args.profile) / 'manually-stopped').unlink(missing_ok=True)
     deadline = time.monotonic() + args.timeout
     while time.monotonic() < deadline:
-        current = state(args.url)
-        if processes(args.profile) and runtime_up(current):
+        pids = processes(args.profile)
+        current = state(health_url(args, pids))
+        if pids and runtime_up(current):
             code = status(args)
             if current['setup']:
                 print('dsh-superagent is waiting for setup: ' + str(current['setup'].get('detail', '')))
@@ -284,8 +293,8 @@ def main():
     parser.add_argument('action', choices=['start', 'stop', 'restart', 'status', 'update', 'url'])
     parser.add_argument('--profile', default=os.environ.get('DSH_SUPERAGENT_PROFILE') or 'superagent',
                         help='DSH profile that loads dsh-superagent; its tmux session is dsh-<profile>.')
-    parser.add_argument('--url', default=os.environ.get('DSH_SUPERAGENT_URL') or 'http://127.0.0.1:3082',
-                        help='Health-check URL; override after changing the profile port.')
+    parser.add_argument('--url', default=os.environ.get('DSH_SUPERAGENT_URL') or None,
+                        help='Health-check URL; defaults to the running instance URL, then http://127.0.0.1:3082.')
     parser.add_argument('--timeout', type=float, default=60, help='Startup timeout in seconds.')
     parser.add_argument('--stop-timeout', type=float, default=300,
                         help='Graceful shutdown timeout in seconds; running Executor Sessions finish their step first.')

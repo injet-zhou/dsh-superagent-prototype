@@ -11,6 +11,7 @@ import { afterEach, beforeEach, expect, it } from 'vitest'
 let root: string
 let server: Server | undefined
 let sleepers: ChildProcess[] = []
+let environmentUrl = ''
 const control = (profile: string) => join(root, '.artifacts', 'control', 'profiles', profile)
 const program = (name: string, body: string) => writeFileSync(join(root, 'bin', name), `#!/bin/sh\n${body}\n`, { mode: 0o755 })
 /** Spawn a dummy process whose PID can be listed by the fake ps binary; ignoreInterrupt simulates a hung graceful stop. */
@@ -25,6 +26,7 @@ const service = (pid: number, profile = 'superagent') => `${pid} node node /opt/
 const processes = (...lines: string[]) => writeFileSync(join(root, 'ps.txt'), lines.map(line => `${line}\n`).join(''))
 const started = (...lines: string[]) => writeFileSync(join(root, 'ps-started.txt'), lines.map(line => `${line}\n`).join(''))
 beforeEach(() => {
+  environmentUrl = ''
   root = mkdtempSync(join(tmpdir(), 'service script '))
   mkdirSync(join(root, 'scripts')); mkdirSync(join(root, 'bin'))
   copyFileSync(join(import.meta.dirname, '..', 'scripts', 'dsh-superagent'), join(root, 'scripts', 'dsh-superagent'))
@@ -55,14 +57,17 @@ afterEach(() => {
 })
 function run(...args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise(resolve => execFile('python3', [join(root, 'scripts', 'dsh-superagent'), ...args],
-    { env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, DSH_SUPERAGENT_PROFILE: '', DSH_SUPERAGENT_URL: '' },
+    { env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, DSH_SUPERAGENT_PROFILE: '', DSH_SUPERAGENT_URL: environmentUrl },
       timeout: 20_000 },
     (error, stdout, stderr) => resolve({ code: typeof error?.code === 'number' ? error.code : 0, stdout, stderr })))
 }
 const READY = { health: { runtime: { state: 'ready', detail: '' } }, setup: { problem: null, feishuProblem: null } }
 /** Start a mock HTTP server that returns 503 until tmux launches the service (unless always is true). */
 async function answering(state: unknown = READY, always = false): Promise<string> {
-  server = createServer((_request, response) => {
+  server = createServer((request, response) => {
+    if (request.url !== '/orchestrator/api/state' || request.headers['x-orchestrator-request'] !== '1') {
+      response.writeHead(404).end(); return
+    }
     if (!always && !existsSync(join(root, 'launched'))) { response.writeHead(503).end(); return }
     response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(state))
   })
@@ -103,6 +108,47 @@ it('prints the authenticated URL on start, status, and url, including for an alr
   expect(JSON.parse((await run('status', '--url', url)).stdout).url).toBe(published)
   expect(await run('url')).toMatchObject({ code: 0, stdout: `${published}\n` })
   expect(await run('start', '--url', url)).toMatchObject({ code: 0, stdout: expect.stringContaining(`URL: ${published}\n`) })
+})
+
+it.each(['start', 'restart', 'update'])('checks the actual port after %s without a URL override', async action => {
+  if (action === 'update') upgrade()
+  const url = await answering()
+  const published = `${url}/?token=actual-port#browser-fragment`
+  writeFileSync(join(root, 'published-url'), published)
+  const pid = sleeper()
+  writeFileSync(join(root, 'pane'), `${pid}\n`)
+  started(service(pid))
+  expect(await run(action, '--timeout', '3')).toMatchObject({ code: 0, stdout: expect.stringContaining(`URL: ${published}\n`) })
+  const checked = await run('status')
+  expect(checked.code).toBe(0)
+  expect(JSON.parse(checked.stdout)).toMatchObject({ url: published, health_url: url, health: { runtime: 'ready' } })
+}, 20_000)
+
+it('keeps component errors visible when checking an existing instance on its actual port', async () => {
+  const url = await answering({ health: { runtime: { state: 'ready' }, memory: { state: 'error', detail: 'memory_evidence_unavailable' } } }, true)
+  const log = join(root, 'existing.log')
+  writeFileSync(log, `dsh web: ${url}/?token=existing-instance\n`)
+  const pid = sleeper()
+  processes(service(pid))
+  mkdirSync(control('superagent'), { recursive: true })
+  writeFileSync(join(control('superagent'), 'service.log'), JSON.stringify({ pid, path: log }))
+  const checked = await run('status')
+  expect(checked.code).toBe(2)
+  expect(JSON.parse(checked.stdout)).toMatchObject({ health_url: url, health: { runtime: 'ready' }, errors: { memory: 'memory_evidence_unavailable' } })
+})
+
+it('prefers an environment URL over the log and an explicit URL over the environment', async () => {
+  const url = await answering(READY, true)
+  const log = join(root, 'existing.log')
+  writeFileSync(log, 'dsh web: http://127.0.0.1:9/?token=browser-only\n')
+  const pid = sleeper()
+  processes(service(pid))
+  mkdirSync(control('superagent'), { recursive: true })
+  writeFileSync(join(control('superagent'), 'service.log'), JSON.stringify({ pid, path: log }))
+  environmentUrl = url
+  expect(await run('status')).toMatchObject({ code: 0 })
+  environmentUrl = 'http://127.0.0.1:9'
+  expect(await run('status', '--url', url)).toMatchObject({ code: 0 })
 })
 
 it('finds the launch URL in an existing process log without control metadata on Linux', async () => {
