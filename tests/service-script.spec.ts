@@ -1,6 +1,6 @@
 /** Tests for scripts/dsh-superagent using a temporary checkout path with spaces and stubbed ps, tmux, and dsh binaries. */
-import { execFile, spawn, type ChildProcess } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync }
+import { execFile, execFileSync, spawn, type ChildProcess } from 'node:child_process'
+import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync }
   from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -38,7 +38,13 @@ while IFS= read -r line; do
 done < "$list"`)
   // Log tmux invocations and simulate session creation by outputting the pane PID.
   program('tmux', `for a in "$@"; do printf '%s\\n' "$a"; done >> '${root}/tmux.log'; echo --- >> '${root}/tmux.log'\n`
-    + `case "$1" in has-session) exit 1;; new-*) touch '${root}/launched'; cat '${root}/pane';; esac`)
+    + `case "$1" in has-session) exit 1;; new-*) touch '${root}/launched'
+if [ -f '${root}/published-url' ]; then
+  for log in '${root}'/.artifacts/dsh-superagent-*.log; do
+    printf 'dsh web: %s\\n' "$(cat '${root}/published-url')" >> "$log"
+  done
+fi
+cat '${root}/pane';; esac`)
   program('dsh', 'exit 0')
 })
 afterEach(() => {
@@ -65,6 +71,129 @@ async function answering(state: unknown = READY, always = false): Promise<string
 }
 const status = async (profile: string, url = 'http://127.0.0.1:9') =>
   JSON.parse((await run('status', '--profile', profile, '--url', url)).stdout) as { pids: number[]; manually_stopped: boolean }
+
+/** Prepare a local origin/main with one new commit; no test fetches from the network. */
+function upgrade() {
+  const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+  git('init', '--initial-branch=main')
+  git('config', 'user.name', 'Service Test'); git('config', 'user.email', 'test@example.test')
+  writeFileSync(join(root, '.gitignore'), '*\n!.gitignore\n!scripts/\n!scripts/dsh-superagent\n!release.txt\n!untracked.txt\n')
+  writeFileSync(join(root, 'release.txt'), 'old\n')
+  git('add', '.'); git('commit', '-m', 'Initial version')
+  const previous = git('rev-parse', 'HEAD')
+  writeFileSync(join(root, 'release.txt'), 'new\n')
+  git('commit', '-am', 'New version')
+  const revision = git('rev-parse', 'HEAD')
+  git('clone', '--bare', '.', join(root, 'origin.git'))
+  git('remote', 'add', 'origin', join(root, 'origin.git'))
+  git('reset', '--hard', previous)
+  program('pnpm', `printf '%s\\n' "$*" >> '${root}/pnpm.log'`)
+  return { git, previous, revision }
+}
+
+it('prints the authenticated URL on start, status, and url, including for an already running instance', async () => {
+  const url = await answering()
+  const published = 'https://agent.example.test/?token=fixture-launch-token'
+  writeFileSync(join(root, 'published-url'), published)
+  const pid = sleeper()
+  writeFileSync(join(root, 'pane'), `${pid}\n`)
+  started(service(pid))
+  const result = await run('start', '--url', url)
+  expect(result).toMatchObject({ code: 0, stdout: expect.stringContaining(`URL: ${published}\n`) })
+  expect(JSON.parse((await run('status', '--url', url)).stdout).url).toBe(published)
+  expect(await run('url')).toMatchObject({ code: 0, stdout: `${published}\n` })
+  expect(await run('start', '--url', url)).toMatchObject({ code: 0, stdout: expect.stringContaining(`URL: ${published}\n`) })
+})
+
+it('finds the launch URL in an existing process log without control metadata on Linux', async () => {
+  if (process.platform !== 'linux') return
+  const log = join(root, 'existing.log')
+  const published = 'http://127.0.0.1:3082/?token=existing-instance'
+  writeFileSync(log, `Startup message\ndsh web: ${published}\ndsh web: opening the default browser\n`)
+  const output = openSync(log, 'a')
+  const child = spawn('sleep', ['60'], { stdio: ['ignore', output, 'ignore'] })
+  closeSync(output); sleepers.push(child)
+  processes(service(child.pid!))
+  expect(await run('url')).toMatchObject({ code: 0, stdout: `${published}\n` })
+})
+
+it('falls back to the configured URL without a launch log and refuses stopped or duplicate instances', async () => {
+  expect(await run('url')).toMatchObject({ code: 1 })
+  const pid = sleeper()
+  processes(service(pid))
+  mkdirSync(control('superagent'), { recursive: true })
+  const stale = join(root, 'stale.log')
+  writeFileSync(stale, 'dsh web: http://localhost:3082/?token=stale\n')
+  writeFileSync(join(control('superagent'), 'service.log'), JSON.stringify({ pid: pid + 1, path: stale }))
+  expect(await run('url', '--url', 'http://localhost:9090')).toMatchObject({ code: 0, stdout: 'http://localhost:9090\n' })
+  processes(service(pid), service(sleeper()))
+  expect(await run('url')).toMatchObject({ code: 1 })
+})
+
+it('updates from origin/main, stops before changing files, rebuilds, and prints the new URL', async () => {
+  const { git, revision } = upgrade()
+  const url = await answering()
+  const old = sleeper(), pid = sleeper()
+  processes(service(old)); started(service(pid))
+  writeFileSync(join(root, 'pane'), `${pid}\n`)
+  const published = `${url}/?token=updated-instance`
+  writeFileSync(join(root, 'published-url'), published)
+  program('pnpm', `kill -0 ${old} 2>/dev/null && exit 91
+[ "$(cat release.txt)" = new ] || exit 92
+printf '%s\\n' "$*" >> '${root}/pnpm.log'`)
+  const result = await run('update', '--url', url, '--stop-timeout', '5')
+  expect(result).toMatchObject({ code: 0, stdout: expect.stringContaining(`URL: ${published}\n`) })
+  expect(git('rev-parse', 'HEAD')).toBe(revision)
+  expect(git('branch', '--show-current')).toBe('main')
+  expect(readFileSync(join(root, 'pnpm.log'), 'utf8')).toBe('install --frozen-lockfile\nbuild\n')
+  expect(await status('superagent', url)).toMatchObject({ pids: [pid], manually_stopped: false })
+}, 20_000)
+
+it.each(['branch', 'detached', 'modified', 'staged', 'untracked', 'ahead', 'diverged', 'fetch failure'])
+('refuses an update with %s before stopping the service', async reason => {
+  const { git, previous, revision } = upgrade()
+  const pid = sleeper()
+  processes(service(pid))
+  if (reason === 'branch') git('switch', '-c', 'feature')
+  if (reason === 'detached') git('checkout', '--detach')
+  if (reason === 'modified' || reason === 'staged') writeFileSync(join(root, 'release.txt'), 'local edit\n')
+  if (reason === 'staged') git('add', 'release.txt')
+  if (reason === 'untracked') writeFileSync(join(root, 'untracked.txt'), 'local file\n')
+  if (reason === 'ahead') git('merge', '--ff-only', revision)
+  if (reason === 'ahead' || reason === 'diverged') { writeFileSync(join(root, 'release.txt'), 'local commit\n'); git('commit', '-am', 'Local commit') }
+  if (reason === 'fetch failure') git('remote', 'set-url', 'origin', join(root, 'missing-origin'))
+  const head = git('rev-parse', 'HEAD')
+  const result = await run('update')
+  expect(result.code).toBe(1)
+  expect(result.stderr).toBeTruthy()
+  expect(git('rev-parse', 'HEAD')).toBe(head)
+  if (reason === 'fetch failure') expect(head).toBe(previous)
+  expect(() => process.kill(pid, 0)).not.toThrow()
+  expect(existsSync(join(control('superagent'), 'manually-stopped'))).toBe(false)
+  expect(existsSync(join(root, 'pnpm.log'))).toBe(false)
+  expect(existsSync(join(root, 'tmux.log'))).toBe(false)
+})
+
+it.each(['install', 'build'])('keeps recovery paused when update %s fails', async step => {
+  upgrade()
+  processes(service(sleeper()))
+  program('pnpm', `[ "$1" = '${step}' ] && exit 17\nexit 0`)
+  expect(await run('update', '--stop-timeout', '5')).toMatchObject({ code: 1 })
+  expect(await status('superagent')).toMatchObject({ pids: [], manually_stopped: true })
+  expect(existsSync(join(root, 'tmux.log'))).toBe(false)
+  expect(await run('--respect-stop', 'restart')).toMatchObject({ code: 0, stdout: expect.stringContaining('Intentional stop is active') })
+}, 20_000)
+
+it('respects a stop marker before fetching an update and leaves files unchanged if shutdown times out', async () => {
+  const { git, previous } = upgrade()
+  await run('stop')
+  expect(await run('--respect-stop', 'update')).toMatchObject({ code: 0, stdout: expect.stringContaining('Intentional stop is active') })
+  expect(existsSync(join(root, '.git', 'FETCH_HEAD'))).toBe(false)
+  processes(service(sleeper(true)))
+  expect(await run('update', '--stop-timeout', '1')).toMatchObject({ code: 1, stderr: expect.stringContaining('Graceful stop timed out') })
+  expect(git('rev-parse', 'HEAD')).toBe(previous)
+  expect(existsSync(join(root, 'pnpm.log'))).toBe(false)
+}, 20_000)
 
 it('refuses to stop when two processes serve the profile, before it writes the stop marker', async () => {
   processes(service(sleeper()), `${sleeper()} node node /opt/dsh --profile=superagent`)

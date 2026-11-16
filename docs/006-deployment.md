@@ -256,19 +256,20 @@ After the first start, edit machine limits in **Settings → Deployment** or the
 ```sh
 scripts/dsh-superagent start
 scripts/dsh-superagent status
+scripts/dsh-superagent url
 ```
 
 For testing an unmerged feature, install the plugin from a dedicated worktree and run the service script from that same worktree. Keep `stateDir` unchanged and retain that worktree; switching or building the main checkout then cannot replace the running feature build.
 
-`start` runs `dsh --profile superagent` in tmux session `dsh-superagent`, or `dsh-<profile>` for another profile. It waits up to one minute for the runtime to become ready or report a setup requirement. On a first run it prints the missing setup information. It refuses duplicate instances, including ones started outside this script.
+`start` runs `dsh --profile superagent` in tmux session `dsh-superagent`, or `dsh-<profile>` for another profile. It waits up to one minute for the runtime to become ready or report a setup requirement, then prints a directly openable URL, including DSH's login token when available in the current process's startup log. On a first run it also prints the missing setup information. It refuses duplicate instances, including ones started outside this script.
 
 `stop` and `restart` request graceful shutdown and wait up to five minutes for Executors. They never force-kill the process or touch other tmux sessions.
 
-`status` prints process ids, health and setup problems. For a different profile or port, use `--profile` and `--url`, or set `DSH_SUPERAGENT_PROFILE` and `DSH_SUPERAGENT_URL`.
+`status` prints process ids, the browser URL, health and setup problems. `url` prints just the browser URL of a running instance; if its startup log is unavailable, it falls back to the configured base URL. For a different profile or port, use `--profile` and `--url`, or set `DSH_SUPERAGENT_PROFILE` and `DSH_SUPERAGENT_URL`.
 
 On Linux, Node may appear as `MainThread` in `ps`; the script recognizes that name as well as `node` and `dsh`, and still checks the exact profile and excludes plugin-management commands.
 
-`status`, `start` and `restart` exit with one of four codes:
+`status`, `start`, `restart` and `update` exit with one of four codes:
 
 | Code | Meaning |
 | --- | --- |
@@ -279,14 +280,14 @@ On Linux, Node may appear as `MainThread` in `ps`; the script recognizes that na
 
 A Source that is still starting counts as normal operation. So does a Feishu bot that setup could not check.
 
-`status` returns failed parts and their details under `errors`, and setup requirements under `setup`. `start` and `restart` print those problems as lines; they exit 1 if the service never comes up. Only an intentional `stop` pauses automatic recovery.
+`status` returns failed parts and their details under `errors`, and setup requirements under `setup`. `start`, `restart` and `update` print those problems as lines, followed by the browser URL; they exit 1 if the service never comes up. An intentional `stop` or an update that fails before startup pauses automatic recovery.
 
 Each profile stores logs and control files under `.artifacts/`:
 
 - Startup logs: `dsh-superagent-<profile>-<date>-<time>-<pid>.log`, where the pid belongs to the script. The newest 20 are kept.
-- Control files: `control/profiles/<profile>/`, containing the stop marker, lock and process id.
+- Control files: `control/profiles/<profile>/`, containing the stop marker, lock, process id and startup log reference.
 
-Open the URL printed in the log, then choose **Superagent** in the sidebar.
+Open the URL printed by the CLI, then choose **Superagent** in the sidebar.
 
 ### Hourly check
 
@@ -296,7 +297,7 @@ Create the hourly check in the DeepSeek Harness profile you normally use, not in
 Check dsh-superagent: run `scripts/dsh-superagent --profile superagent status` in <checkout>. Exit 0: do nothing and say nothing. Exit 2: do not restart; tell me each part under `errors` with its detail, unless you already told me about the same ones. Exit 3: do not restart; tell me what `setup` says setup needs, unless you already told me. If it reports manually_stopped: true, leave it stopped. Otherwise (exit 1) run `scripts/dsh-superagent --profile superagent --respect-stop restart`, which exits the same way: 0 means it recovered, so say nothing; 2 and 3 are reported as above; if it exits 1 or fails otherwise, read the newest .artifacts/dsh-superagent-superagent-*.log and the Troubleshooting section of docs/006-deployment.md, fix what you can, and tell me what was wrong and what you did.
 ```
 
-`--respect-stop` preserves an intentional stop. Only `stop` writes the marker; `start` clears it. `restart` writes no marker, so the check can recover a restart whose shutdown timed out.
+`--respect-stop` preserves a paused recovery state for `start`, `restart` and `update`. `stop` and `update` write the marker; `start` clears it. `restart` writes no marker, so the check can recover a restart whose shutdown timed out.
 
 ## Settings
 
@@ -401,8 +402,9 @@ From an allowed repository account, open an Issue or post a comment containing `
 
 1. Wait until no Executor is in the middle of a turn.
 2. Back up `<stateDir>/orchestrator.sqlite`.
-3. Run `git pull && pnpm install && pnpm build`.
-4. Run `scripts/dsh-superagent restart` and inspect its status.
+3. From a clean `main` checkout, run `scripts/dsh-superagent update`.
+
+`update` fetches `origin/main` and checks that local `main` can fast-forward before stopping the service. It then pauses automatic recovery, gracefully stops the selected profile, fast-forwards the checkout, runs `pnpm install --frozen-lockfile` and `pnpm build`, and starts the profile with the usual health check and browser URL. It retains the profile configuration and state directory. It also starts an instance that was stopped; use `--respect-stop` to preserve a paused recovery state. Feature branches, local changes (including untracked files), local commits outside `origin/main` and fetch failures are rejected before shutdown. If shutdown, installation or build fails, it leaves recovery paused; fix the problem and rerun `update`.
 
 A restart ends running Assignments and starts replacements with recovery notes. Team text and overridden prompt parts are retained; parts without overrides follow the new defaults. Review parts marked **Default updated** after upgrading.
 

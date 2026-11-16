@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Manage a local dsh-superagent service (one DSH profile, default `superagent`) without affecting other tmux sessions.
 
-`status`, `start`, and `restart` exit 0 while the service runs normally; 1 when it is stopped, duplicated, unreachable, or
+`status`, `start`, `restart`, and `update` exit 0 while the service runs normally; 1 when it is stopped, duplicated, unreachable, or
 reporting a runtime error, which `restart` may fix; 2 when it runs while a component such as a Source reports an error;
 and 3 when it runs and waits for setup. A restart fixes neither 2 nor 3: they need a person.
 """
@@ -120,10 +120,44 @@ def outcome(pids, current):
     return PART_ERROR if part_errors(current) else 0
 
 
+def browser_url(args, pids):
+    """Read the current process's authenticated URL, falling back to the configured base URL."""
+    if len(pids) == 1:
+        try:
+            # This also finds logs of instances launched before service.log was recorded.
+            log = Path(os.readlink(f'/proc/{pids[0]}/fd/1'))
+        except OSError:
+            log = None
+        if log is None or not log.is_file():
+            try:
+                recorded = json.loads((control(args.profile) / 'service.log').read_text())
+                log = Path(recorded['path']) if recorded['pid'] == pids[0] else None
+            except (OSError, ValueError, KeyError):
+                log = None
+        if log is not None and log.is_file():
+            try:
+                with log.open(errors='replace') as stream:
+                    for line in stream:
+                        match = re.search(r'\bdsh web:\s+(https?://\S+)', line)
+                        if match:
+                            return match[1]
+            except OSError:
+                pass
+    return args.url
+
+
+def url(args):
+    pids = processes(args.profile)
+    if len(pids) != 1:
+        raise RuntimeError('Exactly one dsh-superagent process must be running to print its URL.')
+    print(browser_url(args, pids))
+    return 0
+
+
 def status(args):
     pids = processes(args.profile)
     current = state(args.url) if pids else None
-    print(json.dumps({'pids': pids, 'cwd': str(ROOT), 'url': args.url,
+    print(json.dumps({'pids': pids, 'cwd': str(ROOT), 'url': browser_url(args, pids),
                       'manually_stopped': stopped(args.profile), 'health': current and current['health'],
                       'errors': current and current['errors'], 'setup': current and current['setup'],
                       'feishu': current and current['feishu'], 'discord': current and current['discord'],
@@ -147,6 +181,7 @@ def stop(args, intentional=True):
             raise RuntimeError('Graceful stop timed out; no forced kill was sent. Check status.')
         time.sleep(0.5)
     (control(args.profile) / 'service.pid').unlink(missing_ok=True)
+    (control(args.profile) / 'service.log').unlink(missing_ok=True)
     print('dsh-superagent stopped. Automatic recovery is paused until start/restart.' if intentional else 'dsh-superagent stopped.')
 
 
@@ -184,6 +219,7 @@ def start(args):
                               check=True, capture_output=True, text=True).stdout.strip()
         if pane.isdigit():
             (control(args.profile) / 'service.pid').write_text(pane + '\n')
+            (control(args.profile) / 'service.log').write_text(json.dumps({'pid': int(pane), 'path': str(log)}) + '\n')
         print('Log: ' + str(log), flush=True)
     else:
         (control(args.profile) / 'service.pid').write_text(f'{pids[0]}\n')
@@ -196,7 +232,6 @@ def start(args):
             code = status(args)
             if current['setup']:
                 print('dsh-superagent is waiting for setup: ' + str(current['setup'].get('detail', '')))
-                print('Open the URL DSH printed in the log, then the dsh-superagent overview.')
             if current['feishu']:
                 print('dsh-superagent runs without Feishu: ' + str(current['feishu'].get('detail', '')))
                 print('Fix it on the Feishu card of the Source settings.')
@@ -208,15 +243,45 @@ def start(args):
                 print('Fix it on the WeCom card of the Source settings, then recheck setup.')
             for name, detail in part_errors(current).items():
                 print(f'{name} reports an error, which a restart does not fix: {detail}')
+            print('URL: ' + browser_url(args, processes(args.profile)))
             return code
         time.sleep(1)
     status(args)
     raise RuntimeError('Startup health check timed out; inspect the log. Any running process was left intact.')
 
 
+def update(args):
+    """Fast-forward this checkout to origin/main and rebuild while the service is stopped."""
+    if any(not shutil.which(command) for command in ('git', 'pnpm', 'dsh', 'tmux')):
+        raise RuntimeError('git, pnpm, dsh, and tmux must be on PATH to update.')
+    branch = subprocess.run(['git', 'branch', '--show-current'], cwd=ROOT,
+                            check=True, capture_output=True, text=True).stdout.strip()
+    if branch != 'main':
+        raise RuntimeError('Update requires the main branch; switch to main first.')
+    changes = subprocess.run(['git', 'status', '--porcelain'], cwd=ROOT,
+                             check=True, capture_output=True, text=True).stdout
+    if changes:
+        raise RuntimeError('The checkout has local changes; commit or stash them before updating.')
+    print('Fetching origin/main...', flush=True)
+    subprocess.run(['git', 'fetch', 'origin', 'main'], cwd=ROOT, check=True)
+    revision = subprocess.run(['git', 'rev-parse', 'FETCH_HEAD'], cwd=ROOT,
+                              check=True, capture_output=True, text=True).stdout.strip()
+    if subprocess.run(['git', 'merge-base', '--is-ancestor', 'HEAD', revision], cwd=ROOT).returncode:
+        raise RuntimeError('Local main has commits outside origin/main; resolve them before updating.')
+    # Pause recovery until the new build is ready; a failed update stays stopped and can be retried.
+    stop(args)
+    subprocess.run(['git', 'merge', '--ff-only', revision], cwd=ROOT, check=True)
+    print('Installing dependencies...', flush=True)
+    subprocess.run(['pnpm', 'install', '--frozen-lockfile'], cwd=ROOT, check=True)
+    print('Building dsh-superagent...', flush=True)
+    subprocess.run(['pnpm', 'build'], cwd=ROOT, check=True)
+    print('Starting dsh-superagent at ' + revision[:12] + '...', flush=True)
+    return start(args)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['start', 'stop', 'restart', 'status'])
+    parser.add_argument('action', choices=['start', 'stop', 'restart', 'status', 'update', 'url'])
     parser.add_argument('--profile', default=os.environ.get('DSH_SUPERAGENT_PROFILE') or 'superagent',
                         help='DSH profile that loads dsh-superagent; its tmux session is dsh-<profile>.')
     parser.add_argument('--url', default=os.environ.get('DSH_SUPERAGENT_URL') or 'http://127.0.0.1:3082',
@@ -225,7 +290,7 @@ def main():
     parser.add_argument('--stop-timeout', type=float, default=300,
                         help='Graceful shutdown timeout in seconds; running Executor Sessions finish their step first.')
     parser.add_argument('--respect-stop', action='store_true',
-                        help='For monitoring: never start/restart after an intentional stop.')
+                        help='For monitoring: never start/restart/update while automatic recovery is paused.')
     args = parser.parse_args()
     if args.timeout <= 0 or args.stop_timeout <= 0:
         parser.error('--timeout and --stop-timeout must be positive')
@@ -237,11 +302,15 @@ def main():
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise RuntimeError('Another dsh-superagent control operation is in progress.') from None
-        if args.respect_stop and args.action in ('start', 'restart') and stopped(args.profile):
+        if args.respect_stop and args.action in ('start', 'restart', 'update') and stopped(args.profile):
             print('Intentional stop is active; automatic recovery skipped.')
             return 0
         if args.action == 'status':
             return status(args)
+        if args.action == 'url':
+            return url(args)
+        if args.action == 'update':
+            return update(args)
         if args.action in ('stop', 'restart'):
             # Only a stop keeps automatic recovery off; a restart whose stop timed out leaves it on.
             stop(args, intentional=args.action == 'stop')
