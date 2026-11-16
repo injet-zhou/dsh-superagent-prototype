@@ -324,7 +324,7 @@ it('reads the settings again as soon as dsh-superagent answers after a save rest
   expect(field<HTMLInputElement>('智能体的仓库 CLI').value).toBe('/opt/bin/gh-agent')
 })
 
-it('shows the Discord bot setup problem and saves its token path through the Source settings form', async () => {
+it('shows the Discord bot setup problem and saves its token path and optional proxy through the Source settings form', async () => {
   server.extraKinds = [discordKind as unknown as SourceKind]
   server.settings.sources.discord = { enabled: true, config: { tokenFile: '/srv/agent/discord.json', channels: [] } }
   server.setup = { ...server.setup, discordProblem: problemOf('discordBotFailed') }
@@ -335,8 +335,15 @@ it('shows the Discord bot setup problem and saves its token path through the Sou
   const card = document.getElementById('dt-source-discord')!
   expect(card.textContent).toContain('Discord')
   await type(field<HTMLInputElement>('Bot Token 文件'), '/srv/agent/new-discord.json')
+  await type(field<HTMLInputElement>('代理地址（可选）'), 'http://127.0.0.1:7890')
   await act(async () => { card.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) })
   await settle()
   expect(server.settings.sources.discord?.config.tokenFile).toBe('/srv/agent/new-discord.json')
+  expect(server.settings.sources.discord?.config.proxyUrl).toBe('http://127.0.0.1:7890')
   expect(server.requests.some(request => request.path === 'settings/source:discord' && request.method === 'PUT')).toBe(true)
+  await remount()
+  await type(field<HTMLInputElement>('代理地址（可选）'), '')
+  await act(async () => { document.getElementById('dt-source-discord')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) })
+  await settle()
+  expect(server.settings.sources.discord?.config.proxyUrl).toBe('')
 })
