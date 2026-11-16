@@ -7,7 +7,7 @@ import { startRuntime, feishu, MEMBER, type Host } from './fixtures/host.ts'
 import type { SourceHost } from '../src/sources/host.ts'
 import { Commands } from '../src/infra/commands.ts'
 import { discordKind, discordTrigger } from '../src/sources/discord.ts'
-import { wecomKind } from '../src/sources/wecom.ts'
+import { wecomKind, wecomTrigger } from '../src/sources/wecom.ts'
 import { DiscordApi, DiscordMessage } from '../src/infra/discord.ts'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -47,6 +47,32 @@ it('admits a single app request, deduplicates deliveries, and attaches authorize
   expect(apps.listTasks('shop')[0]!.messages).toHaveLength(2)
   expect(apps.receive('shop', { ...trigger('a3'), actor: { source: 'feishu', id: 'ou_other' } })).toBe('filtered')
   expect(apps.receive('shop', { ...trigger('a4'), human: false })).toBe('filtered')
+})
+
+it('keeps bounded WeCom sender IDs for discovery even when the application rejects an unknown user', async () => {
+  const { apps, config, runtime } = await setup()
+  const secretFile = join(fixture!.directory, 'wecom-discovery.json')
+  writeFileSync(secretFile, JSON.stringify({ botId: 'bot', secret: 'private-secret' }), { mode: 0o600 })
+  await apps.save({ ...config, allowed: { wecom: [{ id: 'known' }] }, sources: {
+    wecom: { enabled: true, config: { secretFile, chats: [{ chatId: 'app-group' }], directMessages: false, otherChats: 'none' } },
+  } }, 1)
+  const trigger = (id: string, userId = 'new-user') => wecomTrigger({ msgid: id, msgtype: 'text', chattype: 'group',
+    chatid: 'app-group', from: { userid: userId }, text: { content: 'PRIVATE MESSAGE BODY' } })!
+  const first = trigger('new')
+  expect(apps.receive('shop', first)).toBe('filtered')
+  expect(apps.listTasks('shop')).toEqual([])
+  expect(runtime.store.get('application-wecom-messages:shop')).toEqual([{
+    id: first.id, at: first.at, userId: 'new-user', chatId: 'app-group', direct: false, filtered: true,
+  }])
+  expect(apps.receive('shop', trigger('known', 'known'))).toBe('stored')
+  expect(apps.receive('shop', trigger('known', 'known'))).toBe('duplicate')
+  expect(runtime.store.get<unknown[]>('application-wecom-messages:shop')).toHaveLength(2)
+  for (let i = 0; i < 101; i++) apps.receive('shop', trigger(`new-${i}`))
+  const recent = runtime.store.get<{ userId: string; filtered: boolean }[]>('application-wecom-messages:shop')!
+  expect(recent).toHaveLength(100)
+  expect(recent.every(row => row.userId === 'new-user' && row.filtered)).toBe(true)
+  expect(JSON.stringify(recent)).not.toContain('PRIVATE MESSAGE BODY')
+  expect(JSON.stringify(recent)).not.toContain('private-secret')
 })
 
 it.each([undefined, 'om_topic'])('resumes a ready Feishu task on a direct topic reply without a new mention (root %s)', async topic => {
@@ -349,6 +375,42 @@ it('creates an idempotent repository ticket with the original actor and no chat 
   apps.stop('shop', task.id)
   expect(runtime.store.tickets.get(child.ticketId)!.ended?.outcome).toBe('stopped')
   expect(apps.authorized(ticket.mandate, 'default')).toBe(false)
+})
+
+it.each([false, true])('selects the host native executor without presentAs (initialization failure: %s)', async fail => {
+  const { apps, trigger } = await setup()
+  apps.receive('shop', trigger())
+  const task = apps.listTasks('shop')[0]!
+  await fixture!.controller.create({ sessionId: task.sessionId })
+  const agent = fixture!.agents.get(task.sessionId) as unknown as Agent
+  Reflect.deleteProperty(agent.ctx.tools, 'presentAs')
+  const dispose = vi.fn()
+  const setExecutor = vi.fn((_executor: unknown) => dispose)
+  Object.assign(agent.ctx.tools, { setExecutor })
+  class NativeToolExecutor { constructor(readonly ctx: unknown) {} }
+  const load = vi.fn(async () => ({ NativeToolExecutor }))
+  fixture!.ctx.reflect.provide('loader', { import: load })
+  if (fail) vi.spyOn(agent.ctx.systemPrompt, 'section').mockImplementationOnce(() => { throw new Error('Prompt unavailable') })
+
+  await apps.tick()
+  if (fail) {
+    expect(apps.task('shop', task.id)).toMatchObject({ state: 'blocked', error: 'Prompt unavailable' })
+    expect(fixture!.tools.get(task.sessionId)?.size).toBe(0)
+    expect(dispose).toHaveBeenCalledOnce()
+    apps.retry('shop', task.id)
+    await apps.tick()
+  }
+  expect(load).toHaveBeenCalledWith('@deepseek-ai/dsh-tool-executor-native')
+  const executor = setExecutor.mock.calls.at(-1)![0] as unknown as NativeToolExecutor
+  expect(executor).toBeInstanceOf(NativeToolExecutor)
+  expect(executor.ctx).toBe(agent.ctx)
+  expect(agent.ctx.tools.restrict).toHaveBeenCalledWith({ allow: [] })
+  expect([...fixture!.tools.get(task.sessionId)!.keys()]).toEqual([
+    'application_read', 'application_context', 'application_dispatch', 'application_followup', 'application_report', 'application_stop',
+  ])
+  const guard = vi.mocked(agent.ctx.tools.guard).mock.calls.at(-1)![0]
+  for (const name of ['bash', 'subagent', 'run_code']) expect(guard({ name } as never)).toBe('Only application diagnosis tools are available')
+  expect(apps.task('shop', task.id).state).toBe('investigating')
 })
 
 it('uses a restricted diagnosis session, releases its slot on idle, and reports in the original chat', async () => {
