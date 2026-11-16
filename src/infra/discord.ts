@@ -46,7 +46,8 @@ export class DiscordApi {
       result.then(resolve, reject).finally(() => bounded.removeEventListener('abort', stop))
     })
   }
-  async close(): Promise<void> { await Promise.all([...this.proxies.values()].map(proxy => proxy.close())) }
+  /** Discard a temporary client without waiting for an unfinished proxy CONNECT. */
+  async destroy(): Promise<void> { await Promise.all([...this.proxies.values()].map(proxy => proxy.destroy())) }
   /**
    * Adds one emoji reaction as the bot. Discord answers 204 without a body and treats adding the same reaction again as success.
    * @throws CliError with the HTTP status when Discord refuses the message or the bot's permissions.

@@ -220,7 +220,7 @@ export async function resolveDiscordBot(config: unknown, signal: AbortSignal): P
     if (!user.bot) throw new Error('Discord account is not a bot')
     return { tokenFile, botId: user.id, name: user.username, ...(proxyUrl ? { proxyUrl } : {}) }
   } catch (error) { throw new SetupError('discordBotFailed', { output: reason(error) }) }
-  finally { await api.close() }
+  finally { await api.destroy() }
 }
 
 /** Verifies the private secret file and records the robot it names; the secret itself never enters the resolved deployment. */

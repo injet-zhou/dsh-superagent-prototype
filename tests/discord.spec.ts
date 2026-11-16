@@ -2,6 +2,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, ut
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { Duplex } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ProxyAgent } from 'undici'
 import { z } from 'zod'
@@ -25,6 +26,7 @@ import { Outbox } from '../src/app/outbox.ts'
 import { Prompts, defaultPrompts } from '../src/app/prompts.ts'
 import { setupChanged } from '../src/app/setup.ts'
 import { testDeployment } from './fixtures/deployment.ts'
+import { track } from './fixtures/async.ts'
 
 const BOT = '800000000000000001', USER = '800000000000000002', CHANNEL = '800000000000000003', GUILD = '800000000000000004'
 const nativeFetch = globalThis.fetch
@@ -94,13 +96,13 @@ describe('Discord bot transport', () => {
     expect(setupChanged(direct, proxied)).toBe(true)
     expect(setupChanged(proxied, direct)).toBe(true)
   })
-  it('checks the bot through its proxy and closes the setup connection after success or failure', async () => {
-    const proxyUrl = 'http://127.0.0.1:7890', close = vi.spyOn(ProxyAgent.prototype, 'close')
+  it('checks the bot through its proxy and destroys the setup connection after success or failure', async () => {
+    const proxyUrl = 'http://127.0.0.1:7890', destroy = vi.spyOn(ProxyAgent.prototype, 'destroy')
     fetcher.mockResolvedValueOnce(response({ id: BOT, username: 'Agent', bot: true })).mockRejectedValueOnce(new Error('proxy secret'))
     expect(await resolveDiscordBot({ tokenFile, proxyUrl }, signal())).toEqual({ tokenFile, proxyUrl, botId: BOT, name: 'Agent' })
     expect(fetcher.mock.calls[0]![1]).toMatchObject({ dispatcher: expect.any(ProxyAgent) })
     await expect(resolveDiscordBot({ tokenFile, proxyUrl }, signal())).rejects.toMatchObject({ code: 'discordBotFailed', values: { output: 'Discord API connection failed' } })
-    expect(new Set(close.mock.contexts).size).toBe(2)
+    expect(new Set(destroy.mock.contexts).size).toBe(2)
   })
   it('routes reads, replies and reactions through each repository proxy and restores the default connection when cleared', async () => {
     const clients = new Map<string, DiscordApi>(), resolved = deployment()
@@ -126,7 +128,7 @@ describe('Discord bot transport', () => {
       await api.discord(z.unknown(), `channels/${CHANNEL}`)
       expect(fetcher.mock.calls[5]![1]).not.toHaveProperty('dispatcher')
       expect(clients.size).toBe(1)
-    } finally { await Promise.all([...clients.values()].map(client => client.close())) }
+    } finally { await Promise.all([...clients.values()].map(client => client.destroy())) }
   })
   it('opens a real CONNECT tunnel to Discord and reports proxy failure without leaking credentials', async () => {
     const connects: { url: string | undefined; authorization: string | undefined }[] = []
@@ -143,6 +145,36 @@ describe('Discord bot transport', () => {
       await expect(resolveDiscordBot({ tokenFile, proxyUrl }, signal())).rejects.toMatchObject({ code: 'discordBotFailed', values: { output: 'Discord API connection failed' } })
       expect(connects).toEqual([{ url: 'discord.com:443', authorization: `Basic ${Buffer.from('proxy-user:proxy-secret').toString('base64')}` }])
     } finally { await new Promise<void>((resolve, reject) => proxy.close(error => error ? reject(error) : resolve())) }
+  })
+  it.each(['timeout', 'cancel'] as const)('finishes bot validation and disconnects a stalled CONNECT on %s', async mode => {
+    const lifetime = new AbortController(), deadline = new AbortController(), sockets = new Set<Duplex>()
+    const originalTimeout = AbortSignal.timeout.bind(AbortSignal)
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation(ms => ms === 30_000 ? deadline.signal : originalTimeout(ms))
+    const proxy = createServer()
+    proxy.on('connect', (_request, socket) => {
+      sockets.add(socket)
+      socket.resume().on('end', () => socket.end())
+      // Leave CONNECT unanswered until the client disconnects.
+    })
+    await new Promise<void>((resolve, reject) => { proxy.once('error', reject); proxy.listen(0, '127.0.0.1', resolve) })
+    vi.stubGlobal('fetch', nativeFetch)
+    const port = (proxy.address() as { port: number }).port
+    const check = track(resolveDiscordBot({ tokenFile, proxyUrl: `http://127.0.0.1:${port}` }, lifetime.signal))
+    try {
+      await vi.waitFor(() => expect(sockets.size).toBe(1))
+      if (mode === 'timeout') deadline.abort(new DOMException('Discord check timed out', 'TimeoutError'))
+      else lifetime.abort(new DOMException('Discord check cancelled', 'AbortError'))
+      await vi.waitFor(() => expect(check.settled).toBe(true), { timeout: 1000 })
+      expect(check.error).toMatchObject({ code: 'discordBotFailed', values: {
+        output: mode === 'timeout' ? 'Discord check timed out' : 'Discord check cancelled',
+      } })
+      await vi.waitFor(() => expect([...sockets].every(socket => socket.destroyed)).toBe(true), { timeout: 1000 })
+    } finally {
+      lifetime.abort(); deadline.abort()
+      for (const socket of sockets) socket.destroy()
+      await new Promise<void>((resolve, reject) => proxy.close(error => error ? reject(error) : resolve()))
+      await check.promise.catch(() => {})
+    }
   })
   it('rejects malformed token files and unsafe paths without sending credentials or leaking response bodies', async () => {
     await expect(new DiscordApi(tokenFile).request(z.unknown(), 'https://evil.test', signal())).rejects.toThrow('Unsupported Discord API path')
