@@ -28,7 +28,6 @@ function applicationMark(t: T, app: Application): { dot: DotState; label: string
   if (failuresOf(app).length) return { dot: 'error', label: t('sourceState.error') }
   const enabled = enabledChannels(app)
   if (!enabled.length) return { dot: 'warning', label: t('applicationNoChats') }
-  if (!enabled.some(kind => (app.allowed[kind]?.length ?? 0) > 0)) return { dot: 'warning', label: t('applicationNoAllowed') }
   // Health entries appear once the application's chat adapters mount after a restart.
   if (enabled.every(kind => !app.health?.[kind])) return { dot: 'ongoing', label: t('sourceState.ongoing') }
   if (enabled.some(kind => app.health?.[kind]?.state === 'paused')) return { dot: 'warning', label: t('sourceState.warning') }
@@ -102,7 +101,6 @@ function ApplicationDetail({ app, repositories, close, edit }: {
   const { t } = usePanel()
   const mark = applicationMark(t, app)
   const chats = enabledChannels(app)
-  const allowed = chats.some(kind => (app.allowed[kind]?.length ?? 0) > 0)
   return <>
     <div className="dt-page-head">
       <Button variant="ghost" size="sm" icon={<Icon name="chevron-left" />} onClick={close}>{t('applications')}</Button>
@@ -118,7 +116,6 @@ function ApplicationDetail({ app, repositories, close, edit }: {
     </div>
     {!app.enabled && <Hint>{t('applicationDisabledHint')}</Hint>}
     {app.enabled && chats.length === 0 && <Hint>{t('applicationNoChatsHint')}</Hint>}
-    {app.enabled && chats.length > 0 && !allowed && <Hint>{t('applicationNoAllowedHint')}</Hint>}
     <HealthFailures app={app} />
     <ApplicationTasks key={app.id} id={app.id} repositories={repositories} />
   </>
@@ -206,8 +203,8 @@ function ApplicationEditor({ app, repositories, close, saved }: {
   const { t, call } = usePanel()
   const { data: settings, error } = usePoll(() => call('GET settings'), [call], 30000)
   const [value, setValue] = useState<ApplicationConfig>(() => app ? {
-    id: app.id, name: app.name, enabled: app.enabled, repositories: app.repositories, sources: app.sources, allowed: app.allowed, model: app.model,
-  } : { id: `app-${crypto.randomUUID().slice(0, 8)}`, name: '', enabled: true, repositories: [], sources: {}, allowed: {}, model: null })
+    id: app.id, name: app.name, enabled: app.enabled, repositories: app.repositories, sources: app.sources, model: app.model,
+  } : { id: `app-${crypto.randomUUID().slice(0, 8)}`, name: '', enabled: true, repositories: [], sources: {}, model: null })
   const [transfer, setTransfer] = useState(false)
   const [advanced, setAdvanced] = useState(false)
   const mutation = useAction(async () => {
@@ -254,9 +251,6 @@ function ApplicationEditor({ app, repositories, close, saved }: {
             {enabled && <>
               {source.fields.filter(field => ['cli', 'tokenFile', 'secretFile', 'wsUrl', 'chats', 'channels'].includes(field.key)).map(field => <SourceField
                 key={field.key} field={field} value={config[field.key]} saved={app?.sources[kind]?.config[field.key]} fact={undefined} labels={{}} onChange={next => edit(field.key, next)} />)}
-              {source.policy?.fields.filter(field => field.key === 'allowed').map(field => <SourceField key={field.key} field={field}
-                value={value.allowed[kind] ?? []} saved={app?.allowed[kind] ?? []} fact={undefined} labels={{}}
-                onChange={next => setValue({ ...value, allowed: { ...value.allowed, [kind]: next as ApplicationConfig['allowed'][typeof kind] } })} />)}
             </>}
           </fieldset>
         })}

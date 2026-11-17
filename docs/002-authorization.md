@@ -136,6 +136,7 @@ The Source must still listen to the original Thread. The remaining checks depend
 - An inferred Mandate needs `auto` mode and its matched rules still enabled.
 - A Mandate admitted by a table cell must still receive at least its original strength under today's table and sender membership. Removing a sender from the list can therefore revoke a Mandate accepted through the listed-sender cell.
 - A bot's Mandate requires that bot to remain on the Source's bot list. Inferred table and bot Mandates also need `auto` mode and enabled matched rules.
+- An application Mandate requires its application and task to remain authorized for the linked repository, without a sender-list check.
 - Other Mandates require the sender to remain on the Source's allowed list.
 
 If revalidation fails, the Ticket stays ended and takes none of its waiting messages. Each message is treated as having reached no Ticket; if no other Ticket owns it, it goes to Eval. The main Session is not told it reached a worker. This also applies after a processing pause. Attaching to the Ticket is refused, and further work requires a new accept.

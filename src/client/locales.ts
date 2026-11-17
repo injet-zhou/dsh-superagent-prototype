@@ -23,8 +23,6 @@ const TEXT = {
   applicationDeliveryError: ['回复发送失败：{error}', 'Reply delivery failed: {error}'],
   applicationChats: ['群聊', 'Chats'], applicationNoChats: ['未接入群聊', 'No chats'],
   applicationNoChatsHint: ['编辑应用并选择群聊后，群里的报障才会出现在这里。', 'Edit the application and choose chats; requests from them appear here.'],
-  applicationNoAllowed: ['未添加允许的人员', 'No allowed senders'],
-  applicationNoAllowedHint: ['群消息会按允许的人员筛选；编辑应用，在对应群聊下添加人员后，报障才会进来。', 'Chat messages are filtered by allowed senders; edit the application and add people under the chat source to receive requests.'],
   applicationDisabledHint: ['已停用，新的报障不会被处理；历史仍会保留。', 'Disabled: new requests are not handled; history is kept.'],
   applicationModel: ['排查模型', 'Diagnosis model'],
   applicationEditorHint: ['关联仓库和群聊；群里的报障会由相关仓库一起排查和修复。', 'Link repositories and chats; requests from those chats are diagnosed and fixed by the relevant repositories.'],
