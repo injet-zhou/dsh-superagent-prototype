@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { AllowedSchema, RoleModelSchema, SourceInstanceSchema } from '../../policy.ts'
+import { RoleModelSchema, SourceInstanceSchema } from '../../policy.ts'
 import type { Trigger } from '../../core/index.ts'
 
 export const CHAT_KINDS = ['feishu', 'discord', 'wecom'] as const
@@ -8,9 +8,10 @@ export const ApplicationSchema = z.object({
   name: z.string().trim().min(1).max(100), enabled: z.boolean().default(true),
   repositories: z.array(z.string().min(1)).min(1).refine(ids => new Set(ids).size === ids.length, 'Duplicate repositories'),
   sources: z.partialRecord(z.enum(CHAT_KINDS), SourceInstanceSchema).default({}),
-  allowed: z.partialRecord(z.enum(CHAT_KINDS), z.array(AllowedSchema)).default({}),
+  // Accept and discard sender lists from older application configurations.
+  allowed: z.unknown().optional(),
   model: RoleModelSchema.nullable().default(null),
-}).strict()
+}).strict().transform(({ allowed: _allowed, ...app }) => app)
 export type ApplicationConfig = z.infer<typeof ApplicationSchema>
 export interface Application extends ApplicationConfig { revision: number; health?: Record<string, import('../../sources/host.ts').Health> }
 export interface ApplicationChild {

@@ -27,7 +27,7 @@ async function setup() {
     mount: host => { host.sources.register(feishuKind); host.sources.register(discordKind); host.sources.register(wecomKind); mounted.set('app', host) }, unmount: async () => { mounted.clear() } }
   apps = new Applications(host)
   await apps.start()
-  const config = ApplicationSchema.parse({ id: 'shop', name: 'Shop', repositories: ['default'], allowed: { feishu: [{ id: MEMBER }] },
+  const config = ApplicationSchema.parse({ id: 'shop', name: 'Shop', repositories: ['default'],
     sources: { feishu: { enabled: true, config: { cli: fixture.runtime.store.settings().sources.feishu!.config.cli,
       directMessages: false, otherChats: 'none', chats: [{ chatId: 'oc_app', listen: 'mentions' }] } } } })
   const app = await apps.save(config, 0)
@@ -35,7 +35,7 @@ async function setup() {
   return { app, config, trigger, mounted, runtime: fixture.runtime, apps, repositories, host }
 }
 
-it('admits a single app request, deduplicates deliveries, and attaches authorized thread followups', async () => {
+it('admits requests from any person in a configured chat, deduplicates deliveries, and attaches thread followups', async () => {
   const { apps, trigger } = await setup()
   expect(apps.receive('shop', trigger())).toBe('stored')
   expect(apps.receive('shop', trigger())).toBe('duplicate')
@@ -45,24 +45,40 @@ it('admits a single app request, deduplicates deliveries, and attaches authorize
   expect(apps.receive('shop', followup)).toBe('stored')
   expect(apps.listTasks('shop')).toHaveLength(1)
   expect(apps.listTasks('shop')[0]!.messages).toHaveLength(2)
-  expect(apps.receive('shop', { ...trigger('a3'), actor: { source: 'feishu', id: 'ou_other' } })).toBe('filtered')
+  expect(apps.receive('shop', { ...trigger('a3'), actor: { source: 'feishu', id: 'ou_other' } })).toBe('stored')
   expect(apps.receive('shop', { ...trigger('a4'), human: false })).toBe('filtered')
+  expect(apps.receive('shop', feishu('a5', 'Fix checkout', { chat_id: 'oc_other' }))).toBe('filtered')
+  expect(apps.receive('shop', feishu('a6', 'Fix checkout', { chat_id: 'oc_app', chat_type: 'p2p' }))).toBe('filtered')
+  expect(apps.receive('shop', feishu('a7', 'Just chatting', { chat_id: 'oc_app', mentions: [] }))).toBe('filtered')
+  expect(apps.listTasks('shop')).toHaveLength(2)
 })
 
-it('keeps bounded WeCom sender IDs for discovery even when the application rejects an unknown user', async () => {
+it.each([{}, { feishu: [{ id: MEMBER }] }])('ignores legacy application sender lists (%j)', async allowed => {
+  const { apps, app, config, runtime, trigger } = await setup()
+  runtime.store.set('application:shop', { ...app, allowed })
+  expect(apps.get('shop')).not.toHaveProperty('allowed')
+  expect(apps.list()[0]).not.toHaveProperty('allowed')
+  expect(apps.receive('shop', { ...trigger(), actor: { source: 'feishu', id: 'ou_other' } })).toBe('stored')
+  await apps.tick()
+  expect(apps.listTasks('shop')[0]!.state).toBe('investigating')
+  expect(await apps.save({ ...config, allowed }, 1)).not.toHaveProperty('allowed')
+  expect(runtime.store.get('application:shop')).not.toHaveProperty('allowed')
+})
+
+it('keeps bounded WeCom sender IDs for discovery for any person in the application chat', async () => {
   const { apps, config, runtime } = await setup()
   const secretFile = join(fixture!.directory, 'wecom-discovery.json')
   writeFileSync(secretFile, JSON.stringify({ botId: 'bot', secret: 'private-secret' }), { mode: 0o600 })
-  await apps.save({ ...config, allowed: { wecom: [{ id: 'known' }] }, sources: {
+  await apps.save({ ...config, sources: {
     wecom: { enabled: true, config: { secretFile, chats: [{ chatId: 'app-group' }], directMessages: false, otherChats: 'none' } },
   } }, 1)
   const trigger = (id: string, userId = 'new-user') => wecomTrigger({ msgid: id, msgtype: 'text', chattype: 'group',
     chatid: 'app-group', from: { userid: userId }, text: { content: 'PRIVATE MESSAGE BODY' } })!
   const first = trigger('new')
-  expect(apps.receive('shop', first)).toBe('filtered')
-  expect(apps.listTasks('shop')).toEqual([])
+  expect(apps.receive('shop', first)).toBe('stored')
+  expect(apps.listTasks('shop')).toHaveLength(1)
   expect(runtime.store.get('application-wecom-messages:shop')).toEqual([{
-    id: first.id, at: first.at, userId: 'new-user', chatId: 'app-group', direct: false, filtered: true,
+    id: first.id, at: first.at, userId: 'new-user', chatId: 'app-group', direct: false, filtered: false,
   }])
   expect(apps.receive('shop', trigger('known', 'known'))).toBe('stored')
   expect(apps.receive('shop', trigger('known', 'known'))).toBe('duplicate')
@@ -70,7 +86,7 @@ it('keeps bounded WeCom sender IDs for discovery even when the application rejec
   for (let i = 0; i < 101; i++) apps.receive('shop', trigger(`new-${i}`))
   const recent = runtime.store.get<{ userId: string; filtered: boolean }[]>('application-wecom-messages:shop')!
   expect(recent).toHaveLength(100)
-  expect(recent.every(row => row.userId === 'new-user' && row.filtered)).toBe(true)
+  expect(recent.every(row => row.userId === 'new-user' && !row.filtered)).toBe(true)
   expect(JSON.stringify(recent)).not.toContain('PRIVATE MESSAGE BODY')
   expect(JSON.stringify(recent)).not.toContain('private-secret')
 })
@@ -102,10 +118,8 @@ it.each([undefined, 'om_topic'])('resumes a ready Feishu task on a direct topic 
 it('starts a separate task and repair for a new Discord request after the previous task is ready', async () => {
   const { apps, config, runtime } = await setup()
   vi.spyOn(DiscordApi.prototype, 'request').mockResolvedValue({ id: '123', bot: true, username: 'Shop Bot' })
-  await apps.save({ ...config, allowed: { ...config.allowed, discord: [{ id: '456' }] }, sources: { ...config.sources,
+  await apps.save({ ...config, sources: { ...config.sources,
     discord: { enabled: true, config: { tokenFile: '/tmp/discord-test-token', channels: [{ channelId: '789', listen: 'mentions' }] } } } }, 1)
-  const settings = runtime.store.settings()
-  runtime.store.saveSettings({ ...settings, policy: { ...settings.policy, sources: { ...settings.policy.sources, discord: { allowed: [{ id: '456' }] } } } })
   const request = (id: string, content: string) => discordTrigger(DiscordMessage.parse({ id, channel_id: '789', content,
     author: { id: '456', username: 'Alice', bot: false }, mentions: [{ id: '123', username: 'Shop Bot', bot: true }], timestamp: new Date().toISOString() }), '123')!
   const original = request('1001', 'Fix checkout')
@@ -150,7 +164,7 @@ it('rejects transferring a chat with active repository work', async () => {
   await expect(apps.save(next, 1, true)).rejects.toThrow('Stop active tickets')
 })
 
-it('requires repository permission before reading or dispatch, and records exact source revisions', async () => {
+it('reads and dispatches within linked repositories without sender lists, and records exact source revisions', async () => {
   const { apps, trigger, runtime } = await setup()
   apps.receive('shop', trigger())
   const task = apps.listTasks('shop')[0]!
@@ -164,9 +178,23 @@ it('requires repository permission before reading or dispatch, and records exact
   expect(api.mock.calls.at(-1)).toEqual(['contents/src/checkout.ts?ref=revision123', '-H', 'Accept: application/vnd.github.raw'])
   const settings = runtime.store.settings()
   runtime.store.saveSettings({ ...settings, policy: { ...settings.policy, sources: { ...settings.policy.sources, feishu: { allowed: [] } } } })
-  await expect(apps.read(task, 'default', 'src/checkout.ts', 'file', new AbortController().signal)).rejects.toThrow('not authorized')
-  expect(() => apps.dispatch(task, 'default', 'Fix checkout', 'fix')).toThrow('not authorized')
+  expect((await apps.read(task, 'default', 'src/checkout.ts', 'file', new AbortController().signal)).revision).toBe('revision123')
+  const child = apps.dispatch(task, 'default', 'Fix checkout', 'fix')
+  await runtime.idle()
+  const ticket = runtime.store.tickets.get(child.ticketId)!
+  expect(ticket.assignments.at(-1)!.state).toBe('running')
+  expect(apps.authorized(ticket.mandate, 'default')).toBe(true)
+  expect(apps.authorized(ticket.mandate, 'unknown')).toBe(false)
+  const agent = fixture!.agents.get(`worker-${child.ticketId}`) as unknown as Agent
+  const guard = vi.mocked(agent.ctx.tools.guard).mock.calls.at(-1)![0]
+  expect(guard({ name: 'bash' } as never)).toBeUndefined()
+  await apps.tick()
+  runtime.engine.report(child.ticketId, { state: 'ready', summary: 'Checkout fixed' })
+  await fixture!.runTool(task.sessionId, 'application_followup', { repositoryId: 'default', text: 'Continue the checkout fix' })
+  expect(runtime.store.tickets.get(child.ticketId)!.ended).toBeUndefined()
   expect(() => apps.dispatch(task, 'unknown', 'Fix checkout', 'fix')).toThrow('outside this application')
+  runtime.store.saveSettings({ ...runtime.store.settings(), sources: { ...runtime.store.settings().sources, feishu: { ...settings.sources.feishu!, enabled: false } } })
+  await expect(apps.read(task, 'default', 'src/checkout.ts', 'file', new AbortController().signal)).rejects.toThrow('Source is disabled')
 })
 
 it.each(['HEAD', 'content'] as const)('pins one revision while the first %s request is pending', async phase => {
@@ -488,12 +516,14 @@ it('accepts all three chat sources without assigning a repository identity to th
   vi.spyOn(DiscordApi.prototype, 'request').mockResolvedValue({ id: '123', bot: true, username: 'Shop Bot' })
   const secret = join(fixture!.directory, 'wecom.json')
   writeFileSync(secret, JSON.stringify({ botId: 'shopbot', secret: 'test-secret' }), { mode: 0o600 })
-  await apps.save({ ...config, allowed: { ...config.allowed, discord: [{ id: '456' }], wecom: [{ id: 'alice' }] },
+  await apps.save({ ...config,
     sources: { ...config.sources, discord: { enabled: true, config: { tokenFile: '/tmp/test-discord-token', channels: [{ channelId: '789', listen: 'mentions' }] } },
       wecom: { enabled: true, config: { secretFile: secret, directMessages: false, otherChats: 'none', chats: [{ chatId: 'shopgroup' }] } } } }, 1)
   expect(apps.receive('shop', trigger())).toBe('stored')
   for (const [source, sender, meta] of [['discord', '456', { channelId: '789' }], ['wecom', 'alice', { chatId: 'shopgroup', direct: false }]] as const) {
     expect(apps.receive('shop', { ...trigger(source), source, actor: { source, id: sender }, threads: [{ source, id: source }], meta })).toBe('stored')
+    expect(apps.receive('shop', { ...trigger(`${source}-other`), source, actor: { source, id: sender },
+      meta: source === 'discord' ? { channelId: '999' } : { chatId: 'other-group', direct: false } })).toBe('filtered')
   }
   expect(apps.listTasks('shop')).toHaveLength(3)
   expect(() => mounted.get('app')!.context(feishuKind).deployment.repository).toThrow('no repository identity')

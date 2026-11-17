@@ -10,7 +10,7 @@ import { pathToFileURL } from 'node:url'
 import { key, latestReport, liveTicket, threadKey, type Mandate, type Thread, type Trigger } from '../../core/index.ts'
 import { pullOf } from '../../sources/github-pull.ts'
 import { family, record, type Key } from '../../kv.ts'
-import { allowedSender, policyVersion, SettingsSchema } from '../../policy.ts'
+import { policyVersion, SettingsSchema } from '../../policy.ts'
 import { Commands } from '../../infra/commands.ts'
 import { HealthBoard } from '../../infra/health.ts'
 import { checkedImText } from '../../infra/text.ts'
@@ -76,8 +76,12 @@ export class Applications {
       this.bindings.delete(agent)
     }))
   }
-  list(): Application[] { return this.store.keys(applications).map(k => this.store.get(k)!).map(app => ({ ...app, health: this.hosts.get(app.id)?.health })) }
-  get(id: string): Application { const app = this.store.get(applications(id)); if (!app) throw new ApplicationMissing('Application not found'); return app }
+  list(): Application[] { return this.store.keys(applications).map(k => this.get(k.slice(applications.prefix.length))).map(app => ({ ...app, health: this.hosts.get(app.id)?.health })) }
+  get(id: string): Application {
+    const app = this.store.get(applications(id)); if (!app) throw new ApplicationMissing('Application not found')
+    const { revision, ...value } = app
+    return { ...ApplicationSchema.parse(value), revision }
+  }
   task(id: string, taskId: string): ApplicationTask {
     const task = this.store.get(tasks(taskId))
     if (!task || task.applicationId !== id) throw new ApplicationMissing('Application task not found')
@@ -95,8 +99,7 @@ export class Applications {
   private allTasks(): ApplicationTask[] { return this.store.keys(tasks).map(k => this.store.get(k)!) }
   private saveTask(task: ApplicationTask): void { task.updatedAt = now(); this.store.set(tasks(task.id), task) }
   settings(app: ApplicationConfig) {
-    return SettingsSchema.parse({ sources: Object.fromEntries(CHAT_KINDS.map(kind => [kind, app.sources[kind] ?? { enabled: false, config: {} }])),
-      policy: { sources: Object.fromEntries(CHAT_KINDS.map(kind => [kind, { allowed: app.allowed[kind] ?? [] }])) } })
+    return SettingsSchema.parse({ sources: Object.fromEntries(CHAT_KINDS.map(kind => [kind, app.sources[kind] ?? { enabled: false, config: {} }])) })
   }
   private validate(app: ApplicationConfig, overrides = new Map<string, ReturnType<Store['settings']>>()): void {
     for (const id of app.repositories) if (!this.host.repositories().some(repo => repo.id === id)) throw new ApplicationInvalid(`Repository not found: ${id}`)
@@ -222,12 +225,12 @@ export class Applications {
     if (basis.via !== 'application') return true
     if (this.abort.signal.aborted) return false
     const app = this.store.get(applications(basis.applicationId)), task = this.store.get(tasks(basis.taskId))
-    return !!app?.enabled && !!task && task.state !== 'stopped' && !!allowedSender(this.settings(app), mandate.actor)
+    return !!app?.enabled && !!task && task.state !== 'stopped'
       && (!repositoryId || app.repositories.includes(repositoryId) && task.repositories.includes(repositoryId))
   }
   private authorizeTask(task: ApplicationTask, observeReady = false): Application {
     const app = this.get(task.applicationId)
-    if (!app.enabled || task.state === 'stopped' || task.state === 'ready' && !observeReady || !allowedSender(this.settings(app), task.trigger.actor)) throw new Error('Application task ended or authorization was withdrawn')
+    if (!app.enabled || task.state === 'stopped' || task.state === 'ready' && !observeReady) throw new Error('Application task ended or authorization was withdrawn')
     if (this.host.primary.store.settings().paused) throw new Error('Automatic processing is paused')
     return app
   }
@@ -237,13 +240,13 @@ export class Applications {
     const repo = this.host.repositories().find(repo => repo.id === id)?.runtime
     if (!repo?.configured()) throw new Error(`Repository unavailable: ${id}`)
     const settings = repo.store.settings()
-    if (!allowedSender(settings, task.trigger.actor) || settings.sources[task.trigger.source]?.enabled === false) throw new Error(`Sender is not authorized in repository ${id}`)
+    if (settings.sources[task.trigger.source]?.enabled === false) throw new Error(`Source is disabled in repository ${id}`)
     if (settings.paused) throw new Error(`Repository paused: ${id}`)
     return repo
   }
   receive(appId: string, trigger: Trigger): 'stored' | 'duplicate' | 'filtered' {
     const app = this.get(appId), source = this.hosts.get(appId)
-    const admitted = app.enabled && !!source?.sources.scope(trigger).listened && trigger.human && !!allowedSender(this.settings(app), trigger.actor)
+    const admitted = app.enabled && !!source?.sources.scope(trigger).listened && trigger.human
     if (trigger.source === 'wecom') {
       const key = wecomMessages(appId), recent = this.store.get(key) ?? []
       const entry = { id: trigger.id, at: trigger.at, userId: trigger.actor.id, chatId: String(trigger.meta.chatId ?? ''),

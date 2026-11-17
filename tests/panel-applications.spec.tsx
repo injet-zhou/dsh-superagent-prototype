@@ -28,8 +28,8 @@ it('creates an application from the management panel and keeps repository select
   expect(text()).toContain(zh.applicationNoTasks)
 })
 
-it('edits application permissions and model settings without exposing implementation fields', async () => {
-  server.applications.push({ id: 'shop', name: 'Shop', enabled: true, repositories: ['default'], sources: {}, allowed: {}, model: null, revision: 1 })
+it('edits application settings without exposing implementation fields', async () => {
+  server.applications.push({ id: 'shop', name: 'Shop', enabled: true, repositories: ['default'], sources: {}, model: null, revision: 1 })
   await mount()
   await click(zh.repositoryOverview)
   await click(tab(zh.applications))
@@ -52,9 +52,16 @@ it.each((['feishu', 'discord', 'wecom'] as const).flatMap(source => (['new', 'ex
       ...source === 'discord' ? {} : { directMessages: false, otherChats: 'none' },
       [rowsKey]: mode === 'existing' ? [{ [key]: savedId, ...source === 'wecom' ? {} : { listen: 'mentions' } }] : [] })
     if (mode === 'existing') server.applications.push({ id: 'shop', name: 'Shop', enabled: true, repositories: ['default'],
-      sources: { [source]: { enabled: true, config } }, allowed: {}, model: null, revision: 1 })
+      sources: { [source]: { enabled: true, config } }, model: null, revision: 1,
+      health: { [source]: { state: 'ready', detail: '' } } })
     await mount()
     await click(zh.repositoryOverview); await click(tab(zh.applications))
+    if (mode === 'existing') {
+      expect(text()).not.toContain('未添加允许的人员')
+      await click('Shop')
+      expect(text()).not.toContain('群消息会按允许的人员筛选')
+      expect(text()).toContain(zh['sourceState.done'])
+    }
     await click(mode === 'existing' ? zh.applicationEdit : zh.applicationAdd)
     if (mode === 'new') {
       await type(field<HTMLInputElement>(zh.applicationName), 'Shop')
@@ -64,6 +71,7 @@ it.each((['feishu', 'discord', 'wecom'] as const).flatMap(source => (['new', 'ex
     const rows = kind.fields.find(spec => spec.key === rowsKey)!
     if (rows.type !== 'rows') throw new Error('Expected chat rows')
     const sourceFields = all('#dt-application fieldset').find(set => set.firstElementChild?.tagName === 'LEGEND' && set.firstElementChild.textContent === kind.title.zh)!
+    expect(sourceFields.textContent).not.toContain(kind.policy!.fields.find(field => field.key === 'allowed')!.label.zh)
     const group = [...sourceFields.querySelectorAll('.dt-field')].find(field => field.querySelector('.dt-subhead > .dt-field-head')?.textContent?.startsWith(rows.label.zh))!
     for (const id of ids) {
       await click([...group.querySelectorAll('button')].find(button => button.textContent?.trim() === zh.addRow)!)
@@ -74,6 +82,7 @@ it.each((['feishu', 'discord', 'wecom'] as const).flatMap(source => (['new', 'ex
     }
     if (mode === 'existing') expect(group.querySelector(`span[title="${savedId}"]`)).not.toBeNull()
     await click(zh.save)
+    expect(server.applications[0]).not.toHaveProperty('allowed')
     expect((server.applications[0]!.sources[source]!.config[rowsKey] as Record<string, string>[]).map(row => row[key])).toEqual(mode === 'existing' ? [savedId, ...ids] : ids)
     await click(zh.applicationEdit)
     expect(all('#dt-application input').some(input => ids.includes((input as HTMLInputElement).value))).toBe(false)

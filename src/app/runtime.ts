@@ -16,7 +16,7 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { lockSync } from 'proper-lockfile'
 import { Engine, key, reasonText, type EngineForSettings, type ReceiveResult, type Ticket, type Trigger } from '../core/index.ts'
-import { allowedSender, settingsPolicy } from '../policy.ts'
+import { settingsPolicy } from '../policy.ts'
 import { SourceRegistry } from '../sources/registry.ts'
 import { Commands } from '../infra/commands.ts'
 import type { Deployment, Machine } from '../deployment.ts'
@@ -155,8 +155,7 @@ export class Runtime extends Service implements SourceHost {
         feishuPageSize: () => feishuSettings(sources).readPageSize, sourceLink: link }
       const sessions = this.sessions = new Sessions({ context: ctx, store, prompts, effects, health: board.claim('models'), masterId,
         reviewer: id => this.reviews?.session(id),
-        authorized: ticket => ticket.mandate.basis.via !== 'application' || (!!allowedSender(store.settings(), ticket.mandate.actor)
-          && store.settings().sources[ticket.mandate.actor.source]?.enabled !== false && !store.settings().paused
+        authorized: ticket => ticket.mandate.basis.via !== 'application' || (store.settings().sources[ticket.mandate.actor.source]?.enabled !== false && !store.settings().paused
           && !!options.applications?.()?.authorized(ticket.mandate, machine.repositoryId ?? 'default')),
         lifetime: this.lifetime, memory, observeExecution: (context, sessionId) => attestor.bind(context, sessionId),
         closing: () => this.closing(), environment, ...machine.scopedEnvironment ? { executionEnvironment } : {},
@@ -193,8 +192,7 @@ export class Runtime extends Service implements SourceHost {
         repliedTo: trigger => repliedTo({ store, sources }, trigger),
         get github() { return runtime.context({ kind: 'github', health: ['github'] }) }, get engine() { return runtime.engine },
         lifetime: this.lifetime, paused: () => this.paused() || !sources.instance('github')?.enabled, closing: () => this.closing(),
-        authorized: ticket => ticket.mandate.basis.via !== 'application' || (!!allowedSender(store.settings(), ticket.mandate.actor)
-          && store.settings().sources[ticket.mandate.actor.source]?.enabled !== false
+        authorized: ticket => ticket.mandate.basis.via !== 'application' || (store.settings().sources[ticket.mandate.actor.source]?.enabled !== false
           && !!options.applications?.()?.authorized(ticket.mandate, machine.repositoryId ?? 'default')) })
       this.assessor = new MasterAssessor({ get engine() { return runtime.engine }, commands, get deployment() { return setup.deployment }, effects,
         settings: () => store.settings(), paused: () => this.paused(), threadContext: trigger => sources.threadContext(trigger),

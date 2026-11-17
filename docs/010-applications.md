@@ -7,12 +7,11 @@ An application connects related repositories behind one chat entry point. Someon
 1. Connect the application's repositories as usual. Keep each repository's existing account, execution prepare command and permissions.
 2. Open **Superagent → Repositories → Applications → Add application**. Enter its name and select the related repositories.
 3. Enable Feishu, Discord or WeCom and configure its bot and explicit groups/channels. Applications do not receive private messages or mentions from unlisted groups.
-4. Add allowed senders using each chat service's own user IDs. Those senders must also be allowed on the same Source in every repository they need to inspect or change. The application does not map chat identities to GitHub usernames.
-5. Optionally select the diagnosis model. An empty model uses the DSH default.
+4. Optionally select the diagnosis model. An empty model uses the DSH default.
 
 A group/channel belongs to one application or one repository. To move an existing repository group, select **Move selected chats from repositories to this application** when saving. Finish or stop its existing repository tasks first. The transfer removes that explicit subscription from the repository and records a durable recovery journal before assigning it to the application. Other application subscriptions cannot be taken over this way. Shared Feishu/WeCom bots still require explicit chat lists and the same CLI/secret paths.
 
-Mention the bot with the failure and the requested outcome. Reply in the same thread to add reproduction details. The application asks for missing information there and provides PR links and actual validation results when ready. Select an application in the panel to view tasks, diagnosis Sessions, child results, retry a blocked diagnosis, or stop all work on a request.
+Anyone in a configured group/channel can mention the bot with the failure and the requested outcome; no application or repository sender list is required. Reply in the same thread to add reproduction details. The application asks for missing information there and provides PR links and actual validation results when ready. Select an application in the panel to view tasks, diagnosis Sessions, child results, retry a blocked diagnosis, or stop all work on a request.
 
 ## Execution and authorization
 
@@ -20,7 +19,7 @@ Application configurations and task records use separate `application:`, `applic
 
 Reads require both application and repository authorization. They use the repository's existing provider adapter, pin its first inspected default-branch revision, page long files, and record repository/revision/path evidence. Hidden paths and dependencies remain unavailable, matching existing repository assessment reads. Running tests or reproduction requires a scoped repository investigation.
 
-A handoff persists its stable task/repository/purpose ID before creating a repository Ticket. Repository creation is idempotent, so restart between creation and linkage does not create another Ticket. The Ticket records the original actor and an `application` Mandate basis; no group subscription or mention is forged. Dispatch and tool use recheck current application membership, sender permissions and repository availability. The application group does not need to be subscribed to each repository.
+A handoff persists its stable task/repository/purpose ID before creating a repository Ticket. Repository creation is idempotent, so restart between creation and linkage does not create another Ticket. The Ticket records the original actor and an `application` Mandate basis; no group subscription or mention is forged. Dispatch and tool use recheck application status, task status, linked repositories and repository availability. The application group does not need to be subscribed to each repository. Repository Sources still enforce their own sender policies for requests received directly.
 
 There is at most one current child per repository. An investigation that reports ready can be followed by a separately scoped fix Ticket, retaining the investigation reference. Dependencies may refer to already dispatched repositories; a dependent child waits for those results to be ready. Cross-repository PRs remain separate and merges are not atomic. The coordinator includes interface and merge dependencies and labels any unverified business flow in its result.
 
@@ -38,6 +37,6 @@ The existing loopback and same-origin restrictions apply. Application operations
 - `GET .../applications/:id/tasks` and `GET .../applications/:id/tasks/:taskId` inspect requests.
 - `POST .../applications/:id/tasks/:taskId/retry` or `.../stop` retries diagnosis or stops the request.
 
-`value` contains `id`, `name`, `enabled`, `repositories` (repository IDs), `sources` (chat Source configurations), `allowed` (per-Source sender lists), and nullable `model`. Source configuration shapes are the same as repository chat Sources, with private messages disabled and explicit chat lists. Conflicting revisions/subscriptions return 409. Unknown applications/tasks return 404.
+`value` contains `id`, `name`, `enabled`, `repositories` (repository IDs), `sources` (chat Source configurations), and nullable `model`. Legacy `allowed` sender lists are accepted and discarded. Source configuration shapes are the same as repository chat Sources, with private messages disabled and explicit chat lists. Conflicting revisions/subscriptions return 409. Unknown applications/tasks return 404.
 
 Schema 13 adds the authorization compatibility boundary for application Mandates; existing schemas 10–12 upgrade transactionally without rewriting repository history. An older binary must refuse schema 13 rather than run application Tickets without their authorization check. Restore a pre-upgrade database backup when rolling back. Existing installations need no application configuration or account migration.
