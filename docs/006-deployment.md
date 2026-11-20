@@ -269,7 +269,7 @@ For testing an unmerged feature, install the plugin from a dedicated worktree an
 
 `status` prints process ids, the browser URL, the health-check address (`health_url`), health and setup problems. `url` prints just the browser URL of a running instance. Health checks follow the running instance's URL from its startup log, removing the login token and fragment. Until that URL is available, the default is `http://127.0.0.1:3082`. For a different profile, use `--profile` or `DSH_SUPERAGENT_PROFILE`. An explicit `--url` overrides `DSH_SUPERAGENT_URL`, which overrides automatic discovery; use either when the browser URL and management address differ, or startup URL logging is disabled.
 
-On Linux, Node may appear as `MainThread` in `ps`; the script recognizes that name as well as `node` and `dsh`, and still checks the exact profile and excludes plugin-management commands.
+On Linux, Node may appear as `MainThread` or `node-MainThread` in `ps`. The script recognizes both names, checks the exact profile, and excludes plugin-management commands.
 
 `status`, `start`, `restart` and `update` exit with one of four codes:
 

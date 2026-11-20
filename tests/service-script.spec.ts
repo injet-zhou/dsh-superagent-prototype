@@ -260,11 +260,11 @@ it('takes no `dsh plugin` command of the profile for its service', async () => {
   expect(await status('superagent')).toMatchObject({ pids: [service] })
 })
 
-it('recognizes Node MainThread services while excluding plugin commands and other profiles', async () => {
+it.each(['MainThread', 'node-MainThread'])('recognizes Node services named %s while excluding plugin commands and other profiles', async name => {
   const pid = sleeper()
-  processes(`${pid} MainThread node /opt/dsh --profile superagent --no-open`,
-    `${sleeper()} MainThread node /opt/dsh plugin --profile superagent add link:/x`,
-    `${sleeper()} MainThread node /opt/dsh --profile web --no-open`)
+  processes(`${pid} ${name} node /opt/dsh --profile superagent --no-open`,
+    `${sleeper()} ${name} node /opt/dsh plugin --profile superagent add link:/x`,
+    `${sleeper()} ${name} node /opt/dsh --profile web --no-open`)
   const url = await answering(READY, true)
   const checked = await run('status', '--url', url)
   expect(checked.code).toBe(0)
