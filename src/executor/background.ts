@@ -13,12 +13,18 @@ interface Jobs {
   kill(id: string, caller: string, reason?: string): unknown
   readonly events: { subscribe(filter: { owner: string }, listener: (event: { type: string }) => void): () => void }
 }
-/** What the Executor uses of DSH's subagents: joining a worker's subagents that work, its subagents, and releasing them. */
-interface Subagents {
+/** The child-scoped API in DSH through 0.2.2-rc.1. */
+interface ChildSubagents {
   waitForChildren(parent: Agent): Promise<boolean>
   listChildren(parentSessionId: string): Promise<readonly { id: string }[]>
   drainChildren(parent: Agent, childIds: readonly string[]): Promise<void>
 }
+/** The tree-scoped API introduced in DSH 0.2.2-rc.2. */
+interface TreeSubagents {
+  waitForTreeWork(root: Agent): Promise<boolean>
+  listDescendants(rootSessionId: string): Promise<readonly { id: string }[]>
+}
+type Subagents = ChildSubagents | TreeSubagents
 /** How long a stop waits for a killed job to end, collecting its end so the worker is not woken to hear of it. */
 const KILL_WAIT_MS = 10_000
 /** How long a release of subagents may take; it can hold up a shutdown, so DSH's own callers bound it too. */
@@ -49,7 +55,8 @@ const joins = new WeakMap<Agent, Promise<boolean>>()
 function childrenEnd(subagents: Subagents, agent: Agent): Promise<boolean> {
   let join = joins.get(agent)
   if (!join) {
-    join = subagents.waitForChildren(agent).finally(() => { joins.delete(agent) })
+    const wait = 'waitForTreeWork' in subagents ? subagents.waitForTreeWork(agent) : subagents.waitForChildren(agent)
+    join = wait.finally(() => { joins.delete(agent) })
     joins.set(agent, join)
   }
   return join
@@ -141,11 +148,17 @@ export async function collectJob(ctx: Context, sessionId: string, job: { id: str
 export async function stopSubagents(ctx: Context, agent: Agent, keepInbox = false): Promise<void> {
   const subagents = subagentsOf(ctx)
   if (!subagents) return
-  // The catalog lists every subagent the Session had; one that ended has no agent.
-  const live = (await subagents.listChildren(agent.id)).map(child => child.id).filter(id => ctx.agents.get(id as SessionId))
+  const children = 'listChildren' in subagents ? await subagents.listChildren(agent.id) : await subagents.listDescendants(agent.id)
+  const live = children.map(({ id }) => ctx.agents.get(id as SessionId)).filter(child => child !== undefined)
   if (!live.length) return
-  try { await until(subagents.drainChildren(agent, live), undefined, DRAIN_LIMIT_MS) }
-  finally {
+  try {
+    if ('drainChildren' in subagents) await until(subagents.drainChildren(agent, live.map(child => child.id)), undefined, DRAIN_LIMIT_MS)
+    else {
+      // Clearing the children's inboxes lets DSH settle them and keeps the worker's tree open for its next Assignment.
+      for (const child of live) child.cancel({ kind: 'parent' }, { keepInbox: false })
+      await until(childrenEnd(subagents, agent), undefined, DRAIN_LIMIT_MS)
+    }
+  } finally {
     if (agent.status !== 'idle') cancelled.add(agent)
     agent.cancel({ kind: 'user' }, { keepInbox })
     await until(agent.whenIdle(), undefined, DRAIN_LIMIT_MS)

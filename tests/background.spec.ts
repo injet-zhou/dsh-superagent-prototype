@@ -2,7 +2,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { expect, it, vi } from 'vitest'
-import { stopSubagents, untilQuiet } from '../src/executor/background.ts'
+import { stopBackground, stopSubagents, untilQuiet } from '../src/executor/background.ts'
 import { jobRegistry } from './fixtures/host.ts'
 
 /** A context with DSH's job registry and subagents, and an idle worker agent with one live subagent, `child-1`. */
@@ -12,9 +12,37 @@ function setup(waitForChildren: (agent: Agent) => Promise<boolean>, drainChildre
     Agent & { status: string; cancel: ReturnType<typeof vi.fn> }
   const subagents = { waitForChildren: vi.fn(waitForChildren), listChildren: async () => [{ id: 'child-1' }], drainChildren: vi.fn(drainChildren) }
   const services: Record<string, unknown> = { jobs: jobs.service, subagents }
-  const ctx = { get: (name: string) => services[name], agents: { get: () => agent } } as unknown as Context
+  const agents = new Map<string, { id: string }>([[agent.id, agent], ['child-1', { id: 'child-1' }]])
+  const ctx = { get: (name: string) => services[name], agents } as unknown as Context
   return { ctx, agent, jobs, subagents }
 }
+
+it('waits for and stops live descendants on DSH with the tree-scoped subagent API', async () => {
+  const { agent } = setup(async () => false)
+  const child = { id: 'child-1', cancel: vi.fn() }
+  const grandchild = { id: 'child-2', cancel: vi.fn() }
+  const agents = new Map([agent, child, grandchild].map(value => [value.id, value]))
+  const listDescendants = vi.fn(async () => [child, grandchild, { id: 'finished-child' }])
+  const waitForTreeWork = vi.fn(async () => false)
+  const subagents = { listDescendants, waitForTreeWork }
+  const ctx = { get: (name: string) => name === 'subagents' ? subagents : undefined, agents } as unknown as Context
+
+  expect(await untilQuiet(ctx, agent, new AbortController().signal)).toBe(true)
+  expect(waitForTreeWork).toHaveBeenCalledWith(agent)
+  await stopBackground(ctx, agent.id, 'Assignment ended', true)
+  expect(listDescendants).toHaveBeenCalledWith(agent.id)
+  expect(waitForTreeWork).toHaveBeenCalledTimes(2)
+  for (const descendant of [child, grandchild]) {
+    expect(descendant.cancel).toHaveBeenCalledWith({ kind: 'parent' }, { keepInbox: false })
+    expect(descendant.cancel.mock.invocationCallOrder[0]).toBeLessThan(waitForTreeWork.mock.invocationCallOrder[1]!)
+  }
+  expect(agent.cancel).toHaveBeenCalledWith({ kind: 'user' }, { keepInbox: true })
+
+  agents.delete(child.id); agents.delete(grandchild.id)
+  agent.cancel.mockClear()
+  await stopBackground(ctx, agent.id, 'Assignment ended')
+  expect(agent.cancel).not.toHaveBeenCalled()
+})
 
 it('is not quiet when an end during the subagent check woke the worker, whose own idle looks again', async () => {
   const { ctx, agent, jobs } = setup(async () => {
