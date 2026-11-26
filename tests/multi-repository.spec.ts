@@ -41,6 +41,8 @@ it('isolates identical Issue IDs, Sessions, callbacks and management mutations o
   await child.ready
   child.sources.register(githubKind)
   expect(child.configured()).toBe(true)
+  expect(h.controller.rename).toHaveBeenCalledWith({ sessionId: h.runtime.masterId, title: 'dsh-superagent orchestrator · acme/widgets' })
+  expect(h.controller.rename).toHaveBeenCalledWith({ sessionId: child.masterId, title: 'dsh-superagent orchestrator · acme/second' })
   expect(process.env).toEqual(before)
   const trigger: Trigger = { id: 'issue-12', source: 'github', threads: [{ source: 'github', id: '12' }],
     actor: { source: 'github', id: 'alice' }, human: true, addressed: 'mention', at: '2026-11-07T00:00:00.000Z',

@@ -49,7 +49,7 @@ export class Engine {
    */
   receive(trigger: Trigger): ReceiveResult { return this.repo.atomic(() => this.intake.receive(trigger)) }
   /** Internal, already authorized application handoff. Never exposed as a Source event or model tool. */
-  delegate(id: string, trigger: Trigger, mandate: Mandate, title: string, scope: string): Ticket {
+  delegate(id: string, trigger: Trigger, mandate: Mandate, work: { title: string; scope: string; name: string }): Ticket {
     return this.repo.atomic(() => {
       const existing = this.repo.tickets.get(id)
       if (existing) return existing
@@ -59,7 +59,7 @@ export class Engine {
       this.repo.decisions.save({ id: decisionId, evalId: decisionId, threadKey: `application:${id}`, triggerIds: [trigger.id],
         policyVersion: mandate.policyVersion, at, kind: 'accept', reason: [], strength: 'explicit', ticketId: id, mandate })
       this.tickets.create(id, decisionId, mandate, { triggerIds: [trigger.id], primary: trigger.id },
-        { kind: 'accept', title, scope, reason: 'Application handoff', name: `app-${id.slice(-12)}` }, at)
+        { kind: 'accept', ...work, reason: 'Application handoff' }, at)
       return this.repo.tickets.get(id)!
     })
   }

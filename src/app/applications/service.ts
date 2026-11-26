@@ -20,12 +20,14 @@ import type { SourceContext, SourceHost } from '../../sources/host.ts'
 import { readRepositoryPath } from '../../sources/github-read.ts'
 import { githubPage } from '../../sources/github-trigger.ts'
 import { AgentDelivery } from '../delivery.ts'
+import { WorktreeNameSchema } from '../assessment.ts'
 import { initializeRoleModel, resolveRoleModel } from '../role-models.ts'
 import { SettingsConflict } from '../settings.ts'
 import { assertRepositoryIsolation } from '../repository-isolation.ts'
 import type { Runtime } from '../runtime.ts'
 import type { Store } from '../store.ts'
 import { tool, type Tool } from '../tools/tool.ts'
+import { plain } from '../views/text.ts'
 import { ApplicationSchema, CHAT_KINDS, type Application, type ApplicationChild, type ApplicationConfig, type ApplicationTask } from './types.ts'
 
 const applications = family<Application>('application:')
@@ -39,6 +41,7 @@ interface Transfer {
 const pendingTransfer = record<Transfer>('application-transfer')
 const now = () => new Date().toISOString()
 const active = (task: ApplicationTask) => !['ready', 'stopped'].includes(task.state)
+const TitleSchema = z.string().trim().min(1).max(80).regex(/^[^\r\n]+$/)
 /** A missing application or task maps to a management API 404. */
 export class ApplicationMissing extends Error {}
 /** An invalid application configuration maps to a management API 400. */
@@ -299,7 +302,8 @@ export class Applications {
     this.saveTask(current)
     return { repositoryId, revision, text: text.slice(offset, offset + 16000), nextOffset: text.length > offset + 16000 ? offset + 16000 : null }
   }
-  dispatch(task: ApplicationTask, repositoryId: string, scope: string, purpose: ApplicationChild['purpose'], dependsOn: string[] = []) {
+  dispatch(task: ApplicationTask, repositoryId: string, scope: string, purpose: ApplicationChild['purpose'], dependsOn: string[] = [],
+    naming?: { title: string; worktreeName: string }) {
     this.repository(task, repositoryId)
     if (dependsOn.includes(repositoryId) || dependsOn.some(id => !task.children.some(child => child.repositoryId === id))) throw new Error('Dependencies must be existing other repository tasks')
     const reaches = (id: string, seen = new Set<string>()): boolean => {
@@ -317,7 +321,7 @@ export class Applications {
       if (!investigation || latestReport(investigation)?.state !== 'ready') throw new Error('Wait for investigation results before requesting a fix')
       if (liveTicket(investigation)) repo.engine.stopTicket(investigation.id)
     }
-    const child: ApplicationChild = { repositoryId, ticketId: `app-${key(task.id, repositoryId, purpose)}`, scope, purpose, dependsOn,
+    const child: ApplicationChild = { repositoryId, ticketId: `app-${key(task.id, repositoryId, purpose)}`, scope, purpose, dependsOn, ...naming,
       ...previous ? { investigations: [...previous.investigations ?? [], previous.ticketId] } : {} }
     if (previous) task.children = task.children.filter(c => c.repositoryId !== repositoryId)
     task.children.push(child); task.state = 'working'; this.saveTask(task)
@@ -339,10 +343,13 @@ export class Applications {
         + (child.purpose === 'investigate' ? 'Investigate and run reproduction/tests only; report findings without modifying source code or opening a PR.\n' : '')
         + 'Report to the application coordinator through orchestrator_report. Do not post to the application chat directly.\n'
         + `Dependencies: ${child.dependsOn.join(', ') || 'none'}. Application task: ${task.id}.`, meta: { applicationId: task.applicationId, taskId: task.id } }
-    repo.engine.delegate(child.ticketId, trigger, mandate, task.trigger.text.slice(0, 160), child.scope)
+    const title = child.title ?? (plain(child.scope).slice(0, 80) || this.get(task.applicationId).name)
+    const name = child.worktreeName
+      ?? (child.scope.toLowerCase().match(/[a-z]+/g)?.slice(0, 4).join('-').slice(0, 32).replace(/-$/, '') || child.purpose)
+    repo.engine.delegate(child.ticketId, trigger, mandate, { title, name, scope: child.scope })
     repo.passes.request()
   }
-  report(task: ApplicationTask, state: 'waiting' | 'working' | 'ready' | 'blocked', summary: string): boolean {
+  report(task: ApplicationTask, state: 'waiting' | 'working' | 'ready' | 'blocked', summary: string, title?: string): boolean {
     this.authorizeTask(task)
     checkedImText(summary)
     if (task.version > (task.deliveredVersion ?? task.version)) {
@@ -353,6 +360,7 @@ export class Applications {
       const ticket = this.host.repositories().find(repo => repo.id === child.repositoryId)?.runtime?.store.tickets.get(child.ticketId)
       return !ticket || latestReport(ticket)?.state !== 'ready'
     })) throw new Error('Child work is not ready')
+    if (title && !task.title) task.title = title
     task.state = state; task.summary = summary
     const id = key(task.id, 'report', String(task.version), state, summary)
     if (!task.notifications.some(n => n.id === id)) task.notifications.push({ id, text: summary })
@@ -467,8 +475,11 @@ export class Applications {
           return source.sources.threadContext(t.trigger)?.read(source.commands, 'thread', args.cursor) ?? { messages: t.messages }
         } }),
       tool({ name: 'application_dispatch', description: 'Delegate a scoped investigation or fix to one repository. Reuses its existing child. Dependencies name already dispatched repositories.',
-        schema: z.object({ repositoryId: z.string(), scope: z.string().min(1).max(1500), purpose: z.enum(['investigate', 'fix']), dependsOn: z.array(z.string()).default([]) }),
-        execute: async args => this.dispatch(current(), args.repositoryId, args.scope, args.purpose, args.dependsOn) }),
+        schema: z.object({ repositoryId: z.string(), scope: z.string().min(1).max(1500), purpose: z.enum(['investigate', 'fix']),
+          title: TitleSchema.describe('Short title in the requester’s language that names the specific work in this repository.'),
+          worktree_name: WorktreeNameSchema, dependsOn: z.array(z.string()).default([]) }),
+        execute: async args => this.dispatch(current(), args.repositoryId, args.scope, args.purpose, args.dependsOn,
+          { title: args.title, worktreeName: args.worktree_name }) }),
       tool({ name: 'application_followup', description: 'Send a scoped follow-up to an existing repository child; never expands the original request.',
         schema: z.object({ repositoryId: z.string(), text: z.string().min(1).max(4000) }), execute: async args => {
           const t = current(), repo = this.repository(t, args.repositoryId), child = t.children.find(c => c.repositoryId === args.repositoryId)
@@ -480,8 +491,14 @@ export class Applications {
           repo.engine.note(child.ticketId, args.text); repo.passes.request(); return { delivered: true }
         } }),
       tool({ name: 'application_report', description: 'Report in the user language, at most 100 words; waiting asks a concrete question, ready includes PR links, test results and any unverified business flow. End the turn after reporting.',
-        schema: z.object({ state: z.enum(['waiting', 'working', 'ready', 'blocked']), summary: z.string().min(1).max(1500) }),
-        execute: async args => { const reported = this.report(current(), args.state, args.summary); return { reported, ...!reported ? { queued: true } : {} } } }),
+        schema: z.object({ state: z.enum(['waiting', 'working', 'ready', 'blocked']), summary: z.string().min(1).max(1500),
+          title: TitleSchema.optional().describe('On the first report, summarize the whole application request in a short title in the requester’s language.') }),
+        execute: async args => {
+          const task = current(), title = task.title ? undefined : args.title
+          const reported = this.report(task, args.state, args.summary, title)
+          if (reported && title) await this.renameTask(task)
+          return { reported, ...!reported ? { queued: true } : {} }
+        } }),
       tool({ name: 'application_stop', description: 'Stop the application task and all children only on an explicit human stop request.', schema: z.object({}),
         execute: async () => this.stop(task.applicationId, task.id) }),
     ]
@@ -489,7 +506,8 @@ export class Applications {
   private async agent(task: ApplicationTask): Promise<Agent> {
     const ctx = this.host.context
     let result = await ctx.sessionController.resolveAgent(task.sessionId as SessionId)
-    if ('error' in result && result.error.code === 'session/not-found') {
+    const creating = 'error' in result && result.error.code === 'session/not-found'
+    if (creating) {
       const workspace = await ctx.workspaceRegistry.create(this.host.primary.machine.stateDir)
       await ctx.sessionController.create({ sessionId: task.sessionId as SessionId, workspaceId: workspace.id, agentPreset: 'dsh-superagent-router' })
       result = await ctx.sessionController.resolveAgent(task.sessionId as SessionId)
@@ -497,7 +515,15 @@ export class Applications {
     if ('error' in result) throw result.error
     const agent = result.agent
     await this.bindAgent(task, agent)
+    if (creating) await this.renameTask(task)
     return agent
+  }
+  private async renameTask(task: ApplicationTask): Promise<void> {
+    const name = this.get(task.applicationId).name
+    const subject = plain(task.title ?? task.trigger.text).slice(0, 80)
+    try {
+      await this.host.context.sessionController.rename({ sessionId: SessionId(task.sessionId), title: subject ? `${subject} · ${name}` : name })
+    } catch { this.host.context.logger.warn('Could not name application Session %s', task.sessionId) }
   }
   private async bindAgent(task: ApplicationTask, agent: Agent): Promise<void> {
     const ctx = this.host.context
@@ -531,10 +557,12 @@ export class Applications {
             + 'Follow the original human request; do not invent implementation intent. If only diagnosis was requested, report findings without fixes. '
             + 'Read both sides of an API contract before choosing a repository. Cite repository, revision and path as evidence. '
             + 'Use application_dispatch to delegate fixes only after evidence supports them; use investigate for reproduction/tests without source changes. '
+            + 'Give each dispatch a concise title and English worktree_name that identify the scoped work in that repository. '
             + 'One child per repository is reused. After investigation reports ready, use application_dispatch with purpose=fix for a separately scoped repair within the original request. '
             + 'For dependent changes dispatch the prerequisite first, then use dependsOn. Summarize interface and merge dependencies. '
             + 'Only the application coordinator replies in the original chat. Report waiting for missing reproduction information, working while children run, '
             + 'or ready with all PR links and actual test results; explicitly label unverified business flows. Never claim a test ran without child evidence. '
+            + 'On the first application_report, include a short title describing the overall request in the requester’s language. Omit chat mentions and IDs. '
             + 'For a human stop request call application_stop. Acknowledge questions and stop requests promptly. End each turn after reporting; results arrive automatically.' }))
         await initializeRoleModel(ctx, agent, this.get(task.applicationId).model)
         ctx.permissionPresets.set(agent.session, 'danger-full-access')

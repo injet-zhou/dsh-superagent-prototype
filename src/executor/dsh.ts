@@ -53,8 +53,8 @@ export function transient(error: unknown): boolean {
   const text = error instanceof Error ? `${error.name} ${error.message} ${String((error as { code?: unknown }).code ?? '')}` : String(error)
   return PASSING.test(text)
 }
-/** Appends a stable 12-character ticket ID suffix to a validated English worktree name. */
-const ticketWorktreeName = (name: string, id: string): string => `${WorktreeNameSchema.parse(name)}-${id.slice(0, 12)}`
+/** Appends a stable 12-character ticket ID fragment to a validated English worktree name. */
+const ticketWorktreeName = (name: string, id: string): string => `${WorktreeNameSchema.parse(name)}-${id.replace(/^app-/, '').slice(0, 12)}`
 /** Host dependencies used by `DshExecutor`. */
 export interface ExecutorHost {
   /** Independent reviewers consume the same execution slots as ticket workers. */

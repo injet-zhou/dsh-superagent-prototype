@@ -322,7 +322,7 @@ export class Runtime extends Service implements SourceHost {
     this.executor.install()
     this.reviews.install()
     this.startupStage = 'sessions.ensure'
-    await this.sessions.ensure(this.masterId, this.machine.stateDir, 'dsh-superagent orchestrator', 'orchestrator')
+    await this.sessions.ensure(this.masterId, this.machine.stateDir, `dsh-superagent orchestrator · ${deployment.repository}`, 'orchestrator')
     this.startupStage = 'settings.sync'
     for (const id of this.settings.syncable()) await this.settings.sync(id).catch(() => { /* sync() records its failure in health. */ })
     // If stop() was called while awaiting setup, session creation, or policy sync, do not start background loops.

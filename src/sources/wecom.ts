@@ -151,14 +151,16 @@ export async function sendWecom(host: ChannelHost, message: OutboundMessage, con
   return 'sent'
 }
 
-/** Takes in one callback body, returns `'ignored'` for an event or a message this Source cannot map. */
-export async function receiveWecom(ctx: SourceContext, body: unknown, peers: Iterable<SourceContext> = [ctx]): Promise<ReceiveResult | 'ignored'> {
+/** Takes in one callback body and confirms newly stored group mentions. */
+export async function receiveWecom(ctx: SourceContext, body: unknown, peers: Iterable<SourceContext> = [ctx],
+  acknowledge?: () => void): Promise<ReceiveResult | 'ignored'> {
   const parsed = WecomMessageSchema.safeParse(body)
   if (!parsed.success) return 'ignored'
   const trigger = wecomTrigger(parsed.data)
   if (!trigger) return 'ignored'
   if (!chatRecipients(peers, SOURCE, trigger).includes(ctx)) return 'ignored'
   const result = await ctx.receive(trigger)
+  if (result === 'stored' && trigger.addressed === 'mention') acknowledge?.()
   const direct = trigger.meta.direct === true
   const chatId = String(trigger.meta.chatId ?? '')
   const config = ctx.config<WecomConfig>(SOURCE)
@@ -224,9 +226,15 @@ export async function runWecom(ctx: SourceContext, signal: AbortSignal,
           const peers = consumers.get(connection) ?? new Set<SourceContext>()
           peers.add(ctx)
           consumers.set(connection, peers)
-          const offMessage = connection.onMessage(body => {
+          const offMessage = connection.onMessage((body, reply) => {
             if (signal.aborted || !ctx.config(SOURCE)) return
-            queue = queue.then(() => signal.aborted ? 'ignored' : receiveWecom(ctx, body, peers)).then(result => {
+            const acknowledge = () => {
+              if (signal.aborted) return
+              void reply('已收到。').catch(() => {
+                if (!signal.aborted) ctx.report(SOURCE, { state: 'error', detail: 'Could not acknowledge a WeCom mention' })
+              })
+            }
+            queue = queue.then(() => signal.aborted ? 'ignored' : receiveWecom(ctx, body, peers, acknowledge)).then(result => {
               if (result === 'ignored') return
               received++
               ctx.report(SOURCE, { state: 'ready', detail: `Connected to WeCom; ${received} messages received`, at: new Date().toISOString() })

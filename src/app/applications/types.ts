@@ -16,11 +16,13 @@ export type ApplicationConfig = z.infer<typeof ApplicationSchema>
 export interface Application extends ApplicationConfig { revision: number; health?: Record<string, import('../../sources/host.ts').Health> }
 export interface ApplicationChild {
   repositoryId: string; ticketId: string; scope: string; purpose: 'investigate' | 'fix'; dependsOn: string[]; observed?: string
+  title?: string; worktreeName?: string
   result?: { state?: string; summary?: string; pr?: { number: number; url: string } }
   investigations?: string[]
 }
 export interface ApplicationTask {
   id: string; applicationId: string; sessionId: string; trigger: Trigger; repositories: string[];
+  title?: string;
   state: 'queued' | 'investigating' | 'waiting' | 'working' | 'ready' | 'blocked' | 'stopped';
   createdAt: string; updatedAt: string; version: number;
   deliveredVersion?: number;
