@@ -1,5 +1,5 @@
 /** WeCom intelligent-robot WebSocket transport: persistent connection, callbacks and Markdown messages. */
-import { WSClient, type Logger } from '@wecom/aibot-node-sdk'
+import { generateReqId, WSClient, type Logger } from '@wecom/aibot-node-sdk'
 import { createHash } from 'node:crypto'
 import { readWecomSecret } from './wecom-secret.ts'
 
@@ -13,6 +13,7 @@ export interface WecomConnectionOptions {
 }
 /** Health-bearing connection state. `retry` asks the caller to reconnect; a connection kicked by another client is not retried. */
 export interface WecomConnectionState { state: 'ready' | 'paused' | 'error'; detail: string; retry?: boolean }
+type MessageListener = (body: unknown, reply: (text: string) => Promise<void>) => void
 export interface WecomConnection {
   readonly connected: boolean
   /** Connects and resolves once the robot is authenticated; rejects when it cannot authenticate in time. */
@@ -20,8 +21,8 @@ export interface WecomConnection {
   disconnect(): void
   /** Sends one Markdown message; `'gone'` only when WeCom permanently rejects the conversation. */
   send(conversation: string, text: string): Promise<'sent' | 'gone'>
-  /** Receives the body of each robot message callback; returns a disposer. */
-  onMessage(listener: (body: unknown) => void): () => void
+  /** Receives each robot message body and a reply bound to its callback frame; returns a disposer. */
+  onMessage(listener: MessageListener): () => void
   onState(listener: (state: WecomConnectionState) => void): () => void
 }
 
@@ -45,7 +46,7 @@ class WecomTransport implements WecomConnection {
   private authTimer?: ReturnType<typeof setTimeout>
   private rejectConnect?: (error: Error) => void
   private readonly connectTimeoutMs: number
-  private readonly messages = new Set<(body: unknown) => void>()
+  private readonly messages = new Set<MessageListener>()
   private readonly states = new Set<(state: WecomConnectionState) => void>()
 
   constructor(private readonly options: WecomConnectionOptions) {
@@ -121,8 +122,11 @@ class WecomTransport implements WecomConnection {
           if (!settled) settle(new Error(detail))
         })
         client.on('message', frame => {
+          const reply = async (text: string) => {
+            await client.replyStream(frame, generateReqId('stream'), text, true)
+          }
           for (const listener of [...this.messages]) {
-            try { listener(frame.body) } catch { /* One consumer's failure must not starve the others. */ }
+            try { listener(frame.body, reply) } catch { /* One consumer's failure must not starve the others. */ }
           }
         })
         // The timer also covers a socket that never opens; `connected` restarts it for each reconnect.
@@ -179,7 +183,7 @@ class WecomTransport implements WecomConnection {
     }
   }
 
-  onMessage(listener: (body: unknown) => void): () => void {
+  onMessage(listener: MessageListener): () => void {
     this.messages.add(listener)
     return () => { this.messages.delete(listener) }
   }

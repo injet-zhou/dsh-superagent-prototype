@@ -137,12 +137,12 @@ export class Reviews {
     this.host.effects.cancel('review', run.id); this.host.effects.cancel('review-publish', run.id)
     this.host.store.afterCommit(() => { if (run.sessionId) this.stop(run.sessionId) })
   }
-  /** Reconcile with the provider before reporting, publishing, or delivering a conclusion about a revision. */
-  private async current(run: ReviewRun, signal?: AbortSignal): Promise<boolean> {
+  /** Read the current PR after reconciling the run with the provider. */
+  private async current(run: ReviewRun, signal?: AbortSignal): Promise<Pull | undefined> {
     const pr = await readPull(this.host.github, run.number, signal)
     this.observe(undefined, pr)
-    return this.get(run.id)?.state !== 'stale' && this.owned(run)
-      && this.host.store.get(KV.reviews.latest(run.number)) === run.id
+    if (this.get(run.id)?.state !== 'stale' && this.owned(run)
+      && this.host.store.get(KV.reviews.latest(run.number)) === run.id) return pr
   }
   /** Resolve only a Session recorded as this run's current attempt. No Worker tools, skills or memory are registered. */
   session(sessionId: string) {
@@ -208,10 +208,13 @@ export class Reviews {
       const { github } = this.host.commands.deployment
       const remote = `${github.baseUrl || 'https://github.com'}/${run.repository}.git`
       await prepareReview(this.host.commands, { ...run, directory: run.directory! }, remote)
-      if (!await this.current(run)) return
+      const pr = await this.current(run)
+      if (!pr) return
       if (this.host.paused()) throw new Later('Processing is paused')
       const ticket = this.host.store.tickets.get(run.ticketId)!
-      const agent = await this.host.sessions.ensure(sessionId, run.directory!, `Review #${run.number} · ${run.head.slice(0, 8)}`, 'reviewer')
+      const label = github.provider === 'gitlab' ? `MR !${run.number}` : `PR #${run.number}`
+      const title = `Review ${label} · ${pr.title?.trim() || ticket.title} · ${run.head.slice(0, 8)}`
+      const agent = await this.host.sessions.ensure(sessionId, run.directory!, title, 'reviewer')
       if (!await this.current(run)) return
       this.save({ ...run, state: 'running' })
       this.timers.set(sessionId, setTimeout(() => this.incomplete(sessionId, 'The independent review exceeded its 30-minute time limit.'), REVIEW_LIMIT_MS))

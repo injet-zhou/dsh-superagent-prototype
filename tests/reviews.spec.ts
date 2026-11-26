@@ -49,7 +49,7 @@ function repositoryApi() {
 }
 async function ownedPull(trigger = feishu('1', '修复登录回归，保留现有接口。')) {
   const work = await h.acceptedTicket(trigger)
-  pull = { number: 9, state: 'open', draft: false, html_url: 'https://github.com/acme/widgets/pull/9',
+  pull = { number: 9, title: 'Preserve the login state after refresh', state: 'open', draft: false, html_url: 'https://github.com/acme/widgets/pull/9',
     user: { login: 'agent-bot' }, head: { sha: head, ref: `agent/${work.ticket.execution!.name}`, repo: { full_name: 'acme/widgets' } },
     base: { sha: base, ref: 'main' } }
   repositoryApi()
@@ -78,6 +78,8 @@ it('automatically starts one fresh root reviewer with only original requirements
   expect(h.runtime.store.tickets.list()).toHaveLength(1)
   const created = h.controller.create.mock.calls.map(([args]) => args).find(args => args.sessionId === review.sessionId)
   expect(created).toMatchObject({ agentPreset: REVIEWER_PRESET, workspaceId: review.directory })
+  expect(h.controller.rename).toHaveBeenCalledWith({ sessionId: review.sessionId,
+    title: `Review PR #9 · ${pull.title} · ${head.slice(0, 8)}` })
   expect(created).not.toHaveProperty('parentSession')
   expect(review.directory).not.toBe(ticket.execution!.directory)
   expect([...h.tools.get(review.sessionId!)!.keys()]).toEqual(['orchestrator_review_report'])
@@ -138,6 +140,7 @@ it('excludes bot or agent reply context and unrelated human conversations', asyn
 
 it('recovers a missing worker PR report from repository polling and waits for Draft PRs to become reviewable', async () => {
   const { ticket } = await ownedPull()
+  pull.title = ' '
   pull.draft = true
   await observePull(source(), pull); await h.runtime.idle()
   expect(h.runtime.store.tickets.get(ticket.id)!.follows).toHaveLength(1)
@@ -145,6 +148,8 @@ it('recovers a missing worker PR report from repository polling and waits for Dr
   pull.draft = false
   await pollTicketPulls(source()); await h.runtime.idle()
   expect(latest()).toMatchObject({ state: 'running', head })
+  expect(h.controller.rename).toHaveBeenCalledWith({ sessionId: latest().sessionId,
+    title: `Review PR #9 · ${ticket.title} · ${head.slice(0, 8)}` })
 })
 
 it('publishes once as the author account and delivers internal feedback once, without relying on comment polling', async () => {

@@ -8,6 +8,7 @@ import type { SourceHost } from '../src/sources/host.ts'
 import { Commands } from '../src/infra/commands.ts'
 import { discordKind, discordTrigger } from '../src/sources/discord.ts'
 import { wecomKind, wecomTrigger } from '../src/sources/wecom.ts'
+import { ticketBranch } from '../src/sources/github-pull.ts'
 import { DiscordApi, DiscordMessage } from '../src/infra/discord.ts'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -446,6 +447,7 @@ it('uses a restricted diagnosis session, releases its slot on idle, and reports 
   apps.receive('shop', trigger())
   await apps.tick()
   const task = apps.listTasks('shop')[0]!
+  expect(fixture!.controller.rename).toHaveBeenCalledWith({ sessionId: task.sessionId, title: 'Fix checkout failure · Shop' })
   expect(apps.runningIds()).toEqual([task.id])
   const registered = fixture!.tools.get(task.sessionId)!
   expect([...registered.keys()]).toEqual(['application_read', 'application_context', 'application_dispatch', 'application_followup', 'application_report', 'application_stop'])
@@ -455,7 +457,11 @@ it('uses a restricted diagnosis session, releases its slot on idle, and reports 
   expect(guards.some(guard => guard({ name: 'subagent' } as never) === 'Only application diagnosis tools are available')).toBe(true)
   expect(guards.some(guard => guard({ name: 'bash' } as never) === 'Only application diagnosis tools are available')).toBe(true)
   const send = vi.spyOn(mounted.get('app')!.sources, 'send').mockResolvedValue('sent')
-  await fixture!.runTool(task.sessionId, 'application_report', { state: 'waiting', summary: '请提供失败请求的响应。' })
+  await fixture!.runTool(task.sessionId, 'application_report', {
+    state: 'waiting', summary: '请提供失败请求的响应。', title: '结账失败排查',
+  })
+  expect(apps.task('shop', task.id).title).toBe('结账失败排查')
+  expect(fixture!.controller.rename).toHaveBeenCalledWith({ sessionId: task.sessionId, title: '结账失败排查 · Shop' })
   fixture!.agents.get(task.sessionId)!.status = 'idle'
   await Promise.resolve(); await Promise.resolve()
   await apps.tick()
@@ -464,6 +470,24 @@ it('uses a restricted diagnosis session, releases its slot on idle, and reports 
   await apps.tick()
   expect(send).toHaveBeenCalledOnce()
   expect(apps.task('shop', task.id).state).toBe('waiting')
+})
+
+it('uses the model’s repository-specific title and worktree name for the worker and its PR branch', async () => {
+  const { apps, trigger, runtime } = await setup()
+  apps.receive('shop', trigger('a1', '提交订单时结账失败，请帮忙定位和修复。'))
+  await apps.tick()
+  const task = apps.listTasks('shop')[0]!
+  const dispatch = { repositoryId: 'default', scope: '修复结账表单提交失败并补回归测试', purpose: 'fix', title: '修复结账表单提交失败' }
+  await expect(fixture!.runTool(task.sessionId, 'application_dispatch', { ...dispatch, worktree_name: 'unsafe/branch' })).rejects.toThrow()
+  expect(runtime.store.tickets.list()).toEqual([])
+  await fixture!.runTool(task.sessionId, 'application_dispatch', { ...dispatch, worktree_name: 'fix-checkout-form' })
+  const child = apps.task('shop', task.id).children[0]!
+  await runtime.idle()
+  const ticket = runtime.store.tickets.get(child.ticketId)!
+  expect(ticket.title).toBe(dispatch.title)
+  expect(ticket.execution!.name).toMatch(/^fix-checkout-form-[a-f0-9]{12}$/)
+  expect(ticketBranch(ticket, `agent/${ticket.execution!.name}`)).toBe(true)
+  expect(fixture!.controller.rename).toHaveBeenCalledWith({ sessionId: `worker-${child.ticketId}`, title: dispatch.title })
 })
 
 it.each(['waiting', 'working', 'ready', 'blocked'] as const)('keeps a mid-turn follow-up queued after an older %s report', async state => {
@@ -496,7 +520,9 @@ it('requeues new input when an older turn dispatches a child and ends without re
   const followup = trigger('a2', 'Stop this task')
   followup.threads = task.trigger.threads
   apps.receive('shop', followup)
-  await fixture!.runTool(task.sessionId, 'application_dispatch', { repositoryId: 'default', scope: 'Reproduce checkout', purpose: 'investigate' })
+  await fixture!.runTool(task.sessionId, 'application_dispatch', {
+    repositoryId: 'default', scope: 'Reproduce checkout', purpose: 'investigate', title: 'Reproduce checkout', worktree_name: 'reproduce-checkout',
+  })
   fixture!.agents.get(task.sessionId)!.status = 'idle'
   await vi.waitFor(() => expect(apps.runningIds()).toEqual([]))
   expect(apps.task('shop', task.id).state).toBe('queued')

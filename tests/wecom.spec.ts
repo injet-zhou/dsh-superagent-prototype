@@ -19,6 +19,7 @@ import { Effects } from '../src/app/effects.ts'
 import { resolveWecomBot } from '../src/deployment.ts'
 import { receiveWecom, runWecom, sendWecom, wecomKind, wecomScope, wecomText, wecomTime, wecomTrigger, WecomConfigSchema, WecomMessageSchema }
   from '../src/sources/wecom.ts'
+import { deferred } from './fixtures/async.ts'
 
 const dirs: string[] = []
 const directory = (): string => { const dir = mkdtempSync(join(tmpdir(), 'wecom-')); dirs.push(dir); return dir }
@@ -57,20 +58,22 @@ function fixture(overrides: { configured?: boolean; deployment?: ReturnType<type
 }
 
 function connection() {
-  const messages = new Set<(body: unknown) => void>()
+  const messages = new Set<Parameters<WecomConnection['onMessage']>[0]>()
   const states = new Set<(state: { state: 'ready' | 'paused' | 'error'; detail: string; retry?: boolean }) => void>()
   const sent: string[] = []
+  const reply = vi.fn(async (_text: string) => {})
   const value = {
     connected: true,
     connect: vi.fn(async () => {}),
     disconnect: vi.fn(),
     send: vi.fn(async (_conversation: string, text: string): Promise<'sent' | 'gone'> => { sent.push(text); return 'sent' }),
-    onMessage: (listener: (body: unknown) => void) => { messages.add(listener); return () => { messages.delete(listener) } },
+    onMessage: (listener: Parameters<WecomConnection['onMessage']>[0]) => { messages.add(listener); return () => { messages.delete(listener) } },
     onState: (listener: (state: { state: 'ready' | 'paused' | 'error'; detail: string; retry?: boolean }) => void) => {
       states.add(listener); return () => { states.delete(listener) }
     },
-  }
-  return { value: value as WecomConnection, messages, states, sent }
+  } satisfies WecomConnection
+  const emit = (body: unknown) => { for (const listener of messages) listener(body, reply) }
+  return { value, messages, states, sent, reply, emit }
 }
 
 describe('wecom deployment', () => {
@@ -223,7 +226,7 @@ describe('wecom loop', () => {
     const stopFirst = new AbortController(), stopSecond = new AbortController()
     const firstRun = runWecom(first.ctx, stopFirst.signal, () => transport.value)
     const secondRun = runWecom(second.ctx, stopSecond.signal, () => transport.value)
-    const emit = (value: unknown) => { for (const listener of transport.messages) listener(value) }
+    const { emit } = transport
     try {
       await vi.waitFor(() => expect(transport.messages.size).toBe(2))
       emit(body({ msgid: 'first' }))
@@ -237,6 +240,7 @@ describe('wecom loop', () => {
       expect(first.store.triggers.get(key('wecom', 'second'))).toBeUndefined()
       expect(second.store.triggers.get(key('wecom', 'first'))).toBeUndefined()
       expect(second.store.triggers.get(key('wecom', 'direct'))).toBeUndefined()
+      expect(transport.reply.mock.calls).toEqual([['已收到。'], ['已收到。']])
       stopFirst.abort(); await firstRun
       expect(transport.value.disconnect).not.toHaveBeenCalled()
       expect(transport.messages.size).toBe(1)
@@ -259,7 +263,7 @@ describe('wecom loop', () => {
     const controller = new AbortController()
     const running = runWecom(h.ctx, controller.signal, () => transport.value)
     await vi.waitFor(() => expect(transport.value.connect).toHaveBeenCalled())
-    for (const listener of transport.messages) listener(body({ msgid: 'm6' }))
+    transport.emit(body({ msgid: 'm6' }))
     await vi.waitFor(() => expect(h.received.some(trigger => trigger.id === key('wecom', 'm6'))).toBe(true))
     expect(h.board.all.wecom?.state).toBe('ready')
     controller.abort()
@@ -272,6 +276,31 @@ describe('wecom loop', () => {
     await vi.waitFor(() => expect(pending.board.all.wecom?.code).toBe('setupPending'))
     waiting.abort()
     await waitingRun
+  })
+  it('acknowledges each new listened mention without holding up intake or waiting on a decision', async () => {
+    const h = fixture(), transport = connection(), stop = new AbortController()
+    const receipt = deferred()
+    transport.reply.mockReturnValueOnce(receipt.promise)
+    const running = runWecom(h.ctx, stop.signal, () => transport.value)
+    try {
+      await vi.waitFor(() => expect(transport.messages.size).toBe(1))
+      transport.emit(body())
+      await vi.waitFor(() => expect(transport.reply).toHaveBeenCalledExactlyOnceWith('已收到。'))
+      expect(h.engine.candidate(key('wecom', 'm1'))).toBeDefined()
+      expect(h.store.tickets.list()).toEqual([])
+      transport.emit(body())
+      transport.emit(body({ msgid: 'filtered', chatid: 'other-group' }))
+      transport.emit(body({ msgid: 'direct', chattype: 'single', chatid: undefined }))
+      transport.emit(body({ msgid: 'next' }))
+      await vi.waitFor(() => expect(h.store.triggers.get(key('wecom', 'next'))).toBeDefined())
+      expect(transport.reply.mock.calls).toEqual([['已收到。'], ['已收到。']])
+      expect(transport.value.send).not.toHaveBeenCalled()
+    } finally {
+      receipt.resolve()
+      stop.abort()
+      await running
+      h.store.close()
+    }
   })
   it('explains a missing secret file and a failed robot check', async () => {
     const absent = fixture({ deployment: testDeployment({ wecom: undefined }) })
@@ -406,7 +435,7 @@ describe('wecom transport', () => {
     for (const socket of sockets) socket.terminate()
     await new Promise<void>(resolve => server.close(() => resolve()))
   })
-  it('authenticates, receives a callback and sends a Markdown reply over a WebSocket', async () => {
+  it('authenticates, replies to a callback and can still send Markdown to a chat over a WebSocket', async () => {
     const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
     await new Promise<void>(resolve => server.once('listening', resolve))
     const port = (server.address() as { port: number }).port
@@ -418,20 +447,27 @@ describe('wecom transport', () => {
         const frame = JSON.parse(String(raw)) as { cmd?: string; headers: { req_id: string }; body?: Record<string, unknown> }
         frames.push(frame)
         if (frame.cmd === 'aibot_subscribe') connected.send(JSON.stringify({ headers: { req_id: frame.headers.req_id }, errcode: 0, errmsg: 'ok' }))
-        else if (frame.cmd === 'aibot_send_msg') connected.send(JSON.stringify({ headers: { req_id: frame.headers.req_id }, errcode: 0, errmsg: 'ok' }))
+        else if (frame.cmd === 'aibot_send_msg' || frame.cmd === 'aibot_respond_msg') {
+          connected.send(JSON.stringify({ headers: { req_id: frame.headers.req_id }, errcode: 0, errmsg: 'ok' }))
+        }
       })
     })
     const secretFile = join(directory(), 'wecom.json')
     writeFileSync(secretFile, JSON.stringify({ botId: 'bot1', secret: 's3cret' }), { mode: 0o600 })
     const transport = wecomTransport({ botId: 'bot1', secretFile, wsUrl: `ws://127.0.0.1:${port}` })
     const bodies: unknown[] = []
-    transport.onMessage(body => bodies.push(body))
+    const received = deferred<(text: string) => Promise<void>>()
+    transport.onMessage((body, reply) => { bodies.push(body); received.resolve(reply) })
     await transport.connect()
     expect(frames.find(frame => frame.cmd === 'aibot_subscribe')?.body).toMatchObject({ bot_id: 'bot1' })
     await vi.waitFor(() => expect(socket).toBeDefined())
     socket!.send(JSON.stringify({ cmd: 'aibot_msg_callback', headers: { req_id: 'cb1' }, body: body({ msgid: 'm7' }) }))
-    await vi.waitFor(() => expect(bodies).toHaveLength(1))
+    const reply = await received.promise
     expect(bodies[0]).toMatchObject({ msgid: 'm7', text: { content: 'fix the login page' } })
+    await reply('已收到。')
+    expect(frames.find(frame => frame.cmd === 'aibot_respond_msg')).toMatchObject({
+      headers: { req_id: 'cb1' }, body: { msgtype: 'stream', stream: { finish: true, content: '已收到。' } },
+    })
     await expect(transport.send('alice', 'hello')).resolves.toBe('sent')
     expect(frames.find(frame => frame.cmd === 'aibot_send_msg')?.body).toEqual({ chatid: 'alice', msgtype: 'markdown', markdown: { content: 'hello' } })
     transport.disconnect()
